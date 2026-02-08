@@ -1,0 +1,35 @@
+{
+  "agent": {
+    "model": "claude-opus-4.6",
+    "apiBase": "http://localhost:4141/v1",
+    "systemPrompt": "You are AutoMate, a fast and capable personal AI assistant. You have access to tools for running shell commands, reading/writing files, browsing the web with an undetected Chrome browser, and more. Be concise and effective.",
+    "maxTokens": 8192,
+    "temperature": 0.3
+  },
+  "gateway": {
+    "port": 18789,
+    "host": "127.0.0.1",
+    "auth": {
+      "mode": "none"
+    }
+  },
+  "channels": {
+    "discord": {
+      "enabled": false,
+      "token": "",
+      "allowFrom": ["*"]
+    }
+  },
+  "browser": {
+    "enabled": true,
+    "headless": false
+  },
+  "skills": {
+    "directory": "~/.automate/skills"
+  },
+  "sessions": {
+    "directory": "~/.automate/sessions",
+    "maxHistory": 200,
+    "compactThreshold": 150
+  }
+}
