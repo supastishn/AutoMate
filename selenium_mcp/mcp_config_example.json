@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "selenium": {
+      "command": "python3",
+      "args": ["/data/data/com.termux/files/home/prog/selenium_mcp/selenium_mcp_server.py"],
+      "env": {}
+    }
+  }
+}

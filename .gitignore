@@ -1,0 +1,12 @@
+node_modules/
+dist/
+ui/dist/
+ui/node_modules/
+*.log
+.env
+.automate/
+__pycache__/
+*.pyc
+selenium_mcp/.ruff_cache/
+selenium_mcp/__pycache__/
+selenium_mcp/mcps/discord/__pycache__/
