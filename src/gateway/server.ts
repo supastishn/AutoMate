@@ -7,6 +7,8 @@ import { join, dirname } from 'node:path';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { Config } from '../config/schema.js';
+import { loadConfig, saveConfig, reloadConfig } from '../config/loader.js';
+import { ConfigSchema } from '../config/schema.js';
 import type { Agent } from '../agent/agent.js';
 import type { SessionManager } from './session-manager.js';
 import type { WebSocket } from 'ws';
@@ -138,7 +140,7 @@ export class GatewayServer {
       return { ok: true };
     });
 
-    // Config (read only for safety)
+    // Config (read only, safe subset for backward compat)
     this.app.get('/api/config', async () => ({
       config: {
         agent: { model: this.config.agent.model, maxTokens: this.config.agent.maxTokens },
@@ -147,6 +149,70 @@ export class GatewayServer {
         browser: this.config.browser,
       },
     }));
+
+    // Full config (API keys masked)
+    this.app.get('/api/config/full', async () => {
+      const masked = JSON.parse(JSON.stringify(this.config));
+      // Mask sensitive fields
+      if (masked.agent?.apiKey) masked.agent.apiKey = '***';
+      if (masked.gateway?.auth?.token) masked.gateway.auth.token = '***';
+      if (masked.gateway?.auth?.password) masked.gateway.auth.password = '***';
+      if (masked.channels?.discord?.token) masked.channels.discord.token = '***';
+      if (masked.memory?.embedding?.apiKey) masked.memory.embedding.apiKey = '***';
+      if (masked.webhooks?.token) masked.webhooks.token = '***';
+      return { config: masked };
+    });
+
+    // Update config (partial deep-merge)
+    this.app.put<{ Body: Record<string, any> }>('/api/config', async (req, reply) => {
+      try {
+        const updates = req.body;
+        // Load current raw config from disk
+        const currentRaw = JSON.parse(JSON.stringify(this.config));
+        
+        // Remove masked values from updates (don't overwrite real keys with ***)
+        const cleanUpdates = JSON.parse(JSON.stringify(updates));
+        const removeMasked = (obj: any) => {
+          for (const key of Object.keys(obj)) {
+            if (obj[key] === '***') {
+              delete obj[key];
+            } else if (typeof obj[key] === 'object' && obj[key] !== null && !Array.isArray(obj[key])) {
+              removeMasked(obj[key]);
+            }
+          }
+        };
+        removeMasked(cleanUpdates);
+        
+        // Deep merge
+        const deepMerge = (target: any, source: any): any => {
+          const result = { ...target };
+          for (const key of Object.keys(source)) {
+            if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
+              result[key] = deepMerge(target[key] || {}, source[key]);
+            } else {
+              result[key] = source[key];
+            }
+          }
+          return result;
+        };
+        
+        const merged = deepMerge(currentRaw, cleanUpdates);
+        
+        // Validate
+        ConfigSchema.parse(merged);
+        
+        // Save to disk
+        saveConfig(merged);
+        
+        // Reload into memory
+        const reloaded = reloadConfig();
+        Object.assign(this.config, reloaded);
+        
+        return { ok: true, message: 'Config updated and reloaded' };
+      } catch (err: any) {
+        return reply.code(400).send({ error: err.message || 'Invalid config' });
+      }
+    });
 
     // Chat API (REST, non-streaming)
     this.app.post<{ Body: { message: string; session_id?: string } }>('/api/chat', async (req) => {

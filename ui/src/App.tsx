@@ -4,8 +4,9 @@ import Chat from './pages/Chat'
 import Sessions from './pages/Sessions'
 import Skills from './pages/Skills'
 import Canvas from './pages/Canvas'
+import Settings from './pages/Settings'
 
-const tabs = ['Dashboard', 'Chat', 'Canvas', 'Sessions', 'Skills'] as const
+const tabs = ['Dashboard', 'Chat', 'Canvas', 'Sessions', 'Skills', 'Settings'] as const
 type Tab = typeof tabs[number]
 
 const tabIcons: Record<Tab, string> = {
@@ -14,6 +15,7 @@ const tabIcons: Record<Tab, string> = {
   Canvas: '\u{1F3A8}',
   Sessions: '\u{1F4C1}',
   Skills: '\u26A1',
+  Settings: '\u2699\uFE0F',
 }
 
 export default function App() {
@@ -106,6 +108,7 @@ export default function App() {
         {tab === 'Canvas' && <Canvas />}
         {tab === 'Sessions' && <Sessions />}
         {tab === 'Skills' && <Skills />}
+        {tab === 'Settings' && <Settings />}
       </div>
     </div>
   )
