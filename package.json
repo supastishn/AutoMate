@@ -4,7 +4,7 @@
   "description": "AutoMate - Fast personal AI assistant. Self-hosted, multi-channel, tool-using agent.",
   "type": "module",
   "bin": {
-    "automate": "./dist/index.js"
+    "automate": "./bin/automate.mjs"
   },
   "scripts": {
     "dev": "node --import tsx src/index.ts",

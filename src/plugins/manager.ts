@@ -13,6 +13,7 @@
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 import type { Tool, ToolContext } from '../agent/tool-registry.js';
 import type { Config } from '../config/schema.js';
 
@@ -90,7 +91,7 @@ export class PluginManager {
 
   constructor(config: Config, pluginsDir?: string) {
     this.config = config;
-    this.pluginsDir = pluginsDir || join(config.memory.directory, '..', 'plugins');
+    this.pluginsDir = pluginsDir || config.plugins?.directory || join(homedir(), '.automate', 'plugins');
     if (!existsSync(this.pluginsDir)) {
       mkdirSync(this.pluginsDir, { recursive: true });
     }

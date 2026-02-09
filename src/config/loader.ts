@@ -7,7 +7,10 @@ const CONFIG_DIR = join(homedir(), '.automate');
 const CONFIG_FILE = join(CONFIG_DIR, 'automate.json');
 
 export function resolveHome(p: string): string {
-  return p.startsWith('~') ? p.replace('~', homedir()) : resolve(p);
+  if (p.startsWith('~')) return p.replace('~', homedir());
+  // Resolve relative paths against ~/.automate, not cwd
+  if (!p.startsWith('/')) return join(CONFIG_DIR, p);
+  return p;
 }
 
 export function ensureConfigDir(): void {

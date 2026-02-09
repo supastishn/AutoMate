@@ -10,6 +10,8 @@ import { SkillsLoader } from '../skills/loader.js';
 import { Scheduler } from '../cron/scheduler.js';
 import type { Config } from '../config/schema.js';
 import type { AgentResponse, StreamCallback } from '../agent/agent.js';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 export interface AgentProfile {
   name: string;
@@ -84,11 +86,11 @@ export class AgentRouter {
       },
       memory: {
         ...this.baseConfig.memory,
-        directory: profile.memoryDir || `${this.baseConfig.memory.directory}/../agents/${profile.name}/memory`,
+        directory: profile.memoryDir || join(homedir(), '.automate', 'agents', profile.name, 'memory'),
       },
       sessions: {
         ...this.baseConfig.sessions,
-        directory: profile.sessionsDir || `${this.baseConfig.sessions.directory}/../agents/${profile.name}/sessions`,
+        directory: profile.sessionsDir || join(homedir(), '.automate', 'agents', profile.name, 'sessions'),
       },
       skills: {
         ...this.baseConfig.skills,
