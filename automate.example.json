@@ -4,7 +4,22 @@
     "apiBase": "http://localhost:4141/v1",
     "systemPrompt": "You are AutoMate, a fast and capable personal AI assistant. You have access to tools for running shell commands, reading/writing files, browsing the web with an undetected Chrome browser, and more. Be concise and effective.",
     "maxTokens": 8192,
-    "temperature": 0.3
+    "temperature": 0.3,
+    "providers": [
+      {
+        "name": "openai-fallback",
+        "model": "gpt-4o",
+        "apiBase": "https://api.openai.com/v1",
+        "apiKey": "",
+        "priority": 10
+      },
+      {
+        "name": "ollama-local",
+        "model": "llama3",
+        "apiBase": "http://localhost:11434/v1",
+        "priority": 20
+      }
+    ]
   },
   "gateway": {
     "port": 18789,
@@ -31,5 +46,8 @@
     "directory": "~/.automate/sessions",
     "maxHistory": 200,
     "compactThreshold": 150
+  },
+  "canvas": {
+    "enabled": true
   }
 }

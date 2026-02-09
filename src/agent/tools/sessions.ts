@@ -2,9 +2,14 @@ import type { Tool } from '../tool-registry.js';
 
 // Will be injected by the session manager at runtime
 let sessionManagerRef: any = null;
+let agentRef: any = null;
 
 export function setSessionManager(sm: any) {
   sessionManagerRef = sm;
+}
+
+export function setAgent(a: any): void {
+  agentRef = a;
 }
 
 export const sessionsListTool: Tool = {
@@ -66,6 +71,29 @@ export const sessionsSendTool: Tool = {
     session.messages.push({ role: 'user', content: params.message as string });
     sessionManagerRef.saveSession(params.session_id as string);
     return { output: `Message sent to session ${params.session_id}` };
+  },
+};
+
+export const sessionsSpawnTool: Tool = {
+  name: 'sessions_spawn',
+  description: 'Spawn a new sub-session and send it a message. The sub-session runs independently (non-blocking). Useful for background research tasks.',
+  parameters: {
+    type: 'object',
+    properties: {
+      prompt: { type: 'string', description: 'The message/task to send to the new session' },
+      session_name: { type: 'string', description: 'Optional name for the session (default: auto-generated)' },
+    },
+    required: ['prompt'],
+  },
+  async execute(params) {
+    if (!sessionManagerRef || !agentRef) return { output: '', error: 'Not available' };
+    const name = (params.session_name as string) || `spawn:${Date.now()}`;
+    const sessionId = `spawn:${name}`;
+
+    // Fire and forget — don't await
+    agentRef.processMessage(sessionId, params.prompt as string).catch(() => {});
+
+    return { output: `Spawned sub-session '${sessionId}' with task. Use sessions_history to check progress.` };
   },
 };
 

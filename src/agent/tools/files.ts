@@ -56,6 +56,68 @@ export const writeFileTool: Tool = {
   },
 };
 
+export const applyPatchTool: Tool = {
+  name: 'apply_patch',
+  description: 'Apply a unified diff patch to a file. More efficient than edit_file for large multi-line changes.',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'File path to patch' },
+      patch: { type: 'string', description: 'Unified diff patch content' },
+    },
+    required: ['path', 'patch'],
+  },
+  async execute(params, ctx) {
+    const filePath = resolve(ctx.workdir, params.path as string);
+    if (!existsSync(filePath)) {
+      return { output: '', error: `File not found: ${filePath}` };
+    }
+    try {
+      const content = readFileSync(filePath, 'utf-8');
+      const lines = content.split('\n');
+      const patchLines = (params.patch as string).split('\n');
+
+      let lineIndex = 0;
+      const result: string[] = [...lines];
+      let offset = 0;
+
+      for (let i = 0; i < patchLines.length; i++) {
+        const line = patchLines[i];
+        // Parse hunk header: @@ -start,count +start,count @@
+        const hunkMatch = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+        if (hunkMatch) {
+          lineIndex = parseInt(hunkMatch[1]) - 1 + offset;
+          continue;
+        }
+        if (line.startsWith('---') || line.startsWith('+++')) continue;
+        if (line.startsWith('-')) {
+          // Remove line
+          const expected = line.slice(1);
+          if (result[lineIndex] === expected) {
+            result.splice(lineIndex, 1);
+            offset--;
+          } else {
+            lineIndex++;
+          }
+        } else if (line.startsWith('+')) {
+          // Add line
+          result.splice(lineIndex, 0, line.slice(1));
+          lineIndex++;
+          offset++;
+        } else if (line.startsWith(' ') || line === '') {
+          // Context line
+          lineIndex++;
+        }
+      }
+
+      writeFileSync(filePath, result.join('\n'));
+      return { output: `Patched ${filePath}` };
+    } catch (err) {
+      return { output: '', error: `Failed to apply patch: ${err}` };
+    }
+  },
+};
+
 export const editFileTool: Tool = {
   name: 'edit_file',
   description: 'Edit a file by replacing an exact string match with new content.',

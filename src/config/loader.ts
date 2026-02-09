@@ -34,11 +34,46 @@ export function loadConfig(path?: string): Config {
   // Resolve ~ paths
   config.skills.directory = resolveHome(config.skills.directory);
   config.sessions.directory = resolveHome(config.sessions.directory);
+  config.memory.directory = resolveHome(config.memory.directory);
+  config.memory.sharedDirectory = resolveHome(config.memory.sharedDirectory);
+  config.cron.directory = resolveHome(config.cron.directory);
+  if (config.plugins?.directory) {
+    config.plugins.directory = resolveHome(config.plugins.directory);
+  }
 
   // Ensure directories exist
   mkdirSync(config.skills.directory, { recursive: true });
   mkdirSync(config.sessions.directory, { recursive: true });
+  mkdirSync(config.memory.directory, { recursive: true });
+  mkdirSync(config.memory.sharedDirectory, { recursive: true });
+  mkdirSync(config.cron.directory, { recursive: true });
+  if (config.plugins?.directory) {
+    mkdirSync(config.plugins.directory, { recursive: true });
+  }
 
+  return config;
+}
+
+export function reloadConfig(path?: string): Config {
+  // Same as loadConfig but doesn't create dirs (they already exist)
+  const configPath = path || CONFIG_FILE;
+  let raw: Record<string, unknown> = {};
+  if (existsSync(configPath)) {
+    try {
+      raw = JSON.parse(readFileSync(configPath, 'utf-8'));
+    } catch {
+      throw new Error(`Could not parse config file: ${configPath}`);
+    }
+  }
+  const config = ConfigSchema.parse(raw);
+  config.skills.directory = resolveHome(config.skills.directory);
+  config.sessions.directory = resolveHome(config.sessions.directory);
+  config.memory.directory = resolveHome(config.memory.directory);
+  config.memory.sharedDirectory = resolveHome(config.memory.sharedDirectory);
+  config.cron.directory = resolveHome(config.cron.directory);
+  if (config.plugins?.directory) {
+    config.plugins.directory = resolveHome(config.plugins.directory);
+  }
   return config;
 }
 
