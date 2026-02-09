@@ -136,7 +136,7 @@ export class GatewayServer {
     });
 
     this.app.delete<{ Params: { id: string } }>('/api/sessions/:id', async (req) => {
-      this.sessionManager.resetSession(req.params.id);
+      this.sessionManager.deleteSession(req.params.id);
       return { ok: true };
     });
 
@@ -311,7 +311,7 @@ export class GatewayServer {
   private registerWebSocket(): void {
     this.app.get('/ws', { websocket: true }, (socket, req) => {
       const clientId = `webchat:ws:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const sessionId = `webchat:${clientId}`;
+      let sessionId = `webchat:${clientId}`;
 
       this.webChatClients.set(clientId, {
         ws: socket as unknown as WebSocket,
@@ -376,6 +376,28 @@ export class GatewayServer {
 
           if (msg.type === 'ping') {
             socket.send(JSON.stringify({ type: 'pong' }));
+          }
+
+          // Load/resume an existing session
+          if (msg.type === 'load_session') {
+            const targetId = msg.session_id as string;
+            const session = this.sessionManager.getSession(targetId);
+            if (!session) {
+              socket.send(JSON.stringify({ type: 'error', message: `Session not found: ${targetId}` }));
+              return;
+            }
+            // Update this client's sessionId to the loaded session
+            const client = this.webChatClients.get(clientId);
+            if (client) client.sessionId = targetId;
+            sessionId = targetId;
+            // Send session history back to client
+            socket.send(JSON.stringify({
+              type: 'session_loaded',
+              session_id: targetId,
+              messages: session.messages
+                .filter(m => m.role === 'user' || m.role === 'assistant')
+                .map(m => ({ role: m.role, content: m.content || '' })),
+            }));
           }
         } catch (err) {
           socket.send(JSON.stringify({ type: 'error', message: String(err) }));

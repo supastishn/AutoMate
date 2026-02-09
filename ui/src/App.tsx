@@ -22,6 +22,7 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('Dashboard')
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [isMobile, setIsMobile] = useState(false)
+  const [loadSessionId, setLoadSessionId] = useState<string | null>(null)
 
   useEffect(() => {
     const check = () => {
@@ -104,9 +105,9 @@ export default function App() {
       {/* Main content */}
       <div style={{ flex: 1, overflow: 'auto', marginLeft: isMobile ? 0 : undefined }}>
         {tab === 'Dashboard' && <Dashboard />}
-        {tab === 'Chat' && <Chat />}
+        {tab === 'Chat' && <Chat loadSessionId={loadSessionId} onSessionLoaded={() => setLoadSessionId(null)} />}
         {tab === 'Canvas' && <Canvas />}
-        {tab === 'Sessions' && <Sessions />}
+        {tab === 'Sessions' && <Sessions onOpenInChat={(id) => { setLoadSessionId(id); setTab('Chat') }} />}
         {tab === 'Skills' && <Skills />}
         {tab === 'Settings' && <Settings />}
       </div>

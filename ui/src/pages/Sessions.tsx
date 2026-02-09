@@ -14,7 +14,7 @@ const card = {
   transition: 'border-color 0.15s',
 } as React.CSSProperties
 
-export default function Sessions() {
+export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: string) => void }) {
   const [sessions, setSessions] = useState<Session[]>([])
   const [selected, setSelected] = useState<any>(null)
 
@@ -46,6 +46,14 @@ export default function Sessions() {
     setSelected(null)
   }
 
+  const deleteSession = async (id: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation()
+    if (!confirm(`Delete session "${id}" permanently?`)) return
+    await fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    fetchSessions()
+    if (selected?.session?.id === id) setSelected(null)
+  }
+
   const ago = (date: string) => {
     const s = Math.floor((Date.now() - new Date(date).getTime()) / 1000)
     if (s < 60) return `${s}s ago`
@@ -65,7 +73,23 @@ export default function Sessions() {
             <div key={s.id} style={card} onClick={() => viewSession(s.id)}
               onMouseEnter={e => (e.currentTarget.style.borderColor = '#4fc3f7')}
               onMouseLeave={e => (e.currentTarget.style.borderColor = '#222')}>
-              <div style={{ fontSize: 13, fontFamily: 'monospace', color: '#4fc3f7', marginBottom: 6 }}>{s.id}</div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <div style={{ fontSize: 13, fontFamily: 'monospace', color: '#4fc3f7', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.id}</div>
+                <div style={{ display: 'flex', gap: 4, marginLeft: 8 }}>
+                  {onOpenInChat && (
+                    <button onClick={(e) => { e.stopPropagation(); onOpenInChat(s.id) }}
+                      title="Open in Chat"
+                      style={{ padding: '2px 8px', background: '#1a2a3a', color: '#4fc3f7', border: '1px solid #2a4a6a', borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
+                      Chat
+                    </button>
+                  )}
+                  <button onClick={(e) => deleteSession(s.id, e)}
+                    title="Delete session"
+                    style={{ padding: '2px 8px', background: '#2a1a1a', color: '#f44', border: '1px solid #4a2a2a', borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
+                    Del
+                  </button>
+                </div>
+              </div>
               <div style={{ display: 'flex', gap: 16, fontSize: 12, color: '#888' }}>
                 <span>Channel: {s.channel}</span>
                 <span>Messages: {s.messageCount}</span>
@@ -81,9 +105,15 @@ export default function Sessions() {
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
             <h2 style={{ fontSize: 16, fontFamily: 'monospace' }}>{selected.session.id}</h2>
             <div style={{ display: 'flex', gap: 8 }}>
-              <button onClick={() => resetSession(selected.session.id)}
+              {onOpenInChat && (
+                <button onClick={() => onOpenInChat(selected.session.id)}
+                  style={{ padding: '6px 12px', background: '#1a3a5c', color: '#4fc3f7', border: '1px solid #2a5a8c', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
+                  Open in Chat
+                </button>
+              )}
+              <button onClick={() => deleteSession(selected.session.id)}
                 style={{ padding: '6px 12px', background: '#f44336', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
-                Reset
+                Delete
               </button>
               <button onClick={() => setSelected(null)}
                 style={{ padding: '6px 12px', background: '#333', color: '#ccc', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
