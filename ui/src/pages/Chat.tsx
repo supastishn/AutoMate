@@ -274,11 +274,23 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
   }, [])
 
   // Load a session requested from another tab (e.g. Sessions "Open in Chat")
+  // Retries until WS is connected since Chat may be freshly mounting
   useEffect(() => {
-    if (loadSessionId && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'load_session', session_id: loadSessionId }))
-      onSessionLoaded?.()
+    if (!loadSessionId) return
+    const trySend = () => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'load_session', session_id: loadSessionId }))
+        onSessionLoaded?.()
+        return true
+      }
+      return false
     }
+    if (trySend()) return
+    // WS not ready yet — retry until connected
+    const interval = setInterval(() => {
+      if (trySend()) clearInterval(interval)
+    }, 200)
+    return () => clearInterval(interval)
   }, [loadSessionId])
 
   useEffect(() => {

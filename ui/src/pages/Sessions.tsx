@@ -50,7 +50,8 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
     if (e) e.stopPropagation()
     if (!confirm(`Delete session "${id}" permanently?`)) return
     await fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
-    fetchSessions()
+    // Immediately remove from local state so UI updates instantly
+    setSessions(prev => prev.filter(s => s.id !== id))
     if (selected?.session?.id === id) setSelected(null)
   }
 
