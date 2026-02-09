@@ -124,6 +124,11 @@ export class DiscordChannel {
       new SlashCommandBuilder()
         .setName('compact')
         .setDescription('Compact the conversation to save context'),
+      new SlashCommandBuilder()
+        .setName('session')
+        .setDescription('List or switch to a session')
+        .addStringOption(opt =>
+          opt.setName('id').setDescription('Session ID to switch to (omit to list)').setRequired(false)),
       // Context menu commands
       new ContextMenuCommandBuilder()
         .setName('Summarize')
@@ -185,7 +190,7 @@ export class DiscordChannel {
     const isOwner = this.getUserAuthLevel(interaction.user.id) === 'owner';
 
     // Only owners can use admin commands
-    if (['reset', 'elevated', 'compact', 'model'].includes(cmdName) && !isOwner) {
+    if (['reset', 'elevated', 'compact', 'model', 'session'].includes(cmdName) && !isOwner) {
       await interaction.reply({ content: 'Only the bot owner can use this command.', ephemeral: true });
       return;
     }
@@ -268,6 +273,67 @@ export class DiscordChannel {
       const result = this.agent.handleCommand(sessionId, '/compact');
       await interaction.reply({
         embeds: [new EmbedBuilder().setColor(0x4fc3f7).setDescription(result || 'Compacted.')],
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (cmdName === 'session') {
+      const targetId = interaction.options.getString('id');
+      const sm = this.agent.getSessionManager();
+
+      if (!targetId) {
+        // List all sessions
+        const sessions = sm.listSessions();
+        if (sessions.length === 0) {
+          await interaction.reply({
+            embeds: [new EmbedBuilder().setColor(0x4fc3f7).setTitle('Sessions').setDescription('No sessions found.')],
+            ephemeral: true,
+          });
+          return;
+        }
+        const lines = sessions.slice(0, 25).map(s =>
+          `\`${s.id}\` — ${s.messageCount} msgs, ${s.channel}`
+        );
+        await interaction.reply({
+          embeds: [new EmbedBuilder()
+            .setColor(0x4fc3f7)
+            .setTitle(`Sessions (${sessions.length})`)
+            .setDescription(lines.join('\n'))
+            .setFooter({ text: 'Use /session id:<session_id> to switch' })],
+          ephemeral: true,
+        });
+        return;
+      }
+
+      // Switch to a specific session
+      const target = sm.getSession(targetId);
+      if (!target) {
+        await interaction.reply({
+          embeds: [new EmbedBuilder().setColor(0xf44336).setDescription(`Session not found: \`${targetId}\``)],
+          ephemeral: true,
+        });
+        return;
+      }
+
+      // Remap this user's discord session key to point to the target session
+      // We do this by creating a reference — the user's new messages will go into the target session
+      const userId = interaction.user.id;
+      const isDM = !interaction.guild;
+      const currentKey = `discord:${isDM ? 'dm' : interaction.guild!.id}:${userId}`;
+
+      // Get or create the user's current session, then swap its messages with the target
+      const current = sm.getOrCreate('discord', currentKey.replace('discord:', ''));
+      current.messages = [...target.messages];
+      current.messageCount = target.messageCount;
+      current.updatedAt = new Date().toISOString();
+      sm.saveSession(current.id);
+
+      await interaction.reply({
+        embeds: [new EmbedBuilder()
+          .setColor(0x4caf50)
+          .setTitle('Session Loaded')
+          .setDescription(`Loaded session \`${targetId}\` with ${target.messageCount} messages.\nYour conversation now continues from that session's context.`)],
         ephemeral: true,
       });
       return;

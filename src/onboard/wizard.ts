@@ -415,9 +415,11 @@ export async function runOnboardWizard(): Promise<void> {
 
   if (existsSync(configPath)) {
     // ── Section-based editing mode ──
+    // Read raw JSON so we show original values (with ~ paths) not resolved ones
     let currentConfig: Record<string, any>;
     try {
-      currentConfig = loadConfig() as Record<string, any>;
+      const { readFileSync } = await import('node:fs');
+      currentConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
     } catch {
       currentConfig = {};
     }

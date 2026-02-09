@@ -114,6 +114,23 @@ function renderMarkdown(text: string): React.ReactNode[] {
       i++; continue
     }
 
+    // Tool usage marker: [used tool: toolName]
+    if (line.match(/^\[used tool: .+\]$/)) {
+      const toolName = line.replace(/^\[used tool: /, '').replace(/\]$/, '')
+      nodes.push(
+        <div key={key++} style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          margin: '6px 0', padding: '4px 10px', background: '#1a1a2e',
+          border: '1px solid #2a2a4a', borderRadius: 16, fontSize: 11,
+          color: '#8888cc', fontFamily: 'monospace',
+        }}>
+          <span style={{ color: '#6a6aaa' }}>&#9881;</span>
+          <span>used tool: <span style={{ color: '#4fc3f7', fontWeight: 600 }}>{toolName}</span></span>
+        </div>
+      )
+      i++; continue
+    }
+
     // Empty line
     if (!line.trim()) {
       nodes.push(<div key={key++} style={{ height: 6 }} />)
@@ -222,7 +239,7 @@ function highlightCode(code: string, lang: string): React.ReactNode {
   return <>{parts}</>
 }
 
-export default function Chat() {
+export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId?: string | null; onSessionLoaded?: () => void }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState('')
@@ -231,6 +248,9 @@ export default function Chat() {
   const [uploading, setUploading] = useState(false)
   const [authToken, setAuthToken] = useState(() => localStorage.getItem('automate_token') || '')
   const [needsAuth, setNeedsAuth] = useState(false)
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
+  const [sessionsList, setSessionsList] = useState<{ id: string; channel: string; messageCount: number; updatedAt: string }[]>([])
+  const [showSessionPicker, setShowSessionPicker] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -243,6 +263,23 @@ export default function Chat() {
     connect()
     return () => { wsRef.current?.close() }
   }, [])
+
+  // Fetch sessions list for the picker
+  const fetchSessionsList = useCallback(async () => {
+    try {
+      const r = await fetch('/api/sessions')
+      const data = await r.json() as any
+      setSessionsList((data.sessions || []).filter((s: any) => s.messageCount > 0))
+    } catch {}
+  }, [])
+
+  // Load a session requested from another tab (e.g. Sessions "Open in Chat")
+  useEffect(() => {
+    if (loadSessionId && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'load_session', session_id: loadSessionId }))
+      onSessionLoaded?.()
+    }
+  }, [loadSessionId])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -268,12 +305,28 @@ export default function Chat() {
       const msg = JSON.parse(e.data)
 
       if (msg.type === 'connected') {
+        setCurrentSessionId(msg.session_id)
         setMessages(prev => [...prev, {
           id: makeId(),
           role: 'system',
           content: `Connected. Session: ${msg.session_id}`,
           timestamp: Date.now(),
         }])
+      }
+      if (msg.type === 'session_loaded') {
+        setCurrentSessionId(msg.session_id)
+        // Replace messages with loaded session history
+        const loaded: ChatMessage[] = (msg.messages || []).map((m: any) => ({
+          id: makeId(),
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+          timestamp: Date.now(),
+        }))
+        setMessages([
+          { id: makeId(), role: 'system', content: `Loaded session: ${msg.session_id}`, timestamp: Date.now() },
+          ...loaded,
+        ])
+        setStreaming('')
       }
       if (msg.type === 'typing') {
         setTyping(msg.active)
@@ -284,14 +337,19 @@ export default function Chat() {
       }
       if (msg.type === 'response') {
         setTyping(false)
-        setMessages(prev => [...prev, {
-          id: makeId(),
-          role: 'assistant',
-          content: msg.content || '',
-          toolCalls: msg.tool_calls,
-          timestamp: Date.now(),
-        }])
-        setStreaming('')
+        // Use accumulated streaming content if available — msg.content only has the
+        // final LLM response (after tool calls), so it would wipe earlier streamed text.
+        setStreaming(prev => {
+          const finalContent = prev || msg.content || ''
+          setMessages(msgs => [...msgs, {
+            id: makeId(),
+            role: 'assistant',
+            content: finalContent,
+            toolCalls: msg.tool_calls,
+            timestamp: Date.now(),
+          }])
+          return ''
+        })
       }
       if (msg.type === 'error') {
         setMessages(prev => [...prev, {
@@ -483,10 +541,20 @@ export default function Chat() {
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button onClick={() => {
+            fetchSessionsList()
+            setShowSessionPicker(!showSessionPicker)
+          }} style={{
+            padding: '4px 12px', background: '#1a1a2e', color: '#888',
+            border: '1px solid #333', borderRadius: 4, cursor: 'pointer', fontSize: 11,
+          }}>
+            Sessions
+          </button>
+          <button onClick={() => {
             if (wsRef.current) {
               wsRef.current.send(JSON.stringify({ type: 'message', content: '/new' }))
               setMessages([])
               setStreaming('')
+              setCurrentSessionId(null)
             }
           }} style={{
             padding: '4px 12px', background: '#1a1a2e', color: '#888',
@@ -496,6 +564,44 @@ export default function Chat() {
           </button>
         </div>
       </div>
+
+      {/* Session picker dropdown */}
+      {showSessionPicker && (
+        <div style={{
+          position: 'absolute', top: 48, right: 20, zIndex: 100,
+          background: '#141414', border: '1px solid #333', borderRadius: 8,
+          maxHeight: 300, overflow: 'auto', width: 340, boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
+        }}>
+          <div style={{ padding: '8px 12px', borderBottom: '1px solid #222', fontSize: 12, color: '#888' }}>
+            Load a session
+          </div>
+          {sessionsList.length === 0 && (
+            <div style={{ padding: 16, color: '#555', fontSize: 12, textAlign: 'center' }}>No sessions with messages</div>
+          )}
+          {sessionsList.map(s => (
+            <div
+              key={s.id}
+              onClick={() => {
+                if (wsRef.current) {
+                  wsRef.current.send(JSON.stringify({ type: 'load_session', session_id: s.id }))
+                  setShowSessionPicker(false)
+                }
+              }}
+              style={{
+                padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid #1a1a1a',
+                fontSize: 12, transition: 'background 0.1s',
+              }}
+              onMouseEnter={e => (e.currentTarget.style.background = '#1a1a2e')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+            >
+              <div style={{ fontFamily: 'monospace', color: '#4fc3f7', fontSize: 11, marginBottom: 2 }}>{s.id}</div>
+              <div style={{ color: '#666', fontSize: 10 }}>
+                {s.channel} &middot; {s.messageCount} msgs &middot; {new Date(s.updatedAt).toLocaleString()}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Messages */}
       <div style={{ flex: 1, overflow: 'auto', padding: 20, display: 'flex', flexDirection: 'column', gap: 4 }}>

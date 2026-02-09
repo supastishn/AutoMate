@@ -188,6 +188,11 @@ export class Agent {
     this.presenceManager = pm;
   }
 
+  /** Expose session manager for external use (e.g. Discord /session command) */
+  getSessionManager(): SessionManager {
+    return this.sessionManager;
+  }
+
   /** Wire in the plugin manager */
   setPluginManager(pm: PluginManager): void {
     this.pluginManager = pm;
@@ -395,6 +400,10 @@ export class Agent {
                 args = JSON.parse(tc.function.arguments);
               } catch {
                 args = {};
+              }
+              // Notify stream that a tool is being used
+              if (onStream) {
+                onStream(`\n[used tool: ${tc.function.name}]\n`);
               }
               const result = await this.tools.execute(tc.function.name, args, ctx);
               toolCallResults.push({ name: tc.function.name, result: result.output || result.error || '' });
@@ -952,6 +961,9 @@ export class Agent {
               }
               let args: Record<string, unknown>;
               try { args = JSON.parse(tc.function.arguments); } catch { args = {}; }
+              if (onStream) {
+                onStream(`\n[used tool: ${tc.function.name}]\n`);
+              }
               const result = await this.tools.execute(tc.function.name, args, ctx);
               toolCallResults.push({ name: tc.function.name, result: result.output || result.error || '' });
               return { id: tc.id, result };
