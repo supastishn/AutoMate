@@ -127,9 +127,9 @@ export const ConfigSchema = z.object({
   }).default({}),
   sessions: z.object({
     directory: z.string().default('~/.automate/sessions'),
-    maxHistory: z.number().default(200),
-    compactThreshold: z.number().default(150),
-    autoResetHour: z.number().default(-1),   // -1 = disabled, 0-23 = hour to reset daily
+    contextLimit: z.number().default(120000),    // max tokens before auto-compact
+    compactAt: z.number().default(0.8),          // trigger at this fraction of contextLimit
+    autoResetHour: z.number().default(-1),       // -1 = disabled, 0-23 = hour to reset daily
   }).default({}),
   canvas: z.object({
     enabled: z.boolean().default(true),

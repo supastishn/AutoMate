@@ -106,8 +106,11 @@ export class SessionManager {
     session.messageCount++;
     session.updatedAt = new Date().toISOString();
 
-    // Auto-compact if over threshold
-    if (session.messages.length > this.config.sessions.maxHistory) {
+    // Auto-compact if estimated tokens exceed compactAt threshold
+    const tokenLimit = this.config.sessions.contextLimit;
+    const threshold = Math.floor(tokenLimit * this.config.sessions.compactAt);
+    const currentTokens = this.estimateTokensForMessages(session.messages);
+    if (currentTokens > threshold) {
       // Fire pre-compaction flush (async, don't block)
       if (this.onBeforeCompact) {
         const msgs = [...session.messages];
@@ -142,21 +145,26 @@ export class SessionManager {
     const session = this.sessions.get(sessionId);
     if (!session || session.messages.length < 10) return;
 
-    // Keep system messages + last N messages
-    const keepCount = Math.floor(this.config.sessions.maxHistory / 2);
+    // Target: trim until tokens <= 50% of contextLimit
+    const targetTokens = Math.floor(this.config.sessions.contextLimit * 0.5);
     const systemMsgs = session.messages.filter(m => m.role === 'system');
-    const recentMsgs = session.messages.filter(m => m.role !== 'system').slice(-keepCount);
+    const nonSystem = session.messages.filter(m => m.role !== 'system');
+
+    // Keep removing oldest non-system messages until under target
+    let kept = [...nonSystem];
+    while (kept.length > 2 && this.estimateTokensForMessages([...systemMsgs, ...kept]) > targetTokens) {
+      kept.shift();
+    }
     
-    // Add a summary marker
-    const compactedCount = session.messages.length - systemMsgs.length - recentMsgs.length;
+    const compactedCount = nonSystem.length - kept.length;
     if (compactedCount > 0) {
-      recentMsgs.unshift({
+      kept.unshift({
         role: 'system',
         content: `[Context compacted: ${compactedCount} earlier messages were removed to save context space]`,
       });
     }
     
-    session.messages = [...systemMsgs, ...recentMsgs];
+    session.messages = [...systemMsgs, ...kept];
     session.updatedAt = new Date().toISOString();
   }
 
@@ -167,35 +175,46 @@ export class SessionManager {
     if (session.messages.length < 5) return 'Session too short to compact.';
 
     const beforeCount = session.messages.length;
+    const beforeTokens = this.estimateTokensForMessages(session.messages);
+    const targetTokens = Math.floor(this.config.sessions.contextLimit * 0.33); // keep fewer when manual
     const systemMsgs = session.messages.filter(m => m.role === 'system');
-    const keepCount = Math.floor(this.config.sessions.maxHistory / 3); // keep fewer when manual
-    const recentMsgs = session.messages.filter(m => m.role !== 'system').slice(-keepCount);
-    const compactedCount = session.messages.length - systemMsgs.length - recentMsgs.length;
+    const nonSystem = session.messages.filter(m => m.role !== 'system');
+
+    let kept = [...nonSystem];
+    while (kept.length > 2 && this.estimateTokensForMessages([...systemMsgs, ...kept]) > targetTokens) {
+      kept.shift();
+    }
+    const compactedCount = nonSystem.length - kept.length;
 
     if (compactedCount > 0) {
-      recentMsgs.unshift({
+      kept.unshift({
         role: 'system',
         content: `[Context compacted: ${compactedCount} earlier messages removed. User instructions: ${instructions}]`,
       });
     }
 
-    session.messages = [...systemMsgs, ...recentMsgs];
+    session.messages = [...systemMsgs, ...kept];
     session.updatedAt = new Date().toISOString();
     this.saveSession(sessionId);
 
-    return `Compacted: ${beforeCount} → ${session.messages.length} messages (removed ${compactedCount}). Instructions noted: "${instructions}"`;
+    const afterTokens = this.estimateTokensForMessages(session.messages);
+    return `Compacted: ${beforeCount} → ${session.messages.length} messages (~${beforeTokens} → ~${afterTokens} tokens). Instructions noted: "${instructions}"`;
   }
 
-  /** Get approximate token count of all messages in a session */
-  estimateTokens(sessionId: string): number {
-    const messages = this.getMessages(sessionId);
-    // Rough estimate: 1 token ≈ 4 chars
+  /** Estimate tokens for an arbitrary array of messages */
+  private estimateTokensForMessages(messages: LLMMessage[]): number {
     let chars = 0;
     for (const m of messages) {
       if (m.content) chars += m.content.length;
       if (m.tool_calls) chars += JSON.stringify(m.tool_calls).length;
     }
     return Math.ceil(chars / 4);
+  }
+
+  /** Get approximate token count of all messages in a session */
+  estimateTokens(sessionId: string): number {
+    const messages = this.getMessages(sessionId);
+    return this.estimateTokensForMessages(messages);
   }
 
   getMessages(sessionId: string): LLMMessage[] {
