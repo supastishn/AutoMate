@@ -19,11 +19,29 @@ export class SessionManager {
   private sessions: Map<string, Session> = new Map();
   private config: Config;
   private dir: string;
+  private resetTimer: NodeJS.Timeout | null = null;
 
   constructor(config: Config) {
     this.config = config;
     this.dir = config.sessions.directory;
     this.loadAll();
+    this.startAutoReset();
+  }
+
+  private startAutoReset(): void {
+    const hour = (this.config.sessions as any).autoResetHour;
+    if (hour === undefined || hour < 0 || hour > 23) return;
+
+    // Check every 60 seconds if it's time to reset
+    this.resetTimer = setInterval(() => {
+      const now = new Date();
+      if (now.getHours() === hour && now.getMinutes() === 0) {
+        console.log(`[session] Auto-reset triggered at ${now.toISOString()}`);
+        for (const [id] of this.sessions) {
+          this.resetSession(id);
+        }
+      }
+    }, 60000);
   }
 
   private sessionPath(id: string): string {
@@ -73,6 +91,14 @@ export class SessionManager {
     }));
   }
 
+  // Callback for pre-compaction memory flush
+  private onBeforeCompact: ((sessionId: string, messages: LLMMessage[]) => Promise<void>) | null = null;
+
+  /** Register a callback that runs before compaction to save memories */
+  setBeforeCompactHook(fn: (sessionId: string, messages: LLMMessage[]) => Promise<void>): void {
+    this.onBeforeCompact = fn;
+  }
+
   addMessage(sessionId: string, message: LLMMessage): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
@@ -82,6 +108,11 @@ export class SessionManager {
 
     // Auto-compact if over threshold
     if (session.messages.length > this.config.sessions.maxHistory) {
+      // Fire pre-compaction flush (async, don't block)
+      if (this.onBeforeCompact) {
+        const msgs = [...session.messages];
+        this.onBeforeCompact(sessionId, msgs).catch(() => {});
+      }
       this.compact(sessionId);
     }
   }
@@ -127,6 +158,44 @@ export class SessionManager {
     
     session.messages = [...systemMsgs, ...recentMsgs];
     session.updatedAt = new Date().toISOString();
+  }
+
+  /** Compact with custom instructions about what to keep */
+  compactWithInstructions(sessionId: string, instructions: string): string {
+    const session = this.sessions.get(sessionId);
+    if (!session) return 'No active session.';
+    if (session.messages.length < 5) return 'Session too short to compact.';
+
+    const beforeCount = session.messages.length;
+    const systemMsgs = session.messages.filter(m => m.role === 'system');
+    const keepCount = Math.floor(this.config.sessions.maxHistory / 3); // keep fewer when manual
+    const recentMsgs = session.messages.filter(m => m.role !== 'system').slice(-keepCount);
+    const compactedCount = session.messages.length - systemMsgs.length - recentMsgs.length;
+
+    if (compactedCount > 0) {
+      recentMsgs.unshift({
+        role: 'system',
+        content: `[Context compacted: ${compactedCount} earlier messages removed. User instructions: ${instructions}]`,
+      });
+    }
+
+    session.messages = [...systemMsgs, ...recentMsgs];
+    session.updatedAt = new Date().toISOString();
+    this.saveSession(sessionId);
+
+    return `Compacted: ${beforeCount} → ${session.messages.length} messages (removed ${compactedCount}). Instructions noted: "${instructions}"`;
+  }
+
+  /** Get approximate token count of all messages in a session */
+  estimateTokens(sessionId: string): number {
+    const messages = this.getMessages(sessionId);
+    // Rough estimate: 1 token ≈ 4 chars
+    let chars = 0;
+    for (const m of messages) {
+      if (m.content) chars += m.content.length;
+      if (m.tool_calls) chars += JSON.stringify(m.tool_calls).length;
+    }
+    return Math.ceil(chars / 4);
   }
 
   getMessages(sessionId: string): LLMMessage[] {

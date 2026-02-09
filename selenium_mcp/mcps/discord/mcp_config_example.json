@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "discord": {
-      "command": "python3",
-      "args": ["/data/data/com.termux/files/home/prog/selenium_mcp/mcps/discord/discord_mcp_server.py"],
-      "env": {}
-    }
-  }
-}

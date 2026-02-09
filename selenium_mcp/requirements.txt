@@ -1,8 +1,0 @@
-mcp>=1.0.0
-selenium>=4.15.0
-undetected-chromedriver>=3.5.0
-selenium-stealth>=1.0.6
-pyvirtualdisplay>=3.0
-robotexclusionrulesparser>=1.7.0
-2captcha-python>=2.0.0
-anticaptchaofficial>=1.0.0
