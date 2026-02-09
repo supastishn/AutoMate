@@ -65,8 +65,9 @@ program
       if (r.files > 0) console.log(`[memory] Indexed ${r.files} files (${r.indexed} chunks)`);
     }).catch(() => {/* embedding service may not be available yet */});
 
-    // Declare heartbeatManager reference early so scheduler can use it
+    // Declare references early so scheduler callback can use them
     let heartbeatManager: any;
+    let discord: DiscordChannel | undefined;
 
     // Init scheduler (cron jobs)
     let scheduler: Scheduler | undefined;
@@ -80,7 +81,14 @@ program
           return;
         }
         const sessionId = job.sessionId || `cron:${job.id}:${Date.now()}`;
-        agent.processMessage(sessionId, job.prompt).catch(err => {
+        agent.processMessage(sessionId, job.prompt).then(result => {
+          // Send cron results to Discord if configured
+          if (discord && result?.content) {
+            discord.sendProactive(`**[Cron: ${job.name}]**\n${result.content}`, sessionId).catch(err => {
+              console.error(`[cron] Discord proactive send failed: ${err}`);
+            });
+          }
+        }).catch(err => {
           console.error(`[cron] Job "${job.name}" failed: ${err}`);
         });
       });
@@ -126,7 +134,6 @@ program
     await gateway.start();
 
     // Start Discord if configured
-    let discord: DiscordChannel | undefined;
     if (config.channels.discord.enabled && config.channels.discord.token) {
       discord = new DiscordChannel(config, agent);
       await discord.start();
