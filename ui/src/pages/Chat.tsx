@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react'
+import { emitDataUpdate } from '../hooks/useDataUpdates'
 
 const SLASH_COMMANDS = [
   { cmd: '/new', desc: 'Start a new session' },
@@ -400,6 +401,10 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           content: `Error: ${msg.message}`,
           timestamp: Date.now(),
         }])
+      }
+      // Forward data_update events to the shared event bus
+      if (msg.type === 'data_update') {
+        emitDataUpdate(msg.resource, msg.data)
       }
       // Handle image events
       if (msg.type === 'image') {

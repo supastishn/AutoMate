@@ -155,13 +155,11 @@ export default function Skills() {
 
       <div style={card}>
         <h3 style={{ fontSize: 16, marginBottom: 12 }}>ClawHub Registry</h3>
-        <div style={{ fontSize: 13, color: '#888', marginBottom: 8 }}>
-          Browse and install community skills from the ClawHub registry:
+        <div style={{ fontSize: 13, color: '#888', marginBottom: 12 }}>
+          Browse and install community skills from the ClawHub registry. Preview skills with security scanning before installing.
         </div>
-        <div style={{ fontSize: 13, fontFamily: 'monospace', color: '#e0e0e0', background: '#0a0a0a', padding: 8, borderRadius: 4, lineHeight: 1.8 }}>
-          <div>automate clawhub browse</div>
-          <div>automate clawhub search &lt;query&gt;</div>
-          <div>automate clawhub install &lt;repo&gt;</div>
+        <div style={{ fontSize: 13 }}>
+          Visit the <strong style={{ color: '#4fc3f7' }}>ClawHub</strong> tab in the sidebar to browse, search, install, and manage community skills.
         </div>
       </div>
     </div>

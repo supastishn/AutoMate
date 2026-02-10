@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { onDataUpdate } from '../hooks/useDataUpdates'
 
 // ── Types matching /api/dashboard response ──────────────────────────────
 
@@ -53,6 +54,11 @@ interface DashboardData {
   plugins: PluginInfo[]
 }
 
+interface InlineStatus {
+  message: string
+  type: 'success' | 'error'
+}
+
 // ── Styles ──────────────────────────────────────────────────────────────
 
 const card: React.CSSProperties = {
@@ -74,7 +80,6 @@ const pillRed: React.CSSProperties = { ...pill, background: '#2e1a1a', color: '#
 const mono: React.CSSProperties = { fontFamily: 'monospace', fontSize: 12, color: '#aaa' }
 const grid2: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }
 const grid3: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }
-const grid4: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -127,6 +132,15 @@ export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null)
   const [error, setError] = useState('')
   const [expandedSessions, setExpandedSessions] = useState(false)
+  const [indexStatus, setIndexStatus] = useState<InlineStatus | null>(null)
+  const [heartbeatStatus, setHeartbeatStatus] = useState<InlineStatus | null>(null)
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768)
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
 
   const fetchData = async () => {
     try {
@@ -141,9 +155,47 @@ export default function Dashboard() {
 
   useEffect(() => {
     fetchData()
-    const i = setInterval(fetchData, 5000)
+    const i = setInterval(fetchData, 30000)
     return () => clearInterval(i)
   }, [])
+
+  // Refetch when any relevant resource changes via WebSocket
+  useEffect(() => {
+    return onDataUpdate((resource) => {
+      if (['cron', 'plugins', 'tools', 'memory_files', 'sessions'].includes(resource)) {
+        fetchData()
+      }
+    })
+  }, [])
+
+  const showInlineStatus = (
+    setter: React.Dispatch<React.SetStateAction<InlineStatus | null>>,
+    message: string,
+    type: 'success' | 'error'
+  ) => {
+    setter({ message, type })
+    setTimeout(() => setter(null), 3000)
+  }
+
+  const handleIndexAction = (action: string) => {
+    fetch('/api/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command: `/index ${action}` }) })
+      .then(r => r.json())
+      .then((d: any) => showInlineStatus(setIndexStatus, d.result || 'Done', 'success'))
+      .catch(() => showInlineStatus(setIndexStatus, 'Command failed', 'error'))
+  }
+
+  const handleHeartbeatAction = (action: string) => {
+    fetch('/api/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command: `/heartbeat ${action}` }) })
+      .then(r => r.json())
+      .then((d: any) => showInlineStatus(setHeartbeatStatus, d.result || 'Done', 'success'))
+      .catch(() => showInlineStatus(setHeartbeatStatus, 'Command failed', 'error'))
+  }
+
+  const grid4Style: React.CSSProperties = {
+    display: 'grid',
+    gridTemplateColumns: isMobile ? '1fr 1fr' : '1fr 1fr 1fr 1fr',
+    gap: 12,
+  }
 
   if (error) return (
     <div style={{ padding: 40, color: '#f44336', textAlign: 'center' }}>
@@ -175,7 +227,7 @@ export default function Dashboard() {
       </div>
 
       {/* ── Top Stats Row ──────────────────────────────────────────── */}
-      <div style={grid4}>
+      <div style={grid4Style}>
         <StatCard label="UPTIME" value={fmtUptime(data.uptime)} />
         <StatCard label="MODEL" value={data.model.split('/').pop() || data.model} color="#4fc3f7" />
         <StatCard label="SESSIONS" value={sessions.total} />
@@ -185,7 +237,7 @@ export default function Dashboard() {
       {/* ── Tool Loading Stats ─────────────────────────────────────── */}
       <div style={{ ...card, marginTop: 4 }}>
         <div style={sectionTitle}>Tool Registry</div>
-        <div style={grid4}>
+        <div style={grid4Style}>
           <div>
             <div style={{ ...statNum, fontSize: 22 }}>{tools.coreToolCount}</div>
             <div style={statLabel}>CORE (ALWAYS LOADED)</div>
@@ -364,10 +416,7 @@ export default function Dashboard() {
           <div style={sectionTitle}>Index Controls</div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {['on', 'off', 'rebuild'].map(action => (
-              <button key={action} onClick={() => {
-                fetch('/api/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command: `/index ${action}` }) })
-                  .then(r => r.json()).then((d: any) => alert(d.result || 'Done')).catch(() => {})
-              }} style={{
+              <button key={action} onClick={() => handleIndexAction(action)} style={{
                 padding: '6px 16px', background: '#1a1a2e', color: '#4fc3f7',
                 border: '1px solid #333', borderRadius: 4, cursor: 'pointer', fontSize: 12,
                 textTransform: 'capitalize' as const,
@@ -376,15 +425,26 @@ export default function Dashboard() {
               </button>
             ))}
           </div>
+          {indexStatus && (
+            <div style={{
+              marginTop: 8,
+              fontSize: 12,
+              fontFamily: 'monospace',
+              padding: '6px 10px',
+              borderRadius: 4,
+              background: indexStatus.type === 'success' ? 'rgba(76,175,80,0.1)' : 'rgba(244,67,54,0.1)',
+              color: indexStatus.type === 'success' ? '#4caf50' : '#f44336',
+              border: `1px solid ${indexStatus.type === 'success' ? '#4caf50' : '#f44336'}`,
+            }}>
+              {indexStatus.message}
+            </div>
+          )}
         </div>
         <div style={card}>
           <div style={sectionTitle}>Heartbeat Controls</div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {['on', 'off', 'now'].map(action => (
-              <button key={action} onClick={() => {
-                fetch('/api/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command: `/heartbeat ${action}` }) })
-                  .then(r => r.json()).then((d: any) => alert(d.result || 'Done')).catch(() => {})
-              }} style={{
+              <button key={action} onClick={() => handleHeartbeatAction(action)} style={{
                 padding: '6px 16px', background: '#1a1a2e', color: '#4fc3f7',
                 border: '1px solid #333', borderRadius: 4, cursor: 'pointer', fontSize: 12,
                 textTransform: 'capitalize' as const,
@@ -393,6 +453,20 @@ export default function Dashboard() {
               </button>
             ))}
           </div>
+          {heartbeatStatus && (
+            <div style={{
+              marginTop: 8,
+              fontSize: 12,
+              fontFamily: 'monospace',
+              padding: '6px 10px',
+              borderRadius: 4,
+              background: heartbeatStatus.type === 'success' ? 'rgba(76,175,80,0.1)' : 'rgba(244,67,54,0.1)',
+              color: heartbeatStatus.type === 'success' ? '#4caf50' : '#f44336',
+              border: `1px solid ${heartbeatStatus.type === 'success' ? '#4caf50' : '#f44336'}`,
+            }}>
+              {heartbeatStatus.message}
+            </div>
+          )}
         </div>
       </div>
     </div>

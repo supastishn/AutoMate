@@ -15,6 +15,7 @@ import type { WebSocket } from 'ws';
 import { setCanvasBroadcaster, getCanvas, getAllCanvases, type CanvasEvent } from '../canvas/canvas-manager.js';
 import { setImageBroadcaster, type ImageEvent } from '../agent/tools/image.js';
 import { PresenceManager, type PresenceEvent, type TypingEvent } from './presence.js';
+import { fetchRegistry, searchSkills, fetchSkillContent, vetSkillContent, formatVetResult, installSkill, uninstallSkill, updateSkill, updateAllSkills, listInstalled } from '../clawhub/registry.js';
 
 interface ContextInfo {
   used: number;
@@ -150,6 +151,51 @@ export class GatewayServer {
     this.app.delete<{ Params: { id: string } }>('/api/sessions/:id', async (req) => {
       this.sessionManager.deleteSession(req.params.id);
       return { ok: true };
+    });
+
+    // Export session as downloadable JSON
+    this.app.get<{ Params: { id: string } }>('/api/sessions/:id/export', async (req, reply) => {
+      const session = this.sessionManager.getSession(req.params.id);
+      if (!session) return reply.code(404).send({ error: 'Session not found' });
+      const exportData = {
+        version: '1.0',
+        exportedAt: new Date().toISOString(),
+        session: {
+          id: session.id,
+          channel: session.channel,
+          userId: session.userId,
+          messages: session.messages,
+          createdAt: session.createdAt,
+          updatedAt: session.updatedAt,
+        },
+      };
+      reply.header('Content-Type', 'application/json');
+      reply.header('Content-Disposition', `attachment; filename="session-${session.id.replace(/[^a-zA-Z0-9-_]/g, '_')}.json"`);
+      return exportData;
+    });
+
+    // Import session from JSON
+    this.app.post<{ Body: { session: any } }>('/api/sessions/import', async (req, reply) => {
+      try {
+        const importData = (req.body as any).session || req.body;
+        if (!importData.messages || !Array.isArray(importData.messages)) {
+          return reply.code(400).send({ error: 'Invalid session format: missing messages array' });
+        }
+        const channel = importData.channel || 'imported';
+        const userId = importData.userId || 'import';
+        this.sessionManager.getOrCreate(channel, userId);
+        // Restore messages
+        for (const msg of importData.messages) {
+          this.sessionManager.addMessage(`${channel}:${userId}`, {
+            role: msg.role,
+            content: msg.content || '',
+            ...(msg.tool_calls ? { tool_calls: msg.tool_calls } : {}),
+          });
+        }
+        return { ok: true, sessionId: `${channel}:${userId}`, messageCount: importData.messages.length };
+      } catch (err: any) {
+        return reply.code(400).send({ error: err.message || 'Import failed' });
+      }
     });
 
     // Config (read only, safe subset for backward compat)
@@ -378,6 +424,7 @@ export class GatewayServer {
       if (!scheduler) return { error: 'Scheduler not available' };
       const { name, prompt, schedule, sessionId } = req.body;
       const job = scheduler.addJob(name, prompt, schedule, sessionId);
+      this.broadcastDataUpdate('cron', scheduler.listJobs());
       return { ok: true, job };
     });
 
@@ -385,6 +432,7 @@ export class GatewayServer {
       const scheduler = this.agent.getScheduler();
       if (!scheduler) return { error: 'Scheduler not available' };
       scheduler.removeJob(req.params.id);
+      this.broadcastDataUpdate('cron', scheduler.listJobs());
       return { ok: true };
     });
 
@@ -398,6 +446,7 @@ export class GatewayServer {
       } else {
         scheduler.enableJob(req.params.id);
       }
+      this.broadcastDataUpdate('cron', scheduler.listJobs());
       return { ok: true, enabled: !job.enabled };
     });
 
@@ -419,6 +468,7 @@ export class GatewayServer {
       const mm = this.agent.getMemoryManager();
       if (!mm) return { error: 'Memory manager not available' };
       mm.saveIdentityFile(req.params.name, req.body.content);
+      this.broadcastDataUpdate('memory_files');
       return { ok: true };
     });
 
@@ -441,6 +491,7 @@ export class GatewayServer {
       if (!pm) return { error: 'Plugin manager not available' };
       await pm.loadAll();
       this.agent.refreshPluginTools();
+      this.broadcastDataUpdate('plugins', pm.getPlugins());
       return { ok: true, plugins: pm.getPlugins() };
     });
 
@@ -451,6 +502,7 @@ export class GatewayServer {
         const { PluginManager } = await import('../plugins/manager.js');
         const pluginDir = this.config.plugins?.directory || join(this.config.memory.directory, 'plugins');
         PluginManager.scaffold(pluginDir, req.body.name, (req.body.type || 'tool') as any);
+        this.broadcastDataUpdate('plugins');
         return { ok: true, name: req.body.name };
       } catch (err: any) {
         return reply.code(400).send({ error: err.message });
@@ -514,6 +566,7 @@ export class GatewayServer {
       const sessionId = req.body.sessionId || 'webchat:api:default';
       const view = this.agent.getToolRegistry().getSessionView(sessionId);
       const result = view.promote(req.body.name);
+      this.broadcastDataUpdate('tools');
       return result;
     });
 
@@ -521,6 +574,7 @@ export class GatewayServer {
       const sessionId = req.body.sessionId || 'webchat:api:default';
       const view = this.agent.getToolRegistry().getSessionView(sessionId);
       const result = view.demote(req.body.name);
+      this.broadcastDataUpdate('tools');
       return result;
     });
 
@@ -534,6 +588,59 @@ export class GatewayServer {
       const llm = this.agent.getLLM();
       const result = llm.switchModel(req.body.name);
       return result;
+    });
+
+    // ── ClawHub API ───────────────────────────────────────────────────
+    this.app.get('/api/clawhub/browse', async () => {
+      const skills = await fetchRegistry();
+      return { skills };
+    });
+
+    this.app.get<{ Querystring: { q?: string } }>('/api/clawhub/search', async (req) => {
+      const q = (req.query as any).q || '';
+      if (!q) return { skills: await fetchRegistry() };
+      const skills = await searchSkills(q);
+      return { skills };
+    });
+
+    this.app.post<{ Body: { repo: string } }>('/api/clawhub/preview', async (req) => {
+      const fetched = await fetchSkillContent(req.body.repo);
+      if ('error' in fetched) return { error: fetched.error };
+      const vet = vetSkillContent(fetched.content);
+      return { repo: fetched.repo, content: fetched.content, vet };
+    });
+
+    this.app.post<{ Body: { repo: string } }>('/api/clawhub/install', async (req) => {
+      const skillsDir = this.config.skills.directory;
+      const result = await installSkill(req.body.repo, skillsDir);
+      if (result.success) this.broadcastDataUpdate('skills');
+      return result;
+    });
+
+    this.app.post<{ Body: { name: string } }>('/api/clawhub/uninstall', async (req) => {
+      const skillsDir = this.config.skills.directory;
+      const result = uninstallSkill(req.body.name, skillsDir);
+      if (result.success) this.broadcastDataUpdate('skills');
+      return result;
+    });
+
+    this.app.post<{ Body: { name?: string; all?: boolean } }>('/api/clawhub/update', async (req) => {
+      const skillsDir = this.config.skills.directory;
+      if (req.body.all) {
+        const result = await updateAllSkills(skillsDir);
+        this.broadcastDataUpdate('skills');
+        return result;
+      }
+      if (!req.body.name) return { success: false, error: 'name or all=true required' };
+      const result = await updateSkill(req.body.name, skillsDir);
+      if (result.success) this.broadcastDataUpdate('skills');
+      return result;
+    });
+
+    this.app.get('/api/clawhub/installed', async () => {
+      const skillsDir = this.config.skills.directory;
+      const installed = listInstalled(skillsDir);
+      return { installed };
     });
   }
 
@@ -677,6 +784,13 @@ export class GatewayServer {
         this.canvasClients.delete(clientId);
       });
     });
+  }
+
+  private broadcastDataUpdate(resource: string, data?: any): void {
+    const msg = JSON.stringify({ type: 'data_update', resource, data });
+    for (const [, client] of this.webChatClients) {
+      try { client.ws.send(msg); } catch {}
+    }
   }
 
   async stop(): Promise<void> {

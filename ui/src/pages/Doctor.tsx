@@ -21,6 +21,13 @@ const dotColor: Record<Severity, string> = {
   info: "#4fc3f7",
 };
 
+const fadeInKeyframes = `
+@keyframes doctor-fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+`;
+
 const styles: Record<string, React.CSSProperties> = {
   page: {
     background: "#0a0a0a",
@@ -70,6 +77,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     gap: 32,
     alignItems: "center",
+    flexWrap: "wrap" as const,
   },
   summaryBadge: {
     fontSize: 16,
@@ -120,12 +128,16 @@ const styles: Record<string, React.CSSProperties> = {
 const Doctor: React.FC = () => {
   const [data, setData] = React.useState<DoctorResponse | null>(null);
   const [loading, setLoading] = React.useState(true);
+  const [lastRun, setLastRun] = React.useState<Date | null>(null);
 
   const fetchAudit = React.useCallback(() => {
     setLoading(true);
     fetch("/api/doctor")
       .then((r) => r.json())
-      .then((d: DoctorResponse) => setData(d))
+      .then((d: DoctorResponse) => {
+        setData(d);
+        setLastRun(new Date());
+      })
       .catch(() => setData(null))
       .finally(() => setLoading(false));
   }, []);
@@ -134,17 +146,29 @@ const Doctor: React.FC = () => {
     fetchAudit();
   }, [fetchAudit]);
 
+  const fadeInStyle: React.CSSProperties = {
+    animation: "doctor-fade-in 0.4s ease-out",
+  };
+
   return (
     <div style={styles.page}>
+      <style>{fadeInKeyframes}</style>
       <div style={styles.header}>
         <h1 style={styles.title}>Security Audit</h1>
-        <button
-          style={loading ? styles.buttonDisabled : styles.button}
-          disabled={loading}
-          onClick={fetchAudit}
-        >
-          Re-run Audit
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          {lastRun && (
+            <span style={{ fontSize: 12, color: "#666", fontFamily: "monospace" }}>
+              Last run: {lastRun.toLocaleTimeString()}
+            </span>
+          )}
+          <button
+            style={loading ? styles.buttonDisabled : styles.button}
+            disabled={loading}
+            onClick={fetchAudit}
+          >
+            Re-run Audit
+          </button>
+        </div>
       </div>
 
       {loading && (
@@ -152,7 +176,7 @@ const Doctor: React.FC = () => {
       )}
 
       {!loading && data && (
-        <>
+        <div style={fadeInStyle}>
           {/* Summary */}
           <div style={styles.summaryCard}>
             <span style={{ ...styles.summaryBadge, color: "#4caf50" }}>
@@ -221,7 +245,7 @@ const Doctor: React.FC = () => {
               </div>
             </div>
           )}
-        </>
+        </div>
       )}
 
       {!loading && !data && (

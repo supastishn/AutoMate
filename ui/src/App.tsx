@@ -1,16 +1,26 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, Suspense, lazy } from 'react'
 import Dashboard from './pages/Dashboard'
 import Chat from './pages/Chat'
-import Sessions from './pages/Sessions'
-import Skills from './pages/Skills'
-import Canvas from './pages/Canvas'
-import Settings from './pages/Settings'
-import Cron from './pages/Cron'
-import Memory from './pages/Memory'
-import Plugins from './pages/Plugins'
-import Doctor from './pages/Doctor'
 
-const tabs = ['Dashboard', 'Chat', 'Canvas', 'Sessions', 'Skills', 'Cron', 'Memory', 'Plugins', 'Settings', 'Doctor'] as const
+const Canvas = lazy(() => import('./pages/Canvas'))
+const Sessions = lazy(() => import('./pages/Sessions'))
+const Skills = lazy(() => import('./pages/Skills'))
+const ClawHub = lazy(() => import('./pages/ClawHub'))
+const Cron = lazy(() => import('./pages/Cron'))
+const Memory = lazy(() => import('./pages/Memory'))
+const Plugins = lazy(() => import('./pages/Plugins'))
+const Settings = lazy(() => import('./pages/Settings'))
+const Doctor = lazy(() => import('./pages/Doctor'))
+
+function LoadingFallback() {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>
+      Loading...
+    </div>
+  )
+}
+
+const tabs = ['Dashboard', 'Chat', 'Canvas', 'Sessions', 'Skills', 'ClawHub', 'Cron', 'Memory', 'Plugins', 'Settings', 'Doctor'] as const
 type Tab = typeof tabs[number]
 
 const tabIcons: Record<Tab, string> = {
@@ -19,6 +29,7 @@ const tabIcons: Record<Tab, string> = {
   Canvas: '\u{1F3A8}',
   Sessions: '\u{1F4C1}',
   Skills: '\u26A1',
+  ClawHub: '\u{1F4E6}',
   Cron: '\u23F0',
   Memory: '\u{1F9E0}',
   Plugins: '\u{1F50C}',
@@ -114,14 +125,17 @@ export default function App() {
       <div style={{ flex: 1, overflow: 'auto', marginLeft: isMobile ? 0 : undefined }}>
         {tab === 'Dashboard' && <Dashboard />}
         {tab === 'Chat' && <Chat loadSessionId={loadSessionId} onSessionLoaded={() => setLoadSessionId(null)} />}
-        {tab === 'Canvas' && <Canvas />}
-        {tab === 'Sessions' && <Sessions onOpenInChat={(id) => { setLoadSessionId(id); setTab('Chat') }} />}
-        {tab === 'Skills' && <Skills />}
-        {tab === 'Settings' && <Settings />}
-        {tab === 'Cron' && <Cron />}
-        {tab === 'Memory' && <Memory />}
-        {tab === 'Plugins' && <Plugins />}
-        {tab === 'Doctor' && <Doctor />}
+        <Suspense fallback={<LoadingFallback />}>
+          {tab === 'Canvas' && <Canvas />}
+          {tab === 'Sessions' && <Sessions onOpenInChat={(id) => { setLoadSessionId(id); setTab('Chat') }} />}
+          {tab === 'Skills' && <Skills />}
+          {tab === 'ClawHub' && <ClawHub />}
+          {tab === 'Settings' && <Settings />}
+          {tab === 'Cron' && <Cron />}
+          {tab === 'Memory' && <Memory />}
+          {tab === 'Plugins' && <Plugins />}
+          {tab === 'Doctor' && <Doctor />}
+        </Suspense>
       </div>
     </div>
   )

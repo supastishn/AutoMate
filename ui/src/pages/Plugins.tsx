@@ -1,4 +1,5 @@
 import React from 'react'
+import { onDataUpdate } from '../hooks/useDataUpdates'
 
 interface PluginTool {
   name: string
@@ -18,6 +19,13 @@ interface Plugin {
   channel?: unknown
   middleware?: unknown
 }
+
+const skeletonKeyframes = `
+@keyframes plugin-shimmer {
+  0% { background-position: -200px 0; }
+  100% { background-position: 200px 0; }
+}
+`
 
 const card: React.CSSProperties = {
   background: '#141414',
@@ -64,9 +72,38 @@ function typeBadgeColor(type: string): string {
   }
 }
 
+function SkeletonCard() {
+  const shimmerBg = 'linear-gradient(90deg, #1a1a1a 25%, #242424 50%, #1a1a1a 75%)'
+  const barStyle = (width: string, height: number): React.CSSProperties => ({
+    width,
+    height,
+    borderRadius: 4,
+    background: shimmerBg,
+    backgroundSize: '400px 100%',
+    animation: 'plugin-shimmer 1.5s infinite linear',
+  })
+  return (
+    <div style={{ ...card }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+        <div style={barStyle('120px', 16)} />
+        <div style={barStyle('40px', 14)} />
+        <div style={{ ...barStyle('50px', 14), marginLeft: 'auto' }} />
+      </div>
+      <div style={barStyle('90%', 12)} />
+      <div style={{ ...barStyle('60%', 12), marginTop: 6 }} />
+      <div style={{ marginTop: 14, display: 'flex', gap: 6 }}>
+        <div style={barStyle('60px', 22)} />
+        <div style={barStyle('80px', 22)} />
+        <div style={barStyle('70px', 22)} />
+      </div>
+    </div>
+  )
+}
+
 export default function Plugins() {
   const [plugins, setPlugins] = React.useState<Plugin[]>([])
   const [loading, setLoading] = React.useState(true)
+  const [error, setError] = React.useState<string | null>(null)
   const [reloading, setReloading] = React.useState(false)
   const [scaffoldName, setScaffoldName] = React.useState('')
   const [scaffoldType, setScaffoldType] = React.useState<'tool' | 'channel' | 'middleware'>('tool')
@@ -74,18 +111,32 @@ export default function Plugins() {
 
   const fetchPlugins = React.useCallback(() => {
     fetch('/api/plugins')
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.json()
+      })
       .then((data: any) => {
         setPlugins(data.plugins || [])
+        setError(null)
         setLoading(false)
       })
-      .catch(() => setLoading(false))
+      .catch((e: any) => {
+        setError(e.message ?? 'Failed to fetch plugins')
+        setLoading(false)
+      })
   }, [])
 
   React.useEffect(() => {
     fetchPlugins()
-    const interval = setInterval(fetchPlugins, 5000)
+    const interval = setInterval(fetchPlugins, 30000)
     return () => clearInterval(interval)
+  }, [fetchPlugins])
+
+  // Refetch when plugins change via WebSocket push
+  React.useEffect(() => {
+    return onDataUpdate((resource) => {
+      if (resource === 'plugins') fetchPlugins()
+    })
   }, [fetchPlugins])
 
   const handleReload = () => {
@@ -116,6 +167,7 @@ export default function Plugins() {
 
   return (
     <div style={{ padding: 30, maxWidth: 960, background: '#0a0a0a', minHeight: '100vh' }}>
+      <style>{skeletonKeyframes}</style>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
         <h1 style={{ fontSize: 24, fontWeight: 600, margin: 0, color: '#e0e0e0' }}>Plugins</h1>
@@ -179,15 +231,55 @@ export default function Plugins() {
         )}
       </div>
 
+      {/* Error state */}
+      {error && !loading && (
+        <div style={{
+          padding: '12px 16px',
+          background: 'rgba(244,67,54,0.1)',
+          border: '1px solid #f44336',
+          borderRadius: 6,
+          color: '#f44336',
+          fontSize: 13,
+          marginBottom: 16,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}>
+          <span>Failed to load plugins: {error}</span>
+          <button
+            onClick={() => setError(null)}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#f44336',
+              cursor: 'pointer',
+              fontSize: 18,
+              lineHeight: 1,
+              padding: '0 4px',
+              fontWeight: 700,
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       {/* Plugin list */}
       {loading ? (
-        <div style={{ color: '#666', fontSize: 13 }}>Loading plugins...</div>
-      ) : plugins.length === 0 ? (
-        <div style={{ ...card, color: '#666', fontSize: 13 }}>
-          No plugins installed. Use the scaffold form above or install plugins manually.
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: 16 }}>
+          <SkeletonCard />
+          <SkeletonCard />
+          <SkeletonCard />
+        </div>
+      ) : plugins.length === 0 && !error ? (
+        <div style={{ ...card, textAlign: 'center' as const, padding: 40 }}>
+          <div style={{ fontSize: 32, marginBottom: 8, opacity: 0.3 }}>🧩</div>
+          <div style={{ color: '#666', fontSize: 13 }}>
+            No plugins installed. Use the scaffold form above or install plugins manually.
+          </div>
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380, 1fr))', gap: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: 16 }}>
           {plugins.map(p => {
             const m = p.manifest
             const badgeColor = typeBadgeColor(m.type)

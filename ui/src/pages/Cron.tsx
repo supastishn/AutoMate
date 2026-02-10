@@ -1,4 +1,5 @@
 import React from 'react'
+import { onDataUpdate } from '../hooks/useDataUpdates'
 
 interface CronJob {
   id: string
@@ -34,6 +35,13 @@ const colors = {
   textSecondary: '#888',
 }
 
+const spinnerKeyframes = `
+@keyframes cron-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+`
+
 const styles: Record<string, React.CSSProperties> = {
   page: {
     background: colors.bg,
@@ -56,7 +64,6 @@ const styles: Record<string, React.CSSProperties> = {
   },
   grid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))',
     gap: '16px',
     marginBottom: '32px',
   },
@@ -271,6 +278,13 @@ function Cron() {
     sessionId: '',
   })
   const [creating, setCreating] = React.useState(false)
+  const [isMobile, setIsMobile] = React.useState(window.innerWidth < 360)
+
+  React.useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 360)
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
 
   const fetchJobs = React.useCallback(async () => {
     try {
@@ -288,8 +302,15 @@ function Cron() {
 
   React.useEffect(() => {
     fetchJobs()
-    const interval = setInterval(fetchJobs, 5000)
+    const interval = setInterval(fetchJobs, 30000)
     return () => clearInterval(interval)
+  }, [fetchJobs])
+
+  // Refetch when cron data changes via WebSocket push
+  React.useEffect(() => {
+    return onDataUpdate((resource) => {
+      if (resource === 'cron') fetchJobs()
+    })
   }, [fetchJobs])
 
   const toggleJob = async (id: string) => {
@@ -347,8 +368,14 @@ function Cron() {
     }
   }
 
+  const gridStyle: React.CSSProperties = {
+    ...styles.grid,
+    gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(360px, 1fr))',
+  }
+
   return (
     <div style={styles.page}>
+      <style>{spinnerKeyframes}</style>
       <div style={styles.header}>
         <h1 style={styles.title}>Cron Jobs</h1>
         <span style={{ fontSize: '13px', color: colors.textSecondary }}>
@@ -366,18 +393,53 @@ function Cron() {
             color: colors.red,
             fontSize: '13px',
             marginBottom: '16px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
           }}
         >
-          {error}
+          <span>{error}</span>
+          <button
+            onClick={() => setError(null)}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: colors.red,
+              cursor: 'pointer',
+              fontSize: '18px',
+              lineHeight: 1,
+              padding: '0 4px',
+              marginLeft: '12px',
+              fontWeight: 700,
+            }}
+            title="Dismiss"
+          >
+            ×
+          </button>
         </div>
       )}
 
       {loading ? (
-        <div style={styles.empty}>Loading…</div>
+        <div style={{ ...styles.empty, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
+          <div
+            style={{
+              width: '24px',
+              height: '24px',
+              border: `3px solid ${colors.border}`,
+              borderTop: `3px solid ${colors.accent}`,
+              borderRadius: '50%',
+              animation: 'cron-spin 0.8s linear infinite',
+            }}
+          />
+          <span>Loading jobs…</span>
+        </div>
       ) : jobs.length === 0 ? (
-        <div style={styles.empty}>No cron jobs. Create one below.</div>
+        <div style={styles.empty}>
+          <div style={{ fontSize: '32px', marginBottom: '8px', opacity: 0.4 }}>⏰</div>
+          No cron jobs. Create one below.
+        </div>
       ) : (
-        <div style={styles.grid}>
+        <div style={gridStyle}>
           {jobs.map((job) => (
             <div key={job.id} style={styles.card}>
               <div style={styles.cardHeader}>
