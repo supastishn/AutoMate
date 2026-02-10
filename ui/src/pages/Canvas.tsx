@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState, useMemo } from 'react'
+import { marked } from 'marked'
 
 interface CanvasData {
   id: string
@@ -121,6 +122,21 @@ export default function Canvas() {
       )
     }
 
+    if (canvas.contentType === 'markdown') {
+      const html = marked.parse(canvas.content, { async: false }) as string
+      return (
+        <div
+          className="canvas-markdown"
+          style={{
+            padding: 24, fontSize: 14, lineHeight: 1.8,
+            color: '#e0e0e0', overflow: 'auto', height: '100%',
+            wordBreak: 'break-word',
+          }}
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      )
+    }
+
     return (
       <div style={{
         padding: 24, fontSize: 14, lineHeight: 1.8,
@@ -135,6 +151,42 @@ export default function Canvas() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <style>{`
+        .canvas-markdown h1, .canvas-markdown h2, .canvas-markdown h3,
+        .canvas-markdown h4, .canvas-markdown h5, .canvas-markdown h6 {
+          color: #4fc3f7; margin: 0.8em 0 0.4em; line-height: 1.3;
+        }
+        .canvas-markdown h1 { font-size: 1.8em; border-bottom: 1px solid #333; padding-bottom: 0.3em; }
+        .canvas-markdown h2 { font-size: 1.4em; border-bottom: 1px solid #222; padding-bottom: 0.2em; }
+        .canvas-markdown h3 { font-size: 1.15em; }
+        .canvas-markdown p { margin: 0.6em 0; }
+        .canvas-markdown a { color: #4fc3f7; text-decoration: none; }
+        .canvas-markdown a:hover { text-decoration: underline; }
+        .canvas-markdown code {
+          background: #1a1a2e; padding: 2px 6px; border-radius: 3px;
+          font-family: "Fira Code", monospace; font-size: 0.9em; color: #ce93d8;
+        }
+        .canvas-markdown pre {
+          background: #111; border: 1px solid #222; border-radius: 6px;
+          padding: 14px; overflow-x: auto; margin: 0.8em 0;
+        }
+        .canvas-markdown pre code {
+          background: none; padding: 0; color: #e0e0e0; font-size: 13px;
+        }
+        .canvas-markdown blockquote {
+          border-left: 3px solid #4fc3f7; margin: 0.8em 0; padding: 0.4em 1em;
+          color: #aaa; background: #0d0d1a;
+        }
+        .canvas-markdown ul, .canvas-markdown ol { padding-left: 1.5em; margin: 0.5em 0; }
+        .canvas-markdown li { margin: 0.3em 0; }
+        .canvas-markdown table { border-collapse: collapse; width: 100%; margin: 0.8em 0; }
+        .canvas-markdown th, .canvas-markdown td {
+          border: 1px solid #333; padding: 8px 12px; text-align: left;
+        }
+        .canvas-markdown th { background: #1a1a2e; color: #4fc3f7; }
+        .canvas-markdown hr { border: none; border-top: 1px solid #333; margin: 1.2em 0; }
+        .canvas-markdown img { max-width: 100%; border-radius: 4px; }
+      `}</style>
       {/* Header */}
       <div style={{
         padding: '12px 20px', borderBottom: '1px solid #222',
