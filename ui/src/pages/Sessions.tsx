@@ -21,6 +21,7 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
   const [importStatus, setImportStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
+  const [folder, setFolder] = useState<'normal' | 'heartbeat'>('normal')
 
   useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth < 768)
@@ -127,6 +128,11 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
     return `${Math.floor(s / 3600)}h ago`
   }
 
+  const isHeartbeat = (s: Session) => s.id.startsWith('heartbeat:') || s.channel === 'heartbeat'
+  const filtered = sessions.filter(s => folder === 'heartbeat' ? isHeartbeat(s) : !isHeartbeat(s))
+  const heartbeatCount = sessions.filter(isHeartbeat).length
+  const normalCount = sessions.length - heartbeatCount
+
   const gridStyle: React.CSSProperties = {
     display: 'grid',
     gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr',
@@ -135,7 +141,7 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
 
   return (
     <div style={{ padding: 30, maxWidth: 1000 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <h1 style={{ fontSize: 24, fontWeight: 600, margin: 0 }}>Sessions</h1>
         <div style={{ display: 'flex', gap: 8 }}>
           <button onClick={exportAll}
@@ -143,6 +149,34 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
             Export All
           </button>
         </div>
+      </div>
+
+      {/* Folder tabs */}
+      <div style={{ display: 'flex', gap: 0, marginBottom: 16, borderBottom: '1px solid #222' }}>
+        <button
+          onClick={() => setFolder('normal')}
+          style={{
+            padding: '8px 20px', fontSize: 13, fontWeight: folder === 'normal' ? 600 : 400,
+            background: 'transparent', border: 'none', cursor: 'pointer',
+            color: folder === 'normal' ? '#4fc3f7' : '#666',
+            borderBottom: folder === 'normal' ? '2px solid #4fc3f7' : '2px solid transparent',
+            marginBottom: -1,
+          }}
+        >
+          Normal ({normalCount})
+        </button>
+        <button
+          onClick={() => setFolder('heartbeat')}
+          style={{
+            padding: '8px 20px', fontSize: 13, fontWeight: folder === 'heartbeat' ? 600 : 400,
+            background: 'transparent', border: 'none', cursor: 'pointer',
+            color: folder === 'heartbeat' ? '#e57373' : '#666',
+            borderBottom: folder === 'heartbeat' ? '2px solid #e57373' : '2px solid transparent',
+            marginBottom: -1,
+          }}
+        >
+          Heartbeat ({heartbeatCount})
+        </button>
       </div>
 
       {/* Import Section */}
@@ -161,14 +195,14 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
         )}
       </div>
 
-      {sessions.length === 0 ? (
+      {filtered.length === 0 ? (
         <div style={{ color: '#666', padding: 40, textAlign: 'center' as const }}>
-          <div style={{ fontSize: 32, marginBottom: 8, opacity: 0.3 }}>💬</div>
-          No active sessions
+          <div style={{ fontSize: 32, marginBottom: 8, opacity: 0.3 }}>{folder === 'heartbeat' ? '\u{1F493}' : '\u{1F4AC}'}</div>
+          No {folder === 'heartbeat' ? 'heartbeat' : 'active'} sessions
         </div>
       ) : (
         <div style={gridStyle}>
-          {sessions.map(s => (
+          {filtered.map(s => (
             <div key={s.id} style={card} onClick={() => viewSession(s.id)}
               onMouseEnter={e => (e.currentTarget.style.borderColor = '#4fc3f7')}
               onMouseLeave={e => (e.currentTarget.style.borderColor = '#222')}>
