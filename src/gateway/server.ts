@@ -160,6 +160,22 @@ export class GatewayServer {
       return { ok: true };
     });
 
+    // Main session: get/set
+    this.app.get('/api/sessions/main', async () => {
+      return { mainSessionId: this.sessionManager.getMainSessionId() };
+    });
+
+    this.app.post<{ Body: { sessionId: string | null } }>('/api/sessions/main', async (req) => {
+      const { sessionId } = req.body as any;
+      this.sessionManager.setMainSession(sessionId || null);
+      // Update heartbeat target session if heartbeat manager exists
+      const hb = this.agent.getHeartbeatManager?.();
+      if (hb && typeof hb.setTargetSession === 'function') {
+        hb.setTargetSession(sessionId || 'webchat:heartbeat');
+      }
+      return { ok: true, mainSessionId: this.sessionManager.getMainSessionId() };
+    });
+
     // Export session as downloadable JSON
     this.app.get<{ Params: { id: string } }>('/api/sessions/:id/export', async (req, reply) => {
       const session = this.sessionManager.getSession(req.params.id);
@@ -762,7 +778,9 @@ export class GatewayServer {
   private registerWebSocket(): void {
     this.app.get('/ws', { websocket: true }, (socket, req) => {
       const clientId = `webchat:ws:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      let sessionId = `webchat:${clientId}`;
+      // Use main session if set, otherwise create a new one per client
+      const mainId = this.sessionManager.getMainSessionId();
+      let sessionId = mainId || `webchat:${clientId}`;
 
       this.webChatClients.set(clientId, {
         ws: socket as unknown as WebSocket,

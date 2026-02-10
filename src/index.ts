@@ -129,6 +129,11 @@ program
       heartbeatManager = wireHeartbeat(memoryManager, agent, scheduler, false);
       agent.setHeartbeatManager(heartbeatManager);
     }
+    // Point heartbeat at main session if one is set
+    if (heartbeatManager) {
+      const mainId = sessionManager.getMainSessionId();
+      if (mainId) heartbeatManager.setTargetSession(mainId);
+    }
 
     // Start gateway
     const gateway = new GatewayServer(config, agent, sessionManager);

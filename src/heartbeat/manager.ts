@@ -88,6 +88,16 @@ export class HeartbeatManager {
     this.broadcaster = fn;
   }
 
+  /** Update the target session for heartbeats (e.g. when main session changes). */
+  setTargetSession(sessionId: string): void {
+    this.targetSession = sessionId;
+  }
+
+  /** Get the current target session ID. */
+  getTargetSession(): string {
+    return this.targetSession;
+  }
+
   /** Emit a heartbeat event to all connected clients. */
   private broadcast(event: Record<string, unknown>): void {
     if (this.broadcaster) {
