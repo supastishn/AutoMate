@@ -253,6 +253,15 @@ function highlightCode(code: string, lang: string): React.ReactNode {
   return <>{parts}</>
 }
 
+interface HeartbeatActivity {
+  sessionId: string
+  round: number
+  toolCalls: string[]
+  content: string
+  status: 'running' | 'finished' | 'error' | 'max_rounds'
+  timestamp: number
+}
+
 export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId?: string | null; onSessionLoaded?: () => void }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
@@ -272,6 +281,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
   const [showModelPicker, setShowModelPicker] = useState(false)
   const [showSlashMenu, setShowSlashMenu] = useState(false)
   const [slashFilter, setSlashFilter] = useState('')
+  const [heartbeat, setHeartbeat] = useState<HeartbeatActivity | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -358,12 +368,33 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         setCurrentSessionId(msg.session_id)
         if (msg.context) setContextInfo(msg.context)
         // Replace messages with loaded session history
-        const loaded: ChatMessage[] = (msg.messages || []).map((m: any) => ({
-          id: makeId(),
-          role: m.role as 'user' | 'assistant',
-          content: m.content,
-          timestamp: Date.now(),
-        }))
+        // Skip assistant messages that are just tool call containers with no text content
+        const loaded: ChatMessage[] = (msg.messages || [])
+          .filter((m: any) => {
+            // Skip system messages from loaded history
+            if (m.role === 'system') return false
+            // Skip blank assistant messages that only had tool_calls and no content
+            if (m.role === 'assistant' && !m.content && (!m.tool_calls || m.tool_calls.length === 0)) return false
+            return true
+          })
+          .map((m: any) => {
+            // For assistant messages with tool_calls, show tool usage info
+            let content = m.content || ''
+            const toolCalls = m.tool_calls
+              ? m.tool_calls.map((tc: any) => ({ name: tc.name, result: '' }))
+              : undefined
+            // If assistant message has no text but has tool calls, synthesize a description
+            if (!content && toolCalls && toolCalls.length > 0) {
+              content = toolCalls.map((tc: any) => `[used tool: ${tc.name}]`).join('\n')
+            }
+            return {
+              id: makeId(),
+              role: m.role as 'user' | 'assistant',
+              content,
+              toolCalls,
+              timestamp: Date.now(),
+            }
+          })
         setMessages([
           { id: makeId(), role: 'system', content: `Loaded session: ${msg.session_id}`, timestamp: Date.now() },
           ...loaded,
@@ -405,6 +436,37 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
       // Forward data_update events to the shared event bus
       if (msg.type === 'data_update') {
         emitDataUpdate(msg.resource, msg.data)
+      }
+      // Handle heartbeat activity events (live heartbeat streaming)
+      if (msg.type === 'heartbeat_activity') {
+        if (msg.event === 'start') {
+          setHeartbeat({
+            sessionId: msg.sessionId || msg.session_id || '',
+            round: 0,
+            toolCalls: [],
+            content: '',
+            status: 'running',
+            timestamp: msg.timestamp || Date.now(),
+          })
+        } else if (msg.event === 'round') {
+          setHeartbeat(prev => ({
+            sessionId: msg.sessionId || msg.session_id || prev?.sessionId || '',
+            round: msg.round || (prev?.round || 0) + 1,
+            toolCalls: msg.toolCalls || [],
+            content: msg.content || '',
+            status: 'running',
+            timestamp: msg.timestamp || Date.now(),
+          }))
+        } else if (msg.event === 'end') {
+          setHeartbeat(prev => prev ? {
+            ...prev,
+            status: msg.status || 'finished',
+            round: msg.round || prev.round,
+            timestamp: msg.timestamp || Date.now(),
+          } : null)
+          // Auto-dismiss after 8 seconds
+          setTimeout(() => setHeartbeat(null), 8000)
+        }
       }
       // Handle image events
       if (msg.type === 'image') {
@@ -712,6 +774,52 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         </div>
       )}
 
+      {/* Heartbeat activity banner */}
+      {heartbeat && (
+        <div style={{
+          padding: '8px 20px',
+          background: heartbeat.status === 'running' ? '#1a1520' : heartbeat.status === 'finished' ? '#151a15' : '#1a1515',
+          borderBottom: `1px solid ${heartbeat.status === 'running' ? '#3a2a4a' : heartbeat.status === 'finished' ? '#2a4a2a' : '#4a2a2a'}`,
+          display: 'flex', alignItems: 'center', gap: 12, fontSize: 12,
+        }}>
+          <span style={{
+            display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+            background: heartbeat.status === 'running' ? '#ce93d8' : heartbeat.status === 'finished' ? '#81c784' : '#f44',
+            animation: heartbeat.status === 'running' ? 'pulse 1.5s infinite' : 'none',
+          }} />
+          <span style={{ color: '#ce93d8', fontWeight: 600, fontFamily: 'monospace' }}>Heartbeat</span>
+          {heartbeat.status === 'running' && (
+            <>
+              <span style={{ color: '#888' }}>Round {heartbeat.round}</span>
+              {heartbeat.toolCalls.length > 0 && (
+                <span style={{ color: '#666' }}>
+                  Tools: {heartbeat.toolCalls.map((t, i) => (
+                    <span key={i} style={{ color: '#4fc3f7', background: '#1a1a2e', padding: '1px 5px', borderRadius: 3, marginLeft: 4, fontSize: 10 }}>{t}</span>
+                  ))}
+                </span>
+              )}
+              {heartbeat.content && (
+                <span style={{ color: '#aaa', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {heartbeat.content.slice(0, 120)}{heartbeat.content.length > 120 ? '...' : ''}
+                </span>
+              )}
+            </>
+          )}
+          {heartbeat.status === 'finished' && (
+            <span style={{ color: '#81c784' }}>Completed (round {heartbeat.round})</span>
+          )}
+          {heartbeat.status === 'error' && (
+            <span style={{ color: '#f44' }}>Failed at round {heartbeat.round}</span>
+          )}
+          {heartbeat.status === 'max_rounds' && (
+            <span style={{ color: '#ff9800' }}>Hit max rounds ({heartbeat.round})</span>
+          )}
+          <button onClick={() => setHeartbeat(null)} style={{
+            background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 14, marginLeft: 'auto', padding: '0 4px',
+          }}>x</button>
+        </div>
+      )}
+
       {/* Messages */}
       <div style={{ flex: 1, overflow: 'auto', padding: 20, display: 'flex', flexDirection: 'column', gap: 4 }}>
         {messages.map((m) => (
@@ -951,6 +1059,10 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         @keyframes bounce {
           0%, 80%, 100% { transform: translateY(0) }
           40% { transform: translateY(-6px) }
+        }
+        @keyframes pulse {
+          0%, 100% { opacity: 1 }
+          50% { opacity: 0.3 }
         }
       `}</style>
     </div>

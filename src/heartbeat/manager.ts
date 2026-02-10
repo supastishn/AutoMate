@@ -64,16 +64,32 @@ export function createHeartbeatFinishTool(): Tool {
   };
 }
 
+/** Broadcaster function type — sends a JSON-serializable object to all WS clients. */
+export type HeartbeatBroadcaster = (msg: Record<string, unknown>) => void;
+
 export class HeartbeatManager {
   private memoryManager: MemoryManager;
   private agent: Agent;
   private scheduler: Scheduler;
   private enabled: boolean = false;
+  private broadcaster: HeartbeatBroadcaster | null = null;
 
   constructor(memoryManager: MemoryManager, agent: Agent, scheduler: Scheduler) {
     this.memoryManager = memoryManager;
     this.agent = agent;
     this.scheduler = scheduler;
+  }
+
+  /** Set the broadcaster function for live heartbeat events (call after gateway init). */
+  setBroadcaster(fn: HeartbeatBroadcaster): void {
+    this.broadcaster = fn;
+  }
+
+  /** Emit a heartbeat event to all connected clients. */
+  private broadcast(event: Record<string, unknown>): void {
+    if (this.broadcaster) {
+      try { this.broadcaster(event); } catch {}
+    }
   }
 
   /** Start the heartbeat system. Creates a cron job if one doesn't exist. */
@@ -180,6 +196,14 @@ export class HeartbeatManager {
     let lastContent = '';
     let round = 0;
 
+    // Broadcast heartbeat start
+    this.broadcast({
+      type: 'heartbeat_activity',
+      event: 'start',
+      sessionId,
+      timestamp: Date.now(),
+    });
+
     try {
       // Round 1: send the initial prompt
       console.log(`[heartbeat] Round 1: sending initial prompt (${prompt.length} chars)`);
@@ -188,6 +212,17 @@ export class HeartbeatManager {
       round = 1;
 
       console.log(`[heartbeat] Round 1 result: content=${lastContent.length} chars, toolCalls=${result.toolCalls.length} [${result.toolCalls.map(t => t.name).join(', ')}]`);
+
+      // Broadcast round result
+      this.broadcast({
+        type: 'heartbeat_activity',
+        event: 'round',
+        sessionId,
+        round,
+        content: lastContent.slice(0, 500),
+        toolCalls: result.toolCalls.map(t => t.name),
+        timestamp: Date.now(),
+      });
 
       if (result.toolCalls.length === 0) {
         console.warn(`[heartbeat] WARNING: Round 1 returned ZERO tool calls. LLM may not have received tools.`);
@@ -198,6 +233,7 @@ export class HeartbeatManager {
       if (isHeartbeatFinished(sessionId)) {
         console.log(`[heartbeat] Finished after round 1.`);
         clearHeartbeatFinished(sessionId);
+        this.broadcast({ type: 'heartbeat_activity', event: 'end', sessionId, round, status: 'finished', timestamp: Date.now() });
         return lastContent;
       }
 
@@ -218,9 +254,21 @@ export class HeartbeatManager {
 
         console.log(`[heartbeat] Round ${round} result: content=${lastContent.length} chars, toolCalls=${cont.toolCalls.length} [${cont.toolCalls.map(t => t.name).join(', ')}]`);
 
+        // Broadcast round result
+        this.broadcast({
+          type: 'heartbeat_activity',
+          event: 'round',
+          sessionId,
+          round,
+          content: lastContent.slice(0, 500),
+          toolCalls: cont.toolCalls.map(t => t.name),
+          timestamp: Date.now(),
+        });
+
         if (isHeartbeatFinished(sessionId)) {
           console.log(`[heartbeat] Finished after round ${round}.`);
           clearHeartbeatFinished(sessionId);
+          this.broadcast({ type: 'heartbeat_activity', event: 'end', sessionId, round, status: 'finished', timestamp: Date.now() });
           return lastContent;
         }
 
@@ -232,11 +280,13 @@ export class HeartbeatManager {
 
       console.warn(`[heartbeat] Hit max rounds (${MAX_HEARTBEAT_ROUNDS}), force stopping.`);
       clearHeartbeatFinished(sessionId);
+      this.broadcast({ type: 'heartbeat_activity', event: 'end', sessionId, round, status: 'max_rounds', timestamp: Date.now() });
       return lastContent;
     } catch (err) {
       console.error(`[heartbeat] Trigger failed at round ${round}: ${(err as Error).message}`);
       console.error(`[heartbeat] Stack: ${(err as Error).stack}`);
       clearHeartbeatFinished(sessionId);
+      this.broadcast({ type: 'heartbeat_activity', event: 'end', sessionId, round, status: 'error', error: (err as Error).message, timestamp: Date.now() });
       return null;
     }
   }
