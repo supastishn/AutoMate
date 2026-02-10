@@ -64,7 +64,7 @@ export const canvasTools: Tool[] = [
     description: [
       'Visual Canvas workspace for displaying rich content to connected clients.',
       'Actions: push, reset, snapshot.',
-      'push — push HTML/Markdown/JSON/code/text content to the canvas (rendered in real-time).',
+      'push — push HTML/Markdown/JSON/code/text content to the canvas (rendered in real-time). Use mode=append to add to existing content, or mode=overwrite (default) to replace it.',
       'reset — clear the canvas.',
       'snapshot — get the current canvas state and content.',
     ].join(' '),
@@ -83,6 +83,11 @@ export const canvasTools: Tool[] = [
           description: 'Content type (for push, default: markdown)',
         },
         language: { type: 'string', description: 'Programming language for code content_type (for push)' },
+        mode: {
+          type: 'string',
+          enum: ['overwrite', 'append'],
+          description: 'Push mode: overwrite replaces content (default), append adds to existing content',
+        },
       },
       required: ['action'],
     },
@@ -97,6 +102,7 @@ export const canvasTools: Tool[] = [
           const title = (params.title as string) || canvas.title;
           const contentType = (params.content_type as string) || 'markdown';
           const language = params.language as string | undefined;
+          const mode = (params.mode as string) || 'overwrite';
 
           if (canvas.content) {
             canvas.history.push({ content: canvas.content, timestamp: canvas.updatedAt });
@@ -104,17 +110,18 @@ export const canvasTools: Tool[] = [
           }
 
           canvas.title = title;
-          canvas.content = content;
+          canvas.content = mode === 'append' ? canvas.content + content : content;
           canvas.contentType = contentType as any;
           canvas.language = language;
           canvas.updatedAt = new Date().toISOString();
 
           broadcast({
             type: 'canvas_push',
-            canvas: { id: canvas.id, title, content, contentType, language },
+            canvas: { id: canvas.id, title, content: canvas.content, contentType, language },
           });
 
-          return { output: `Canvas updated: "${title}" (${contentType}, ${content.length} chars)` };
+          const modeLabel = mode === 'append' ? 'appended' : 'updated';
+          return { output: `Canvas ${modeLabel}: "${title}" (${contentType}, ${canvas.content.length} chars)` };
         }
 
         case 'reset': {

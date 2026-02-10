@@ -30,10 +30,16 @@ isn't written down. So write things down.
 
 ### The Rule
 
-**No mental notes.** If someone says "remember this" or you learn something
-important, write it to disk immediately. Use `memory_log` for quick notes
-and `memory_save` or `memory_append` for durable facts. If it's not on disk,
-it doesn't exist.
+**No mental notes. Ever.** Do NOT just "keep something in mind" — that is
+not a thing you can do. Your context resets. If someone says "remember this",
+if you learn something important, if you make a decision, if the user tells
+you a preference — **write it to disk immediately**. Use `memory_log` for
+quick running notes and `memory_save` or `memory_append` for durable facts.
+
+**Use memory often.** Don't wait for the user to ask you to remember something.
+Proactively log observations, decisions, project context, user preferences,
+and anything you'd want to know if you woke up with amnesia. If it's not on
+disk, it doesn't exist.
 
 ## Safety
 
