@@ -41,19 +41,13 @@ interface PresenceState {
 interface SkillInfo { name: string; description: string }
 interface PluginInfo { name: string; summary: string; actions?: string[] }
 
-interface HeartbeatSummaryCategory {
-  category: string
-  items: string[]
-}
-
 interface HeartbeatLogEntry {
-  sessionId: string
   timestamp: number
-  summary: string
-  categories: HeartbeatSummaryCategory[]
-  rounds: number
-  status: 'finished' | 'max_rounds' | 'error'
-  toolsUsed: string[]
+  status: 'ok-empty' | 'ok-token' | 'sent' | 'skipped' | 'failed'
+  sessionId: string
+  content?: string
+  responseLength?: number
+  error?: string
 }
 
 interface DashboardData {
@@ -108,19 +102,15 @@ const modal: React.CSSProperties = {
   padding: 24, maxWidth: 600, width: '90%', maxHeight: '80vh',
   overflowY: 'auto', position: 'relative',
 }
-const statusBadge = (status: string): React.CSSProperties => ({
-  display: 'inline-block', padding: '2px 8px', borderRadius: 10,
-  fontSize: 10, fontWeight: 600, textTransform: 'uppercase' as const,
-  background: status === 'finished' ? '#1a2e1a' : status === 'error' ? '#2e1a1a' : '#2e2a1a',
-  color: status === 'finished' ? '#4caf50' : status === 'error' ? '#f44336' : '#ff9800',
-})
-const catColor = (cat: string): string => {
-  const colors: Record<string, string> = {
-    memory: '#4fc3f7', system: '#81c784', tasks: '#ffb74d',
-    monitoring: '#ce93d8', communication: '#f48fb1', maintenance: '#a1887f',
-    error: '#f44336', general: '#90a4ae',
+const statusBadge = (status: string): React.CSSProperties => {
+  const isOk = status === 'ok-empty' || status === 'ok-token' || status === 'skipped'
+  const isFail = status === 'failed'
+  return {
+    display: 'inline-block', padding: '2px 8px', borderRadius: 10,
+    fontSize: 10, fontWeight: 600, textTransform: 'uppercase' as const,
+    background: isOk ? '#1a2e1a' : isFail ? '#2e1a1a' : '#1a2a3a',
+    color: isOk ? '#4caf50' : isFail ? '#f44336' : '#4fc3f7',
   }
-  return colors[cat.toLowerCase()] || '#4fc3f7'
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -167,6 +157,13 @@ function fmtDate(ts: number): string {
 // ── Heartbeat Detail Modal ───────────────────────────────────────────
 
 function HeartbeatModal({ entry, onClose }: { entry: HeartbeatLogEntry; onClose: () => void }) {
+  const statusLabel: Record<string, string> = {
+    'ok-empty': 'OK (empty response)',
+    'ok-token': 'OK (acknowledged)',
+    'sent': 'Alert sent',
+    'skipped': 'Skipped (empty checklist)',
+    'failed': 'Failed',
+  }
   return (
     <div style={overlay} onClick={onClose}>
       <div style={modal} onClick={e => e.stopPropagation()}>
@@ -181,55 +178,39 @@ function HeartbeatModal({ entry, onClose }: { entry: HeartbeatLogEntry; onClose:
         </button>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-          <span style={statusBadge(entry.status)}>{entry.status.replace('_', ' ')}</span>
+          <span style={statusBadge(entry.status)}>{entry.status.replace(/-/g, ' ')}</span>
           <span style={{ fontSize: 13, color: '#aaa' }}>{fmtDate(entry.timestamp)}</span>
           <span style={{ fontSize: 11, color: '#666' }}>({timeSince(entry.timestamp)})</span>
         </div>
 
-        <div style={{ display: 'flex', gap: 16, marginBottom: 16, ...mono }}>
-          <span>Rounds: <span style={{ color: '#4fc3f7' }}>{entry.rounds}</span></span>
-          <span>Tools: <span style={{ color: '#4fc3f7' }}>{entry.toolsUsed.length}</span></span>
+        <div style={{ ...mono, color: '#aaa', marginBottom: 16 }}>
+          {statusLabel[entry.status] || entry.status}
+          {entry.responseLength != null && (
+            <span style={{ color: '#666', marginLeft: 12 }}>{entry.responseLength} chars</span>
+          )}
         </div>
 
-        {/* Categories */}
-        <div style={{ marginBottom: 16 }}>
-          {entry.categories.map((cat, i) => (
-            <div key={i} style={{
-              marginBottom: 12, padding: '10px 14px', borderRadius: 8,
-              background: '#111', border: `1px solid ${catColor(cat.category)}22`,
-              borderLeft: `3px solid ${catColor(cat.category)}`,
-            }}>
-              <div style={{
-                fontSize: 12, fontWeight: 600, color: catColor(cat.category),
-                marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5,
-              }}>
-                {cat.category}
-              </div>
-              <ul style={{ margin: 0, paddingLeft: 18, listStyle: 'disc' }}>
-                {cat.items.map((item, j) => (
-                  <li key={j} style={{ ...mono, marginBottom: 3, lineHeight: 1.5 }}>
-                    {item}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-
-        {/* Tools Used */}
-        {entry.toolsUsed.length > 0 && (
-          <div>
-            <div style={{ fontSize: 11, color: '#666', marginBottom: 6 }}>TOOLS USED</div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-              {entry.toolsUsed.map(t => (
-                <span key={t} style={pill}>{t}</span>
-              ))}
-            </div>
+        {entry.content && (
+          <div style={{
+            marginBottom: 16, padding: '12px 14px', borderRadius: 8,
+            background: '#111', border: '1px solid #333',
+            ...mono, lineHeight: 1.6, whiteSpace: 'pre-wrap',
+          }}>
+            {entry.content}
           </div>
         )}
 
-        {/* Session ID */}
-        <div style={{ marginTop: 12, ...mono, fontSize: 10, color: '#555' }}>
+        {entry.error && (
+          <div style={{
+            marginBottom: 16, padding: '12px 14px', borderRadius: 8,
+            background: '#1a1010', border: '1px solid #4a2020',
+            ...mono, color: '#f44336', lineHeight: 1.6,
+          }}>
+            {entry.error}
+          </div>
+        )}
+
+        <div style={{ ...mono, fontSize: 10, color: '#555' }}>
           Session: {entry.sessionId}
         </div>
       </div>
@@ -612,33 +593,14 @@ export default function Dashboard() {
                 onMouseLeave={e => (e.currentTarget.style.borderColor = '#222')}
               >
                 <span style={statusBadge(entry.status)}>
-                  {entry.status === 'finished' ? 'OK' : entry.status === 'error' ? 'ERR' : 'MAX'}
+                  {entry.status === 'sent' ? 'ALERT' : entry.status === 'failed' ? 'ERR' : 'OK'}
                 </span>
                 <span style={{ ...mono, color: '#888', minWidth: 70, fontSize: 11 }}>
                   {timeSince(entry.timestamp)}
                 </span>
-                <div style={{ flex: 1, overflow: 'hidden' }}>
-                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                    {entry.categories.slice(0, 4).map((cat, j) => (
-                      <span key={j} style={{
-                        fontSize: 10, padding: '1px 6px', borderRadius: 8,
-                        background: `${catColor(cat.category)}15`,
-                        color: catColor(cat.category),
-                        border: `1px solid ${catColor(cat.category)}30`,
-                      }}>
-                        {cat.category}
-                      </span>
-                    ))}
-                    {entry.categories.length > 4 && (
-                      <span style={{ fontSize: 10, color: '#555' }}>
-                        +{entry.categories.length - 4} more
-                      </span>
-                    )}
-                  </div>
+                <div style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', ...mono, fontSize: 11, color: '#aaa' }}>
+                  {entry.content ? entry.content.slice(0, 80) : entry.error ? entry.error.slice(0, 80) : entry.status.replace(/-/g, ' ')}
                 </div>
-                <span style={{ ...mono, fontSize: 10, color: '#555' }}>
-                  {entry.rounds}r / {entry.toolsUsed.length}t
-                </span>
               </div>
             ))}
           </div>
