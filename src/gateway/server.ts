@@ -318,6 +318,53 @@ export class GatewayServer {
       const skills = this.agent.getLoadedSkills?.() || [];
       return { skills };
     });
+
+    // Dashboard API (aggregated stats for the dashboard page)
+    this.app.get('/api/dashboard', async () => {
+      const toolStats = this.agent.getToolStats();
+      const sessions = this.sessionManager.listSessions();
+      const mm = this.agent.getMemoryManager();
+
+      // Memory stats
+      let memoryStats: any = null;
+      if (mm) {
+        const indexStats = mm.getIndexStats();
+        memoryStats = {
+          indexEnabled: indexStats.enabled,
+          totalChunks: indexStats.totalChunks,
+          indexedFiles: indexStats.indexedFiles,
+          identityFiles: ['PERSONALITY.md', 'USER.md', 'IDENTITY.md', 'AGENTS.md', 'TOOLS.md', 'MEMORY.md']
+            .map(f => {
+              const content = mm.getIdentityFile(f);
+              return { name: f, size: content ? content.length : 0, exists: !!content };
+            }),
+        };
+      }
+
+      // Session breakdown
+      const sessionBreakdown = {
+        total: sessions.length,
+        byChannel: {} as Record<string, number>,
+        totalMessages: 0,
+      };
+      for (const s of sessions) {
+        sessionBreakdown.byChannel[s.channel] = (sessionBreakdown.byChannel[s.channel] || 0) + 1;
+        sessionBreakdown.totalMessages += s.messageCount;
+      }
+
+      return {
+        uptime: Math.floor((Date.now() - this.startTime) / 1000),
+        model: this.config.agent.model,
+        tools: toolStats,
+        memory: memoryStats,
+        sessions: sessionBreakdown,
+        webchatClients: this.webChatClients.size,
+        canvasClients: this.canvasClients.size,
+        presence: this.presenceManager.getState(),
+        skills: this.agent.getLoadedSkills?.() || [],
+        plugins: this.agent.getToolStats().deferredTools.filter(t => t.summary.startsWith('Plugin tool:')),
+      };
+    });
   }
 
   private registerWebSocket(): void {

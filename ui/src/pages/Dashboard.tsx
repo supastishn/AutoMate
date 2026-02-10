@@ -1,36 +1,138 @@
 import React, { useEffect, useState } from 'react'
 
-interface Status {
-  uptime: number
-  sessions: number
-  webchat_clients: number
-  model: string
+// ── Types matching /api/dashboard response ──────────────────────────────
+
+interface DeferredTool { name: string; summary: string; actions?: string[] }
+interface SessionToolInfo { sessionId: string; promotedTools: string[] }
+interface ToolStats {
+  coreToolCount: number
+  coreTools: string[]
+  deferredToolCount: number
+  deferredTools: DeferredTool[]
+  sessionCount: number
+  sessions: SessionToolInfo[]
+  totalPromotions: number
+  totalDemotions: number
 }
 
-interface Health {
-  status: string
-  uptime: number
-  model: string
-  version: string
+interface IdentityFile { name: string; size: number; exists: boolean }
+interface MemoryStats {
+  indexEnabled: boolean
+  totalChunks: number
+  indexedFiles: string[]
+  identityFiles: IdentityFile[]
 }
 
-const card = {
-  background: '#141414', border: '1px solid #222', borderRadius: 8, padding: 20, marginBottom: 16,
-} as React.CSSProperties
+interface SessionBreakdown {
+  total: number
+  byChannel: Record<string, number>
+  totalMessages: number
+}
+
+interface PresenceState {
+  agentId: string
+  status: 'online' | 'idle' | 'busy' | 'offline'
+  typing: boolean
+  lastActivity: number
+  currentSession?: string
+}
+
+interface SkillInfo { name: string; description: string }
+interface PluginInfo { name: string; summary: string; actions?: string[] }
+
+interface DashboardData {
+  uptime: number
+  model: string
+  tools: ToolStats
+  memory: MemoryStats | null
+  sessions: SessionBreakdown
+  webchatClients: number
+  canvasClients: number
+  presence: PresenceState
+  skills: SkillInfo[]
+  plugins: PluginInfo[]
+}
+
+// ── Styles ──────────────────────────────────────────────────────────────
+
+const card: React.CSSProperties = {
+  background: '#141414', border: '1px solid #222', borderRadius: 8,
+  padding: 16, marginBottom: 12,
+}
+const sectionTitle: React.CSSProperties = {
+  fontSize: 13, color: '#888', marginBottom: 8, fontWeight: 600,
+  textTransform: 'uppercase' as const, letterSpacing: 1,
+}
+const statNum: React.CSSProperties = { fontSize: 26, fontWeight: 700 }
+const statLabel: React.CSSProperties = { fontSize: 11, color: '#888', marginTop: 2 }
+const pill: React.CSSProperties = {
+  display: 'inline-block', padding: '2px 8px', borderRadius: 12,
+  fontSize: 11, margin: '2px 3px', background: '#1a2a3a', color: '#4fc3f7',
+}
+const pillGreen: React.CSSProperties = { ...pill, background: '#1a2e1a', color: '#4caf50' }
+const pillRed: React.CSSProperties = { ...pill, background: '#2e1a1a', color: '#f44336' }
+const mono: React.CSSProperties = { fontFamily: 'monospace', fontSize: 12, color: '#aaa' }
+const grid2: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }
+const grid3: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }
+const grid4: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12 }
+
+// ── Helpers ─────────────────────────────────────────────────────────────
+
+function fmtUptime(s: number): string {
+  const d = Math.floor(s / 86400)
+  const h = Math.floor((s % 86400) / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  if (d > 0) return `${d}d ${h}h ${m}m`
+  if (h > 0) return `${h}h ${m}m`
+  return `${m}m ${Math.floor(s % 60)}s`
+}
+
+function fmtBytes(b: number): string {
+  if (b < 1024) return `${b} B`
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`
+  return `${(b / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function statusColor(s: string): string {
+  switch (s) {
+    case 'online': return '#4caf50'
+    case 'busy': return '#ff9800'
+    case 'idle': return '#ffeb3b'
+    case 'offline': return '#f44336'
+    default: return '#888'
+  }
+}
+
+function timeSince(ts: number): string {
+  const diff = Math.floor((Date.now() - ts) / 1000)
+  if (diff < 60) return `${diff}s ago`
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+  return `${Math.floor(diff / 3600)}h ago`
+}
+
+// ── Stat Card ───────────────────────────────────────────────────────────
+
+function StatCard({ label, value, color }: { label: string; value: string | number; color?: string }) {
+  return (
+    <div style={card}>
+      <div style={statLabel}>{label}</div>
+      <div style={{ ...statNum, color: color || '#e0e0e0' }}>{value}</div>
+    </div>
+  )
+}
+
+// ── Component ───────────────────────────────────────────────────────────
 
 export default function Dashboard() {
-  const [health, setHealth] = useState<Health | null>(null)
-  const [status, setStatus] = useState<Status | null>(null)
+  const [data, setData] = useState<DashboardData | null>(null)
   const [error, setError] = useState('')
+  const [expandedSessions, setExpandedSessions] = useState(false)
 
   const fetchData = async () => {
     try {
-      const [h, s] = await Promise.all([
-        fetch('/api/health').then(r => r.json()),
-        fetch('/api/status').then(r => r.json()),
-      ])
-      setHealth(h as Health)
-      setStatus(s as Status)
+      const res = await fetch('/api/dashboard')
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      setData(await res.json() as DashboardData)
       setError('')
     } catch {
       setError('Cannot connect to gateway')
@@ -43,52 +145,206 @@ export default function Dashboard() {
     return () => clearInterval(i)
   }, [])
 
-  const fmtUptime = (s: number) => {
-    const h = Math.floor(s / 3600)
-    const m = Math.floor((s % 3600) / 60)
-    return h > 0 ? `${h}h ${m}m` : `${m}m ${s % 60}s`
-  }
+  if (error) return (
+    <div style={{ padding: 40, color: '#f44336', textAlign: 'center' }}>
+      <div style={{ fontSize: 20, marginBottom: 8 }}>{error}</div>
+      <div style={{ fontSize: 12, color: '#888' }}>Retrying every 5s...</div>
+    </div>
+  )
 
-  if (error) return <div style={{ padding: 40, color: '#f44' }}>{error}</div>
+  if (!data) return (
+    <div style={{ padding: 40, color: '#888', textAlign: 'center' }}>Loading dashboard...</div>
+  )
+
+  const { tools, memory, sessions, presence, skills, plugins } = data
 
   return (
-    <div style={{ padding: 30, maxWidth: 900 }}>
-      <h1 style={{ fontSize: 24, marginBottom: 24, fontWeight: 600 }}>Dashboard</h1>
+    <div style={{ padding: 20, maxWidth: 960 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+        <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Dashboard</h1>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{
+            width: 8, height: 8, borderRadius: '50%',
+            background: statusColor(presence.status),
+            boxShadow: `0 0 6px ${statusColor(presence.status)}`,
+          }} />
+          <span style={{ fontSize: 13, color: '#aaa', textTransform: 'capitalize' as const }}>
+            {presence.status}{presence.typing ? ' (typing...)' : ''}
+          </span>
+        </div>
+      </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16, marginBottom: 24 }}>
+      {/* ── Top Stats Row ──────────────────────────────────────────── */}
+      <div style={grid4}>
+        <StatCard label="UPTIME" value={fmtUptime(data.uptime)} />
+        <StatCard label="MODEL" value={data.model.split('/').pop() || data.model} color="#4fc3f7" />
+        <StatCard label="SESSIONS" value={sessions.total} />
+        <StatCard label="MESSAGES" value={sessions.totalMessages} />
+      </div>
+
+      {/* ── Tool Loading Stats ─────────────────────────────────────── */}
+      <div style={{ ...card, marginTop: 4 }}>
+        <div style={sectionTitle}>Tool Registry</div>
+        <div style={grid4}>
+          <div>
+            <div style={{ ...statNum, fontSize: 22 }}>{tools.coreToolCount}</div>
+            <div style={statLabel}>CORE (ALWAYS LOADED)</div>
+          </div>
+          <div>
+            <div style={{ ...statNum, fontSize: 22 }}>{tools.deferredToolCount}</div>
+            <div style={statLabel}>DEFERRED (ON-DEMAND)</div>
+          </div>
+          <div>
+            <div style={{ ...statNum, fontSize: 22, color: '#4caf50' }}>{tools.totalPromotions}</div>
+            <div style={statLabel}>TOTAL LOADS</div>
+          </div>
+          <div>
+            <div style={{ ...statNum, fontSize: 22, color: '#ff9800' }}>{tools.totalDemotions}</div>
+            <div style={statLabel}>TOTAL UNLOADS</div>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 11, color: '#666', marginBottom: 4 }}>Core Tools</div>
+          <div>{tools.coreTools.map(t => <span key={t} style={pillGreen}>{t}</span>)}</div>
+        </div>
+
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 11, color: '#666', marginBottom: 4 }}>Deferred Catalog</div>
+          <div>{tools.deferredTools.map(t => (
+            <span key={t.name} style={pill} title={t.summary + (t.actions ? `\nActions: ${t.actions.join(', ')}` : '')}>
+              {t.name}{t.actions ? ` (${t.actions.length})` : ''}
+            </span>
+          ))}</div>
+        </div>
+
+        {/* Per-session promotions */}
+        {tools.sessionCount > 0 && (
+          <div style={{ marginTop: 10 }}>
+            <div
+              style={{ fontSize: 11, color: '#666', marginBottom: 4, cursor: 'pointer' }}
+              onClick={() => setExpandedSessions(!expandedSessions)}
+            >
+              Per-Session Promotions ({tools.sessionCount} sessions) {expandedSessions ? '[-]' : '[+]'}
+            </div>
+            {expandedSessions && tools.sessions.map(s => (
+              <div key={s.sessionId} style={{ ...mono, marginBottom: 4, paddingLeft: 8 }}>
+                <span style={{ color: '#666' }}>{s.sessionId.slice(0, 20)}...</span>
+                {s.promotedTools.length > 0
+                  ? s.promotedTools.map(t => <span key={t} style={{ ...pill, fontSize: 10 }}>{t}</span>)
+                  : <span style={{ color: '#555', marginLeft: 8 }}>none</span>
+                }
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── Sessions & Clients Row ─────────────────────────────────── */}
+      <div style={grid3}>
         <div style={card}>
-          <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>STATUS</div>
-          <div style={{ fontSize: 22, color: health?.status === 'ok' ? '#4caf50' : '#f44' }}>
-            {health?.status === 'ok' ? 'Online' : 'Offline'}
+          <div style={sectionTitle}>Channels</div>
+          {Object.entries(sessions.byChannel).length > 0
+            ? Object.entries(sessions.byChannel).map(([ch, count]) => (
+                <div key={ch} style={{ display: 'flex', justifyContent: 'space-between', ...mono, marginBottom: 4 }}>
+                  <span style={{ textTransform: 'capitalize' as const }}>{ch}</span>
+                  <span style={{ color: '#4fc3f7' }}>{count}</span>
+                </div>
+              ))
+            : <div style={mono}>No active channels</div>
+          }
+        </div>
+        <div style={card}>
+          <div style={sectionTitle}>Connected Clients</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', ...mono, marginBottom: 4 }}>
+            <span>Webchat</span><span style={{ color: '#4fc3f7' }}>{data.webchatClients}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', ...mono }}>
+            <span>Canvas</span><span style={{ color: '#4fc3f7' }}>{data.canvasClients}</span>
           </div>
         </div>
         <div style={card}>
-          <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>UPTIME</div>
-          <div style={{ fontSize: 22 }}>{health ? fmtUptime(health.uptime) : '-'}</div>
-        </div>
-        <div style={card}>
-          <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>MODEL</div>
-          <div style={{ fontSize: 16, color: '#4fc3f7' }}>{health?.model || '-'}</div>
-        </div>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        <div style={card}>
-          <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>ACTIVE SESSIONS</div>
-          <div style={{ fontSize: 28 }}>{status?.sessions ?? '-'}</div>
-        </div>
-        <div style={card}>
-          <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>WEBCHAT CLIENTS</div>
-          <div style={{ fontSize: 28 }}>{status?.webchat_clients ?? '-'}</div>
+          <div style={sectionTitle}>Presence</div>
+          <div style={mono}>
+            <div style={{ marginBottom: 4 }}>
+              Status: <span style={{ color: statusColor(presence.status) }}>{presence.status}</span>
+            </div>
+            <div style={{ marginBottom: 4 }}>Agent: {presence.agentId}</div>
+            <div>Last active: {timeSince(presence.lastActivity)}</div>
+          </div>
         </div>
       </div>
 
-      <div style={{ ...card, marginTop: 8 }}>
-        <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>SYSTEM INFO</div>
-        <div style={{ fontSize: 13, fontFamily: 'monospace', color: '#aaa', lineHeight: 1.8 }}>
-          <div>Version: {health?.version || '-'}</div>
-          <div>Gateway: ws://127.0.0.1:18789</div>
-          <div>Node: {typeof process !== 'undefined' ? 'v22+' : 'Browser'}</div>
+      {/* ── Memory Stats ───────────────────────────────────────────── */}
+      <div style={card}>
+        <div style={sectionTitle}>Memory</div>
+        {memory ? (
+          <>
+            <div style={grid3}>
+              <div>
+                <div style={{ ...statNum, fontSize: 20, color: memory.indexEnabled ? '#4caf50' : '#f44336' }}>
+                  {memory.indexEnabled ? 'Active' : 'Disabled'}
+                </div>
+                <div style={statLabel}>SEMANTIC INDEX</div>
+              </div>
+              <div>
+                <div style={{ ...statNum, fontSize: 20 }}>{memory.totalChunks}</div>
+                <div style={statLabel}>CHUNKS INDEXED</div>
+              </div>
+              <div>
+                <div style={{ ...statNum, fontSize: 20 }}>{memory.indexedFiles.length}</div>
+                <div style={statLabel}>FILES INDEXED</div>
+              </div>
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 11, color: '#666', marginBottom: 6 }}>Identity Files</div>
+              <div style={grid3}>
+                {memory.identityFiles.map(f => (
+                  <div key={f.name} style={{
+                    ...mono, padding: '6px 10px', borderRadius: 6,
+                    background: f.exists ? '#0d1f0d' : '#1a1a1a',
+                    border: `1px solid ${f.exists ? '#1a3a1a' : '#222'}`,
+                  }}>
+                    <div style={{ color: f.exists ? '#4caf50' : '#555', marginBottom: 2 }}>{f.name}</div>
+                    <div style={{ fontSize: 10, color: '#666' }}>
+                      {f.exists ? fmtBytes(f.size) : 'not found'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        ) : (
+          <div style={mono}>Memory manager not initialized</div>
+        )}
+      </div>
+
+      {/* ── Skills & Plugins Row ───────────────────────────────────── */}
+      <div style={grid2}>
+        <div style={card}>
+          <div style={sectionTitle}>Skills ({skills.length})</div>
+          {skills.length > 0 ? skills.map(s => (
+            <div key={s.name} style={{ ...mono, marginBottom: 6 }}>
+              <div style={{ color: '#4fc3f7' }}>{s.name}</div>
+              <div style={{ fontSize: 10, color: '#666' }}>{s.description}</div>
+            </div>
+          )) : <div style={mono}>No skills loaded</div>}
+        </div>
+        <div style={card}>
+          <div style={sectionTitle}>Plugins ({plugins.length})</div>
+          {plugins.length > 0 ? plugins.map(p => (
+            <div key={p.name} style={{ ...mono, marginBottom: 6 }}>
+              <div style={{ color: '#ff9800' }}>{p.name}</div>
+              <div style={{ fontSize: 10, color: '#666' }}>
+                {p.summary.replace(/^Plugin tool:\s*/, '')}
+              </div>
+              {p.actions && (
+                <div style={{ marginTop: 2 }}>
+                  {p.actions.map(a => <span key={a} style={{ ...pill, fontSize: 9, background: '#1a1a2e', color: '#9e9eff' }}>{a}</span>)}
+                </div>
+              )}
+            </div>
+          )) : <div style={mono}>No plugin tools registered</div>}
         </div>
       </div>
     </div>
