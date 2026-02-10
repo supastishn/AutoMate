@@ -7,6 +7,8 @@
  * If the agent responds without calling it, we send a continue prompt.
  */
 
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 import type { MemoryManager } from '../memory/manager.js';
 import type { Agent } from '../agent/agent.js';
 import type { Scheduler, CronJob } from '../cron/scheduler.js';
@@ -16,12 +18,33 @@ const HEARTBEAT_JOB_NAME = '__heartbeat__';
 const DEFAULT_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 const MAX_HEARTBEAT_ROUNDS = 20; // safety limit on continue loops
 
+/** A single categorized item within a heartbeat summary. */
+export interface HeartbeatSummaryCategory {
+  category: string;   // e.g. "Memory", "System", "Tasks", "Monitoring"
+  items: string[];     // individual things done in this category
+}
+
+/** A full heartbeat log entry persisted to disk. */
+export interface HeartbeatLogEntry {
+  sessionId: string;
+  timestamp: number;
+  summary: string;                       // raw summary text
+  categories: HeartbeatSummaryCategory[]; // parsed categorized breakdown
+  rounds: number;
+  status: 'finished' | 'max_rounds' | 'error';
+  toolsUsed: string[];
+}
+
 /** Tracks which heartbeat sessions have called heartbeat_finish. */
 const finishedSessions: Set<string> = new Set();
 
+/** Stores the summary text from heartbeat_finish calls, keyed by sessionId. */
+const finishedSummaries: Map<string, string> = new Map();
+
 /** Mark a heartbeat session as finished (called by the heartbeat_finish tool). */
-export function markHeartbeatFinished(sessionId: string): void {
+export function markHeartbeatFinished(sessionId: string, summary?: string): void {
   finishedSessions.add(sessionId);
+  if (summary) finishedSummaries.set(sessionId, summary);
 }
 
 /** Check if a heartbeat session has been marked finished. */
@@ -29,9 +52,72 @@ export function isHeartbeatFinished(sessionId: string): boolean {
   return finishedSessions.has(sessionId);
 }
 
+/** Get the stored summary for a finished session. */
+export function getFinishedSummary(sessionId: string): string | undefined {
+  return finishedSummaries.get(sessionId);
+}
+
 /** Clean up finished state for a session. */
 function clearHeartbeatFinished(sessionId: string): void {
   finishedSessions.delete(sessionId);
+  finishedSummaries.delete(sessionId);
+}
+
+/**
+ * Parse a summary string into categories.
+ * Expects format like:
+ *   **Memory**: logged heartbeat start, reviewed daily logs
+ *   **System**: checked disk space, verified uptime
+ *   **Tasks**: completed backup, sent notification
+ *
+ * Falls back to a single "General" category if no pattern is found.
+ */
+function parseSummaryCategories(summary: string): HeartbeatSummaryCategory[] {
+  const categories: HeartbeatSummaryCategory[] = [];
+
+  // Try to parse lines with **Category**: items or [Category]: items or Category: items
+  const lines = summary.split('\n').map(l => l.trim()).filter(Boolean);
+  const catPattern = /^(?:\*\*(.+?)\*\*|(?:\[(.+?)\])|([A-Z][A-Za-z &/]+?))[:]\s*(.+)$/;
+
+  for (const line of lines) {
+    const m = line.match(catPattern);
+    if (m) {
+      const catName = (m[1] || m[2] || m[3]).trim();
+      const itemsStr = m[4].trim();
+      // Split items by comma, semicolon, or bullet
+      const items = itemsStr
+        .split(/[;,]|\s*[-•]\s*/)
+        .map(s => s.trim())
+        .filter(Boolean);
+      if (items.length > 0) {
+        // Merge if same category already exists
+        const existing = categories.find(c => c.category.toLowerCase() === catName.toLowerCase());
+        if (existing) {
+          existing.items.push(...items);
+        } else {
+          categories.push({ category: catName, items });
+        }
+      }
+    } else if (line.startsWith('- ') || line.startsWith('* ')) {
+      // Bullet items without a category header — add to "General"
+      const text = line.replace(/^[-*]\s*/, '').trim();
+      if (text) {
+        let gen = categories.find(c => c.category === 'General');
+        if (!gen) {
+          gen = { category: 'General', items: [] };
+          categories.push(gen);
+        }
+        gen.items.push(text);
+      }
+    }
+  }
+
+  // Fallback: if no categories parsed, put the whole summary as a single "General" category
+  if (categories.length === 0) {
+    categories.push({ category: 'General', items: [summary] });
+  }
+
+  return categories;
 }
 
 /**
@@ -44,20 +130,26 @@ export function createHeartbeatFinishTool(): Tool {
     description:
       'Call this tool when you have completed ALL heartbeat tasks. ' +
       'This signals that the heartbeat session is done. ' +
-      'You MUST call this when finished — the heartbeat will keep asking you to continue until you do.',
+      'You MUST call this when finished — the heartbeat will keep asking you to continue until you do. ' +
+      'IMPORTANT: Format your summary with categories using this format:\n' +
+      '**Category Name**: item1, item2, item3\n' +
+      '**Another Category**: item4, item5\n' +
+      'Example categories: Memory, System, Tasks, Monitoring, Communication, Maintenance',
     parameters: {
       type: 'object',
       properties: {
         summary: {
           type: 'string',
-          description: 'Brief summary of what was accomplished during this heartbeat',
+          description:
+            'Categorized summary of what was accomplished. Use format: **Category**: item1, item2. ' +
+            'Each line should be a different category (Memory, System, Tasks, Monitoring, etc.)',
         },
       },
       required: ['summary'],
     },
     async execute(params, ctx) {
       const summary = (params.summary as string) || 'Heartbeat completed.';
-      markHeartbeatFinished(ctx.sessionId);
+      markHeartbeatFinished(ctx.sessionId, summary);
       console.log(`[heartbeat] Session ${ctx.sessionId} finished: ${summary}`);
       return { output: `Heartbeat marked as complete. Summary: ${summary}` };
     },
@@ -73,11 +165,14 @@ export class HeartbeatManager {
   private scheduler: Scheduler;
   private enabled: boolean = false;
   private broadcaster: HeartbeatBroadcaster | null = null;
+  private logFile: string;
 
   constructor(memoryManager: MemoryManager, agent: Agent, scheduler: Scheduler) {
     this.memoryManager = memoryManager;
     this.agent = agent;
     this.scheduler = scheduler;
+    // Persistent log file in the memory directory
+    this.logFile = join(memoryManager.getDirectory(), 'heartbeat-log.json');
   }
 
   /** Set the broadcaster function for live heartbeat events (call after gateway init). */
@@ -90,6 +185,35 @@ export class HeartbeatManager {
     if (this.broadcaster) {
       try { this.broadcaster(event); } catch {}
     }
+  }
+
+  /** Load the heartbeat log from disk. */
+  private loadLog(): HeartbeatLogEntry[] {
+    try {
+      if (existsSync(this.logFile)) {
+        return JSON.parse(readFileSync(this.logFile, 'utf-8'));
+      }
+    } catch {}
+    return [];
+  }
+
+  /** Append an entry to the heartbeat log and write to disk. */
+  private appendLog(entry: HeartbeatLogEntry): void {
+    const log = this.loadLog();
+    log.push(entry);
+    // Keep last 200 entries max
+    const trimmed = log.slice(-200);
+    try {
+      writeFileSync(this.logFile, JSON.stringify(trimmed, null, 2));
+    } catch (err) {
+      console.error(`[heartbeat] Failed to write log: ${(err as Error).message}`);
+    }
+  }
+
+  /** Get the heartbeat log (most recent entries first). */
+  getLog(limit: number = 50): HeartbeatLogEntry[] {
+    const log = this.loadLog();
+    return log.slice(-limit).reverse();
   }
 
   /** Start the heartbeat system. Creates a cron job if one doesn't exist. */
@@ -195,6 +319,7 @@ export class HeartbeatManager {
 
     let lastContent = '';
     let round = 0;
+    const toolsUsed: string[] = [];
 
     // Broadcast heartbeat start
     this.broadcast({
@@ -212,6 +337,11 @@ export class HeartbeatManager {
       round = 1;
 
       console.log(`[heartbeat] Round 1 result: content=${lastContent.length} chars, toolCalls=${result.toolCalls.length} [${result.toolCalls.map(t => t.name).join(', ')}]`);
+
+      // Collect tools used
+      for (const tc of result.toolCalls) {
+        if (!toolsUsed.includes(tc.name)) toolsUsed.push(tc.name);
+      }
 
       // Broadcast round result
       this.broadcast({
@@ -232,6 +362,12 @@ export class HeartbeatManager {
       // Check if already finished
       if (isHeartbeatFinished(sessionId)) {
         console.log(`[heartbeat] Finished after round 1.`);
+        const summary = getFinishedSummary(sessionId) || lastContent;
+        this.appendLog({
+          sessionId, timestamp: Date.now(), summary,
+          categories: parseSummaryCategories(summary),
+          rounds: round, status: 'finished', toolsUsed,
+        });
         clearHeartbeatFinished(sessionId);
         this.broadcast({ type: 'heartbeat_activity', event: 'end', sessionId, round, status: 'finished', timestamp: Date.now() });
         return lastContent;
@@ -254,6 +390,11 @@ export class HeartbeatManager {
 
         console.log(`[heartbeat] Round ${round} result: content=${lastContent.length} chars, toolCalls=${cont.toolCalls.length} [${cont.toolCalls.map(t => t.name).join(', ')}]`);
 
+        // Collect tools used
+        for (const tc of cont.toolCalls) {
+          if (!toolsUsed.includes(tc.name)) toolsUsed.push(tc.name);
+        }
+
         // Broadcast round result
         this.broadcast({
           type: 'heartbeat_activity',
@@ -267,6 +408,12 @@ export class HeartbeatManager {
 
         if (isHeartbeatFinished(sessionId)) {
           console.log(`[heartbeat] Finished after round ${round}.`);
+          const summary = getFinishedSummary(sessionId) || lastContent;
+          this.appendLog({
+            sessionId, timestamp: Date.now(), summary,
+            categories: parseSummaryCategories(summary),
+            rounds: round, status: 'finished', toolsUsed,
+          });
           clearHeartbeatFinished(sessionId);
           this.broadcast({ type: 'heartbeat_activity', event: 'end', sessionId, round, status: 'finished', timestamp: Date.now() });
           return lastContent;
@@ -279,12 +426,24 @@ export class HeartbeatManager {
       }
 
       console.warn(`[heartbeat] Hit max rounds (${MAX_HEARTBEAT_ROUNDS}), force stopping.`);
+      const summary = getFinishedSummary(sessionId) || lastContent || 'Hit max rounds without finishing.';
+      this.appendLog({
+        sessionId, timestamp: Date.now(), summary,
+        categories: parseSummaryCategories(summary),
+        rounds: round, status: 'max_rounds', toolsUsed,
+      });
       clearHeartbeatFinished(sessionId);
       this.broadcast({ type: 'heartbeat_activity', event: 'end', sessionId, round, status: 'max_rounds', timestamp: Date.now() });
       return lastContent;
     } catch (err) {
       console.error(`[heartbeat] Trigger failed at round ${round}: ${(err as Error).message}`);
       console.error(`[heartbeat] Stack: ${(err as Error).stack}`);
+      this.appendLog({
+        sessionId, timestamp: Date.now(),
+        summary: `Error: ${(err as Error).message}`,
+        categories: [{ category: 'Error', items: [(err as Error).message] }],
+        rounds: round, status: 'error', toolsUsed,
+      });
       clearHeartbeatFinished(sessionId);
       this.broadcast({ type: 'heartbeat_activity', event: 'end', sessionId, round, status: 'error', error: (err as Error).message, timestamp: Date.now() });
       return null;

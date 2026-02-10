@@ -409,6 +409,10 @@ export class GatewayServer {
         sessionBreakdown.totalMessages += s.messageCount;
       }
 
+      // Heartbeat log
+      const hb = this.agent.getHeartbeatManager?.();
+      const heartbeatLog = hb ? hb.getLog(20) : [];
+
       return {
         uptime: Math.floor((Date.now() - this.startTime) / 1000),
         model: this.config.agent.model,
@@ -420,7 +424,16 @@ export class GatewayServer {
         presence: this.presenceManager.getState(),
         skills: this.agent.getLoadedSkills?.() || [],
         plugins: this.agent.getToolStats().deferredTools.filter(t => t.summary.startsWith('Plugin tool:')),
+        heartbeatLog,
       };
+    });
+
+    // ── Heartbeat Log API ─────────────────────────────────────────────
+    this.app.get('/api/heartbeat/log', async (req) => {
+      const hb = this.agent.getHeartbeatManager?.();
+      if (!hb) return { entries: [], error: 'Heartbeat not available' };
+      const limit = (req.query as any).limit ? parseInt((req.query as any).limit) : 50;
+      return { entries: hb.getLog(limit) };
     });
 
     // ── Cron API ──────────────────────────────────────────────────────

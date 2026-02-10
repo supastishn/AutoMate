@@ -991,6 +991,11 @@ export class Agent {
     this.heartbeatManager = hb;
   }
 
+  /** Get heartbeat manager reference (for gateway API). */
+  getHeartbeatManager(): any {
+    return this.heartbeatManager;
+  }
+
   /** Handle /heartbeat command */
   private _handleHeartbeatCommand(arg?: string): string {
     if (!this.heartbeatManager) {
