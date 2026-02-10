@@ -13,8 +13,14 @@ import type { Agent } from '../agent/agent.js';
 import type { SessionManager } from './session-manager.js';
 import type { WebSocket } from 'ws';
 import { setCanvasBroadcaster, getCanvas, getAllCanvases, type CanvasEvent } from '../canvas/canvas-manager.js';
-import { setImageBroadcaster, type ImageEvent } from '../agent/tools/image-send.js';
+import { setImageBroadcaster, type ImageEvent } from '../agent/tools/image.js';
 import { PresenceManager, type PresenceEvent, type TypingEvent } from './presence.js';
+
+interface ContextInfo {
+  used: number;
+  limit: number;
+  percent: number;
+}
 
 interface WebChatClient {
   ws: WebSocket;
@@ -45,6 +51,12 @@ export class GatewayServer {
       agent.getAgentName() || 'automate'
     );
     agent.setPresenceManager(this.presenceManager);
+  }
+
+  private getContextInfo(sessionId: string): ContextInfo {
+    const used = this.sessionManager.estimateTokens(sessionId);
+    const limit = this.config.sessions.contextLimit;
+    return { used, limit, percent: Math.round((used / limit) * 100) };
   }
 
   async start(): Promise<void> {
@@ -325,6 +337,7 @@ export class GatewayServer {
         session_id: sessionId,
         client_id: clientId,
         presence: this.presenceManager.getState(),
+        context: this.getContextInfo(sessionId),
       }));
 
       socket.on('message', async (data: Buffer) => {
@@ -354,6 +367,7 @@ export class GatewayServer {
               content: result.content,
               tool_calls: result.toolCalls,
               usage: result.usage,
+              context: this.getContextInfo(sessionId),
               done: true,
             }));
           }
@@ -397,6 +411,7 @@ export class GatewayServer {
               messages: session.messages
                 .filter(m => m.role === 'user' || m.role === 'assistant')
                 .map(m => ({ role: m.role, content: m.content || '' })),
+              context: this.getContextInfo(targetId),
             }));
           }
         } catch (err) {

@@ -7,13 +7,12 @@ import { browserTools } from './tools/browser.js';
 import { sessionTools, setSessionManager, setAgent } from './tools/sessions.js';
 import { memoryTools, setMemoryManager } from './tools/memory.js';
 import { webTools } from './tools/web.js';
-import { imageTools, setImageConfig } from './tools/image.js';
+import { imageTools, setImageConfig, setImageBroadcaster } from './tools/image.js';
 import { cronTools, setScheduler } from './tools/cron.js';
 import { processTools } from './tools/process.js';
 import { canvasTools, setCanvasBroadcaster } from '../canvas/canvas-manager.js';
 import { clawHubTools, setClawHubConfig } from '../clawhub/registry.js';
 import { skillBuilderTools, setSkillBuilderConfig } from './tools/skill-builder.js';
-import { imageSendingTools, setImageSendConfig, setImageBroadcaster } from './tools/image-send.js';
 import { subAgentTools, setSubAgentSpawner } from './tools/subagent.js';
 import { sharedMemoryTools, setSharedMemoryDir } from './tools/shared-memory.js';
 import { pluginTools, setPluginManager } from '../plugins/manager.js';
@@ -83,15 +82,9 @@ export class Agent {
       this.tools.register(tool);
     }
 
-    // Image analysis tool
-    setImageConfig(config.agent.apiBase, config.agent.model);
+    // Image tools (analyze, generate, send)
+    setImageConfig(config.agent.apiBase, config.agent.model, config.agent.apiKey);
     for (const tool of imageTools) {
-      this.tools.register(tool);
-    }
-
-    // Image sending/generation tools
-    setImageSendConfig(config.agent.apiBase, config.agent.apiKey);
-    for (const tool of imageSendingTools) {
       this.tools.register(tool);
     }
 

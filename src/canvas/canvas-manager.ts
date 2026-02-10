@@ -1,12 +1,7 @@
 import type { Tool } from '../agent/tool-registry.js';
 
 /**
- * Canvas (A2UI) - Agent-driven visual workspace
- * 
- * The agent can push HTML/Markdown/JSON content to connected Canvas clients
- * via WebSocket. Clients render the content in a visual workspace panel.
- * 
- * This is similar to OpenClaw's Live Canvas / A2UI feature.
+ * Canvas (A2UI) - Unified agent-driven visual workspace tool.
  */
 
 export interface CanvasState {
@@ -14,7 +9,7 @@ export interface CanvasState {
   title: string;
   content: string;
   contentType: 'html' | 'markdown' | 'json' | 'text' | 'code';
-  language?: string;     // for code type: 'javascript', 'python', etc.
+  language?: string;
   updatedAt: string;
   history: { content: string; timestamp: string }[];
 }
@@ -32,7 +27,6 @@ export interface CanvasEvent {
   };
 }
 
-// Global state - each session can have one canvas
 const canvases: Map<string, CanvasState> = new Map();
 let broadcaster: CanvasBroadcaster | null = null;
 
@@ -48,12 +42,8 @@ function getOrCreateCanvas(sessionId: string): CanvasState {
   let canvas = canvases.get(sessionId);
   if (!canvas) {
     canvas = {
-      id: sessionId,
-      title: 'Canvas',
-      content: '',
-      contentType: 'markdown',
-      updatedAt: new Date().toISOString(),
-      history: [],
+      id: sessionId, title: 'Canvas', content: '',
+      contentType: 'markdown', updatedAt: new Date().toISOString(), history: [],
     };
     canvases.set(sessionId, canvas);
   }
@@ -68,117 +58,101 @@ export function getAllCanvases(): CanvasState[] {
   return Array.from(canvases.values());
 }
 
-// --- Agent Tools ---
-
 export const canvasTools: Tool[] = [
   {
-    name: 'canvas_push',
-    description: 'Push content to the visual Canvas workspace. Connected clients will render it in real-time. Use this to show HTML pages, markdown documents, code snippets, data visualizations, tables, or any visual content to the user.',
+    name: 'canvas',
+    description: [
+      'Visual Canvas workspace for displaying rich content to connected clients.',
+      'Actions: push, reset, snapshot.',
+      'push — push HTML/Markdown/JSON/code/text content to the canvas (rendered in real-time).',
+      'reset — clear the canvas.',
+      'snapshot — get the current canvas state and content.',
+    ].join(' '),
     parameters: {
       type: 'object',
       properties: {
-        title: {
+        action: {
           type: 'string',
-          description: 'Title for the canvas content',
+          description: 'Action: push|reset|snapshot',
         },
-        content: {
-          type: 'string',
-          description: 'The content to display. Can be HTML, Markdown, JSON, plain text, or code.',
-        },
+        title: { type: 'string', description: 'Title for the canvas content (for push)' },
+        content: { type: 'string', description: 'Content to display: HTML, Markdown, JSON, text, or code (for push)' },
         content_type: {
           type: 'string',
           enum: ['html', 'markdown', 'json', 'text', 'code'],
-          description: 'The type of content being pushed. Default: markdown',
+          description: 'Content type (for push, default: markdown)',
         },
-        language: {
-          type: 'string',
-          description: 'For code content_type: the programming language (e.g. javascript, python, typescript)',
-        },
+        language: { type: 'string', description: 'Programming language for code content_type (for push)' },
       },
-      required: ['content'],
+      required: ['action'],
     },
     async execute(params, ctx) {
-      const canvas = getOrCreateCanvas(ctx.sessionId);
-      const title = (params.title as string) || canvas.title;
-      const content = params.content as string;
-      const contentType = (params.content_type as string) || 'markdown';
-      const language = params.language as string | undefined;
+      const action = params.action as string;
 
-      // Save to history
-      if (canvas.content) {
-        canvas.history.push({
-          content: canvas.content,
-          timestamp: canvas.updatedAt,
-        });
-        // Keep last 20 history entries
-        if (canvas.history.length > 20) {
-          canvas.history = canvas.history.slice(-20);
+      switch (action) {
+        case 'push': {
+          const content = params.content as string;
+          if (!content) return { output: '', error: 'content is required for push' };
+          const canvas = getOrCreateCanvas(ctx.sessionId);
+          const title = (params.title as string) || canvas.title;
+          const contentType = (params.content_type as string) || 'markdown';
+          const language = params.language as string | undefined;
+
+          if (canvas.content) {
+            canvas.history.push({ content: canvas.content, timestamp: canvas.updatedAt });
+            if (canvas.history.length > 20) canvas.history = canvas.history.slice(-20);
+          }
+
+          canvas.title = title;
+          canvas.content = content;
+          canvas.contentType = contentType as any;
+          canvas.language = language;
+          canvas.updatedAt = new Date().toISOString();
+
+          broadcast({
+            type: 'canvas_push',
+            canvas: { id: canvas.id, title, content, contentType, language },
+          });
+
+          return { output: `Canvas updated: "${title}" (${contentType}, ${content.length} chars)` };
         }
+
+        case 'reset': {
+          const canvas = getOrCreateCanvas(ctx.sessionId);
+          canvas.content = '';
+          canvas.title = 'Canvas';
+          canvas.contentType = 'markdown';
+          canvas.language = undefined;
+          canvas.updatedAt = new Date().toISOString();
+
+          broadcast({
+            type: 'canvas_reset',
+            canvas: { id: canvas.id, title: 'Canvas', content: '', contentType: 'markdown' },
+          });
+
+          return { output: 'Canvas cleared.' };
+        }
+
+        case 'snapshot': {
+          const canvas = canvases.get(ctx.sessionId);
+          if (!canvas || !canvas.content) return { output: 'Canvas is empty.' };
+
+          return {
+            output: JSON.stringify({
+              title: canvas.title,
+              contentType: canvas.contentType,
+              language: canvas.language,
+              contentLength: canvas.content.length,
+              content: canvas.content.slice(0, 2000),
+              historyCount: canvas.history.length,
+              updatedAt: canvas.updatedAt,
+            }, null, 2),
+          };
+        }
+
+        default:
+          return { output: `Error: Unknown action "${action}". Valid: push, reset, snapshot` };
       }
-
-      canvas.title = title;
-      canvas.content = content;
-      canvas.contentType = contentType as any;
-      canvas.language = language;
-      canvas.updatedAt = new Date().toISOString();
-
-      broadcast({
-        type: 'canvas_push',
-        canvas: { id: canvas.id, title, content, contentType, language },
-      });
-
-      return { output: `Canvas updated: "${title}" (${contentType}, ${content.length} chars)` };
-    },
-  },
-
-  {
-    name: 'canvas_reset',
-    description: 'Clear the Canvas workspace, removing all content.',
-    parameters: {
-      type: 'object',
-      properties: {},
-    },
-    async execute(_params, ctx) {
-      const canvas = getOrCreateCanvas(ctx.sessionId);
-      canvas.content = '';
-      canvas.title = 'Canvas';
-      canvas.contentType = 'markdown';
-      canvas.language = undefined;
-      canvas.updatedAt = new Date().toISOString();
-
-      broadcast({
-        type: 'canvas_reset',
-        canvas: { id: canvas.id, title: 'Canvas', content: '', contentType: 'markdown' },
-      });
-
-      return { output: 'Canvas cleared.' };
-    },
-  },
-
-  {
-    name: 'canvas_snapshot',
-    description: 'Get the current state of the Canvas workspace, including content and history.',
-    parameters: {
-      type: 'object',
-      properties: {},
-    },
-    async execute(_params, ctx) {
-      const canvas = canvases.get(ctx.sessionId);
-      if (!canvas || !canvas.content) {
-        return { output: 'Canvas is empty.' };
-      }
-
-      return {
-        output: JSON.stringify({
-          title: canvas.title,
-          contentType: canvas.contentType,
-          language: canvas.language,
-          contentLength: canvas.content.length,
-          content: canvas.content.slice(0, 2000),
-          historyCount: canvas.history.length,
-          updatedAt: canvas.updatedAt,
-        }, null, 2),
-      };
     },
   },
 ];

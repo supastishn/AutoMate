@@ -624,10 +624,17 @@ def start(config=None):
     )
 
     if not use_headless_new:
-        display = Display(
-            visible=False, size=(screen_prof["width"], screen_prof["height"])
-        )
-        display.start()
+        try:
+            display = Display(
+                visible=False, size=(screen_prof["width"], screen_prof["height"])
+            )
+            display.start()
+        except Exception as e:
+            sys.stderr.write(
+                f"[engine] Xvfb failed ({e}), falling back to --headless=new\n"
+            )
+            display = None
+            use_headless_new = True
 
     opts = uc.ChromeOptions()
     opts.add_argument("--no-sandbox")
