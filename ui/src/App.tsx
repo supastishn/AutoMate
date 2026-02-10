@@ -9,6 +9,7 @@ const ClawHub = lazy(() => import('./pages/ClawHub'))
 const Cron = lazy(() => import('./pages/Cron'))
 const Memory = lazy(() => import('./pages/Memory'))
 const Plugins = lazy(() => import('./pages/Plugins'))
+const Agents = lazy(() => import('./pages/Agents'))
 const Settings = lazy(() => import('./pages/Settings'))
 const Doctor = lazy(() => import('./pages/Doctor'))
 
@@ -20,7 +21,7 @@ function LoadingFallback() {
   )
 }
 
-const tabs = ['Dashboard', 'Chat', 'Canvas', 'Sessions', 'Skills', 'ClawHub', 'Cron', 'Memory', 'Plugins', 'Settings', 'Doctor'] as const
+const tabs = ['Dashboard', 'Chat', 'Canvas', 'Sessions', 'Skills', 'ClawHub', 'Cron', 'Memory', 'Plugins', 'Agents', 'Settings', 'Doctor'] as const
 type Tab = typeof tabs[number]
 
 const tabIcons: Record<Tab, string> = {
@@ -33,6 +34,7 @@ const tabIcons: Record<Tab, string> = {
   Cron: '\u23F0',
   Memory: '\u{1F9E0}',
   Plugins: '\u{1F50C}',
+  Agents: '\u{1F916}',
   Settings: '\u2699\uFE0F',
   Doctor: '\u{1FA7A}',
 }
@@ -134,6 +136,7 @@ export default function App() {
           {tab === 'Cron' && <Cron />}
           {tab === 'Memory' && <Memory />}
           {tab === 'Plugins' && <Plugins />}
+          {tab === 'Agents' && <Agents />}
           {tab === 'Doctor' && <Doctor />}
         </Suspense>
       </div>

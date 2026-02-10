@@ -11,6 +11,7 @@ import { loadConfig, saveConfig, reloadConfig } from '../config/loader.js';
 import { ConfigSchema } from '../config/schema.js';
 import type { Agent } from '../agent/agent.js';
 import type { SessionManager } from './session-manager.js';
+import type { AgentRouter, AgentProfile } from '../agents/router.js';
 import type { WebSocket } from 'ws';
 import { setCanvasBroadcaster, getCanvas, getAllCanvases, type CanvasEvent } from '../canvas/canvas-manager.js';
 import { setImageBroadcaster, type ImageEvent } from '../agent/tools/image.js';
@@ -39,6 +40,7 @@ export class GatewayServer {
   private config: Config;
   private agent: Agent;
   private sessionManager: SessionManager;
+  private router: AgentRouter | null = null;
   private webChatClients: Map<string, WebChatClient> = new Map();
   private canvasClients: Map<string, CanvasClient> = new Map();
   private startTime = Date.now();
@@ -52,6 +54,11 @@ export class GatewayServer {
       agent.getAgentName() || 'automate'
     );
     agent.setPresenceManager(this.presenceManager);
+  }
+
+  /** Set the multi-agent router. When set, agent APIs and message routing use the router. */
+  setRouter(router: AgentRouter): void {
+    this.router = router;
   }
 
   private getContextInfo(sessionId: string): ContextInfo {
@@ -279,11 +286,15 @@ export class GatewayServer {
 
       // Check for commands
       if (message.startsWith('/')) {
-        const cmdResult = this.agent.handleCommand(sessionId, message);
+        const cmdResult = this.router
+          ? this.router.handleCommand(sessionId, message)
+          : this.agent.handleCommand(sessionId, message);
         if (cmdResult) return { response: cmdResult, session_id: sessionId };
       }
 
-      const result = await this.agent.processMessage(sessionId, message);
+      const result = this.router
+        ? await this.router.processMessage(sessionId, message)
+        : await this.agent.processMessage(sessionId, message);
       return {
         response: result.content,
         session_id: sessionId,
@@ -642,6 +653,97 @@ export class GatewayServer {
       const installed = listInstalled(skillsDir);
       return { installed };
     });
+
+    // ── Agents API ────────────────────────────────────────────────────
+    this.app.get('/api/agents', async () => {
+      if (!this.router) {
+        return { agents: [], defaultAgent: null, message: 'Multi-agent router not active' };
+      }
+      const all = this.router.getAllAgents();
+      const defaultAgent = this.router.getDefaultAgent();
+      return {
+        agents: all.map(m => ({
+          name: m.name,
+          channels: m.channels,
+          allowFrom: m.allowFrom,
+          isDefault: defaultAgent?.name === m.name,
+          model: m.agent.getConfig().agent.model,
+          sessionCount: m.sessionManager.listSessions().length,
+        })),
+        defaultAgent: defaultAgent?.name || null,
+      };
+    });
+
+    this.app.post<{ Body: AgentProfile }>('/api/agents', async (req, reply) => {
+      if (!this.router) {
+        return reply.code(400).send({ error: 'Multi-agent router not active. Configure agents in config.' });
+      }
+      const profile = req.body;
+      if (!profile.name) {
+        return reply.code(400).send({ error: 'Agent name is required' });
+      }
+      if (this.router.getAgent(profile.name)) {
+        return reply.code(409).send({ error: `Agent "${profile.name}" already exists` });
+      }
+      try {
+        await this.router.initAgents([profile]);
+        this.broadcastDataUpdate('agents');
+        return { ok: true, name: profile.name };
+      } catch (err: any) {
+        return reply.code(400).send({ error: err.message || 'Failed to create agent' });
+      }
+    });
+
+    this.app.post<{ Body: { name: string } }>('/api/agents/default', async (req, reply) => {
+      if (!this.router) {
+        return reply.code(400).send({ error: 'Multi-agent router not active' });
+      }
+      const { name } = req.body;
+      const agent = this.router.getAgent(name);
+      if (!agent) {
+        return reply.code(404).send({ error: `Agent "${name}" not found` });
+      }
+      // Use the router's internal default switch (via handleCommand)
+      const result = this.router.handleCommand('system', `/agents switch ${name}`);
+      this.broadcastDataUpdate('agents');
+      return { ok: true, message: result };
+    });
+
+    this.app.delete<{ Params: { name: string } }>('/api/agents/:name', async (req, reply) => {
+      if (!this.router) {
+        return reply.code(400).send({ error: 'Multi-agent router not active' });
+      }
+      const { name } = req.params;
+      const agent = this.router.getAgent(name);
+      if (!agent) {
+        return reply.code(404).send({ error: `Agent "${name}" not found` });
+      }
+      // Shut down the agent's resources
+      if (agent.scheduler) agent.scheduler.stop();
+      agent.skillsLoader.stopWatching();
+      agent.sessionManager.saveAll();
+      // Remove from router (we need to add this method or use internal map)
+      (this.router as any).agents?.delete(name);
+      this.broadcastDataUpdate('agents');
+      return { ok: true };
+    });
+
+    // ── Plugin Unload API ─────────────────────────────────────────────
+    this.app.post<{ Body: { name: string } }>('/api/plugins/unload', async (req, reply) => {
+      const pm = this.agent.getPluginManager();
+      if (!pm) return reply.code(400).send({ error: 'Plugin manager not available' });
+      try {
+        const result = await pm.unloadPlugin(req.body.name);
+        if (result) {
+          this.agent.refreshPluginTools();
+          this.broadcastDataUpdate('plugins', pm.getPlugins());
+          return { ok: true, name: req.body.name };
+        }
+        return reply.code(404).send({ error: `Plugin "${req.body.name}" not found or already unloaded` });
+      } catch (err: any) {
+        return reply.code(400).send({ error: err.message || 'Failed to unload plugin' });
+      }
+    });
   }
 
   private registerWebSocket(): void {
@@ -671,19 +773,25 @@ export class GatewayServer {
           if (msg.type === 'message') {
             const content = msg.content as string;
 
-            // Check commands
+            // Check commands — route through router if available
             if (content.startsWith('/')) {
-              const cmdResult = this.agent.handleCommand(sessionId, content);
+              const cmdResult = this.router
+                ? this.router.handleCommand(sessionId, content)
+                : this.agent.handleCommand(sessionId, content);
               if (cmdResult) {
                 socket.send(JSON.stringify({ type: 'response', content: cmdResult, done: true }));
                 return;
               }
             }
 
-            // Stream response (typing indicator is now handled by PresenceManager)
-            const result = await this.agent.processMessage(sessionId, content, (chunk) => {
-              socket.send(JSON.stringify({ type: 'stream', content: chunk }));
-            });
+            // Stream response — route through router if available
+            const result = this.router
+              ? await this.router.processMessage(sessionId, content, (chunk) => {
+                  socket.send(JSON.stringify({ type: 'stream', content: chunk }));
+                })
+              : await this.agent.processMessage(sessionId, content, (chunk) => {
+                  socket.send(JSON.stringify({ type: 'stream', content: chunk }));
+                });
 
             // Send completion
             socket.send(JSON.stringify({

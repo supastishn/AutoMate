@@ -108,6 +108,7 @@ export default function Plugins() {
   const [scaffoldName, setScaffoldName] = React.useState('')
   const [scaffoldType, setScaffoldType] = React.useState<'tool' | 'channel' | 'middleware'>('tool')
   const [scaffoldStatus, setScaffoldStatus] = React.useState<string | null>(null)
+  const [unloading, setUnloading] = React.useState<string | null>(null)
 
   const fetchPlugins = React.useCallback(() => {
     fetch('/api/plugins')
@@ -163,6 +164,22 @@ export default function Plugins() {
         fetchPlugins()
       })
       .catch(() => setScaffoldStatus('Failed to scaffold plugin.'))
+  }
+
+  const handleUnload = (name: string) => {
+    if (!confirm(`Unload plugin "${name}"? It will stop until the next reload.`)) return
+    setUnloading(name)
+    fetch('/api/plugins/unload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+      .then(r => {
+        if (!r.ok) throw new Error('Unload failed')
+        fetchPlugins()
+      })
+      .catch(() => setScaffoldStatus(`Failed to unload "${name}".`))
+      .finally(() => setUnloading(null))
   }
 
   return (
@@ -311,6 +328,20 @@ export default function Plugins() {
                   }}>
                     {m.type}
                   </span>
+                  <button
+                    onClick={() => handleUnload(m.name)}
+                    disabled={unloading === m.name}
+                    style={{
+                      ...btnBase,
+                      padding: '4px 10px',
+                      fontSize: 11,
+                      background: unloading === m.name ? '#333' : '#2e1a1a',
+                      color: unloading === m.name ? '#666' : '#f44336',
+                      border: '1px solid #4a2a2a',
+                    }}
+                  >
+                    {unloading === m.name ? 'Unloading...' : 'Unload'}
+                  </button>
                 </div>
 
                 {/* Description */}

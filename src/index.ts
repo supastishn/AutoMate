@@ -12,6 +12,7 @@ import { Scheduler } from './cron/scheduler.js';
 import { runOnboardWizard } from './onboard/wizard.js';
 import { wireHeartbeat } from './heartbeat/manager.js';
 import { PluginManager } from './plugins/manager.js';
+import { AgentRouter } from './agents/router.js';
 import {
   fetchRegistry, searchSkills, installSkill, uninstallSkill,
   updateSkill, updateAllSkills, listInstalled,
@@ -131,6 +132,16 @@ program
 
     // Start gateway
     const gateway = new GatewayServer(config, agent, sessionManager);
+
+    // Wire multi-agent router if agents are configured
+    let agentRouter: AgentRouter | undefined;
+    if (config.agents && config.agents.length > 0) {
+      agentRouter = new AgentRouter(config);
+      await agentRouter.initAgents(config.agents);
+      gateway.setRouter(agentRouter);
+      console.log(`  Agents: ${config.agents.map(a => a.name).join(', ')}`);
+    }
+
     await gateway.start();
 
     // Start Discord if configured
@@ -170,6 +181,7 @@ program
     // Graceful shutdown
     const shutdown = async () => {
       console.log('\nShutting down...');
+      if (agentRouter) agentRouter.shutdown();
       if (scheduler) scheduler.stop();
       skillsLoader.stopWatching();
       sessionManager.saveAll();
