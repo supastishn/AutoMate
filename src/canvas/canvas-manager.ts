@@ -64,7 +64,7 @@ export const canvasTools: Tool[] = [
     description: [
       'Visual Canvas workspace for displaying rich content to connected clients.',
       'Actions: push, reset, snapshot.',
-      'push — push HTML/Markdown/JSON/code/text content to the canvas (rendered in real-time). Use mode=append to add to existing content, or mode=overwrite (default) to replace it.',
+      'push — push HTML/Markdown/JSON/code/text content to the canvas (rendered in real-time). Use mode=append (default) to add to existing content, or mode=overwrite to replace it.',
       'reset — clear the canvas.',
       'snapshot — get the current canvas state and content.',
     ].join(' '),
@@ -86,7 +86,7 @@ export const canvasTools: Tool[] = [
         mode: {
           type: 'string',
           enum: ['overwrite', 'append'],
-          description: 'Push mode: overwrite replaces content (default), append adds to existing content',
+          description: 'Push mode: append adds to existing content (default), overwrite replaces content',
         },
       },
       required: ['action'],
@@ -102,7 +102,7 @@ export const canvasTools: Tool[] = [
           const title = (params.title as string) || canvas.title;
           const contentType = (params.content_type as string) || 'markdown';
           const language = params.language as string | undefined;
-          const mode = (params.mode as string) || 'overwrite';
+          const mode = (params.mode as string) || 'append';
 
           if (canvas.content) {
             canvas.history.push({ content: canvas.content, timestamp: canvas.updatedAt });
