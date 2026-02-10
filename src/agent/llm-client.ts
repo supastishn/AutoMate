@@ -171,7 +171,7 @@ export class LLMClient {
   }
 
   /** Try each provider in order until one succeeds */
-  async chat(messages: LLMMessage[], tools?: ToolDef[]): Promise<LLMResponse> {
+  async chat(messages: LLMMessage[], tools?: ToolDef[], toolChoice?: 'auto' | 'required' | 'none'): Promise<LLMResponse> {
     const errors: string[] = [];
 
     for (let i = 0; i < this.providers.length; i++) {
@@ -185,7 +185,7 @@ export class LLMClient {
       }
 
       try {
-        const result = await this._chatWithProvider(provider, messages, tools);
+        const result = await this._chatWithProvider(provider, messages, tools, toolChoice);
         // Success - reset fail count and set as current
         provider.failCount = 0;
         this.currentIndex = idx;
@@ -201,7 +201,7 @@ export class LLMClient {
     throw new Error(`All providers failed:\n${errors.join('\n')}`);
   }
 
-  private async _chatWithProvider(provider: ProviderEntry, messages: LLMMessage[], tools?: ToolDef[]): Promise<LLMResponse> {
+  private async _chatWithProvider(provider: ProviderEntry, messages: LLMMessage[], tools?: ToolDef[], toolChoice?: 'auto' | 'required' | 'none'): Promise<LLMResponse> {
     const body: Record<string, unknown> = {
       model: provider.model,
       messages,
@@ -211,7 +211,7 @@ export class LLMClient {
     };
     if (tools && tools.length > 0) {
       body.tools = tools;
-      body.tool_choice = 'auto';
+      body.tool_choice = toolChoice || 'auto';
     }
 
     const res = await fetch(`${provider.apiBase}/chat/completions`, {

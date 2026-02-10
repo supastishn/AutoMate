@@ -57,6 +57,11 @@ export class SessionToolView {
     readonly sessionId: string,
   ) {}
 
+  /** Inject a tool directly into this session (not from deferred pool, not visible globally). */
+  injectTool(tool: Tool): void {
+    this.promoted.set(tool.name, tool);
+  }
+
   /** Promote a deferred tool for this session. */
   promote(name: string): { promoted: boolean; description?: string; error?: string } {
     // Already promoted in this session?
