@@ -81,7 +81,7 @@ export const webTools: Tool[] = [
     description: [
       'Web operations: search and fetch.',
       'Actions: search, fetch.',
-      'search — search the web using Brave Search API (set BRAVE_API_KEY).',
+      'search — search the web using DuckDuckGo (no API key needed). Falls back to Brave Search if BRAVE_API_KEY is set.',
       'fetch — fetch a URL and extract clean text content.',
     ].join(' '),
     parameters: {
@@ -107,9 +107,25 @@ export const webTools: Tool[] = [
           if (!query) return { output: '', error: 'query is required for search' };
           const count = Math.min(Math.max((params.count as number) || 5, 1), 20);
 
-          const apiKey = process.env.BRAVE_API_KEY;
+          // Primary: DuckDuckGo HTML scraping (no API key needed)
+          try {
+            const results = await searchDDG(query, count);
 
-          // Try Brave first if API key is set
+            if (results.length > 0) {
+              let output = `# Search: ${query}\n\n`;
+              for (const r of results) {
+                output += `## ${r.title ?? '(no title)'}\n${r.url ?? ''}\n${r.description ?? ''}\n\n`;
+              }
+              if (output.length > 10000) output = output.slice(0, 10000) + '\n... (truncated)';
+              return { output };
+            }
+            // DDG returned 0 results, fall through to Brave
+          } catch {
+            // DDG failed, fall through to Brave
+          }
+
+          // Fallback: Brave Search API (if API key is set)
+          const apiKey = process.env.BRAVE_API_KEY;
           if (apiKey) {
             try {
               const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}`;
@@ -132,27 +148,12 @@ export const webTools: Tool[] = [
                   return { output };
                 }
               }
-              // If Brave fails, fall through to DDG
             } catch {
-              // Brave failed, fall through to DDG
+              // Brave also failed
             }
           }
 
-          // Fallback: DuckDuckGo HTML scraping (no API key needed)
-          try {
-            const results = await searchDDG(query, count);
-
-            if (results.length === 0) return { output: `# Search: ${query}\n\nNo results found.` };
-
-            let output = `# Search: ${query}\n\n`;
-            for (const r of results) {
-              output += `## ${r.title ?? '(no title)'}\n${r.url ?? ''}\n${r.description ?? ''}\n\n`;
-            }
-            if (output.length > 10000) output = output.slice(0, 10000) + '\n... (truncated)';
-            return { output };
-          } catch (err) {
-            return { output: '', error: `Search failed: ${err}` };
-          }
+          return { output: `# Search: ${query}\n\nNo results found.` };
         }
 
         case 'fetch': {
