@@ -485,6 +485,18 @@ export class Agent {
     this.tools.register(tool);
   }
 
+  /** Register a tool as deferred (discoverable via catalog, loaded per-session via load_tool or programmatically). */
+  registerDeferredTool(tool: any, summary: string): void {
+    this.tools.registerDeferred({ tool, summary });
+  }
+
+  /** Promote a deferred tool for a specific session (makes it active without load_tool). */
+  promoteToolForSession(sessionId: string, toolName: string): boolean {
+    const view = this.tools.getSessionView(sessionId);
+    const result = view.promote(toolName);
+    return result.promoted;
+  }
+
   async processMessage(
     sessionId: string,
     userMessage: string,
@@ -640,9 +652,29 @@ export class Agent {
         return { content: content || '', toolCalls: toolCallResults, usage };
       } else {
         // Non-streaming mode
-        const response = await this.llm.chat(messages, toolDefs);
+        const isHeartbeat = sessionId.startsWith('heartbeat:');
+        if (isHeartbeat) {
+          console.log(`[heartbeat-debug] Iteration ${iterations}: sending ${messages.length} messages to LLM with ${toolDefs.length} tool defs`);
+          console.log(`[heartbeat-debug] Tool defs: ${toolDefs.map(t => t.function.name).join(', ')}`);
+          console.log(`[heartbeat-debug] Last user message (${messages[messages.length-1]?.role}): ${(messages[messages.length-1]?.content || '').slice(0, 200)}...`);
+        }
+        // Force tool usage for heartbeat sessions on first iteration
+        const toolChoice = (isHeartbeat && iterations === 1 && toolDefs.length > 0) ? 'required' as const : undefined;
+        if (isHeartbeat && toolChoice) {
+          console.log(`[heartbeat-debug] Using tool_choice='required' for iteration ${iterations}`);
+        }
+        const response = await this.llm.chat(messages, toolDefs, toolChoice);
         const choice = response.choices[0];
         const msg = choice.message;
+
+        if (isHeartbeat) {
+          console.log(`[heartbeat-debug] LLM response: finish_reason=${choice.finish_reason}, has_tool_calls=${!!(msg.tool_calls && msg.tool_calls.length > 0)}, tool_calls_count=${msg.tool_calls?.length || 0}, content_length=${(msg.content || '').length}`);
+          if (msg.tool_calls && msg.tool_calls.length > 0) {
+            console.log(`[heartbeat-debug] Tool calls: ${msg.tool_calls.map(tc => `${tc.function.name}(${tc.function.arguments.slice(0, 80)})`).join(', ')}`);
+          } else {
+            console.log(`[heartbeat-debug] Text response: ${(msg.content || '').slice(0, 300)}`);
+          }
+        }
 
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           this.sessionManager.addMessage(sessionId, {
