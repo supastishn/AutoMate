@@ -1,5 +1,59 @@
 import type { Tool } from '../tool-registry.js';
 
+// ── DuckDuckGo fallback search ─────────────────────────────────────────────
+
+async function searchDDG(query: string, count: number): Promise<{ title: string; url: string; description: string }[]> {
+  const searchUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+
+  const res = await fetch(searchUrl, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    },
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!res.ok) throw new Error(`DuckDuckGo returned ${res.status}`);
+  const html = await res.text();
+  const results: { title: string; url: string; description: string }[] = [];
+
+  const blocks = html.split(/class="result results_links/).slice(1);
+
+  for (const block of blocks) {
+    if (results.length >= count) break;
+
+    const titleMatch = block.match(/class="result__a"[^>]*>([\s\S]*?)<\/a>/);
+    if (!titleMatch) continue;
+    let title = titleMatch[1].replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+
+    const hrefMatch = block.match(/class="result__a"\s+href="([^"]*)"/);
+    if (!hrefMatch) continue;
+    let resultUrl = hrefMatch[1];
+
+    if (resultUrl.includes('uddg=')) {
+      const decoded = resultUrl.split('uddg=')[1]?.split('&')[0];
+      if (decoded) resultUrl = decodeURIComponent(decoded);
+    }
+
+    const snippetMatch = block.match(/class="result__snippet"[^>]*>([\s\S]*?)<\/a>/);
+    let snippet = snippetMatch
+      ? snippetMatch[1].replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
+      : '';
+
+    const decode = (s: string) =>
+      s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ');
+    title = decode(title);
+    snippet = decode(snippet);
+
+    if (title && resultUrl && !resultUrl.includes('duckduckgo.com')) {
+      results.push({ title, url: resultUrl, description: snippet });
+    }
+  }
+
+  return results;
+}
+
+// ── HTML stripping ─────────────────────────────────────────────────────────
+
 function stripHtml(html: string): { title: string; text: string } {
   const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
   const title = titleMatch ? titleMatch[1].trim() : '';
@@ -54,22 +108,39 @@ export const webTools: Tool[] = [
           const count = Math.min(Math.max((params.count as number) || 5, 1), 20);
 
           const apiKey = process.env.BRAVE_API_KEY;
-          if (!apiKey) {
-            return { output: '', error: 'BRAVE_API_KEY is not set. Get a free key at https://api.search.brave.com/' };
+
+          // Try Brave first if API key is set
+          if (apiKey) {
+            try {
+              const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}`;
+              const res = await fetch(url, {
+                headers: { Accept: 'application/json', 'X-Subscription-Token': apiKey, 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36' },
+              });
+
+              if (res.ok) {
+                const data = (await res.json()) as {
+                  web?: { results?: Array<{ title?: string; url?: string; description?: string }> };
+                };
+                const results = data.web?.results ?? [];
+
+                if (results.length > 0) {
+                  let output = `# Search: ${query}\n\n`;
+                  for (const r of results) {
+                    output += `## ${r.title ?? '(no title)'}\n${r.url ?? ''}\n${r.description ?? ''}\n\n`;
+                  }
+                  if (output.length > 10000) output = output.slice(0, 10000) + '\n... (truncated)';
+                  return { output };
+                }
+              }
+              // If Brave fails, fall through to DDG
+            } catch {
+              // Brave failed, fall through to DDG
+            }
           }
 
+          // Fallback: DuckDuckGo HTML scraping (no API key needed)
           try {
-            const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}`;
-            const res = await fetch(url, {
-              headers: { Accept: 'application/json', 'X-Subscription-Token': apiKey, 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36' },
-            });
-
-            if (!res.ok) return { output: '', error: `Brave Search API error: ${res.status} ${res.statusText}` };
-
-            const data = (await res.json()) as {
-              web?: { results?: Array<{ title?: string; url?: string; description?: string }> };
-            };
-            const results = data.web?.results ?? [];
+            const results = await searchDDG(query, count);
 
             if (results.length === 0) return { output: `# Search: ${query}\n\nNo results found.` };
 

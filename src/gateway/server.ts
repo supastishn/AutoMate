@@ -837,12 +837,23 @@ export class GatewayServer {
             if (client) client.sessionId = targetId;
             sessionId = targetId;
             // Send session history back to client
+            // Include tool_calls metadata for assistant messages so UI can render them
+            // Filter out raw 'tool' role messages (results) but show info in the assistant message
             socket.send(JSON.stringify({
               type: 'session_loaded',
               session_id: targetId,
               messages: session.messages
-                .filter(m => m.role === 'user' || m.role === 'assistant')
-                .map(m => ({ role: m.role, content: m.content || '' })),
+                .filter(m => m.role === 'user' || m.role === 'assistant' || m.role === 'system')
+                .map(m => {
+                  const msg: any = { role: m.role, content: m.content || '' };
+                  if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
+                    msg.tool_calls = m.tool_calls.map(tc => ({
+                      name: tc.function?.name || tc.function,
+                      arguments: tc.function?.arguments || '',
+                    }));
+                  }
+                  return msg;
+                }),
               context: this.getContextInfo(targetId),
             }));
           }
@@ -905,5 +916,13 @@ export class GatewayServer {
     this.presenceManager.shutdown();
     this.sessionManager.saveAll();
     await this.app.close();
+  }
+
+  /** Broadcast a raw JSON message to all connected WebSocket chat clients. */
+  broadcastToAll(msg: Record<string, unknown>): void {
+    const data = JSON.stringify(msg);
+    for (const [, client] of this.webChatClients) {
+      try { client.ws.send(data); } catch {}
+    }
   }
 }

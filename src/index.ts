@@ -133,6 +133,11 @@ program
     // Start gateway
     const gateway = new GatewayServer(config, agent, sessionManager);
 
+    // Wire heartbeat broadcaster to push live events to all WebSocket clients
+    if (heartbeatManager) {
+      heartbeatManager.setBroadcaster((msg: Record<string, unknown>) => gateway.broadcastToAll(msg));
+    }
+
     // Wire multi-agent router if agents are configured
     let agentRouter: AgentRouter | undefined;
     if (config.agents && config.agents.length > 0) {

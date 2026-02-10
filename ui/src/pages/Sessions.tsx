@@ -266,13 +266,22 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
           <div style={{ maxHeight: 400, overflow: 'auto' }}>
             {(selected.session.messages || []).map((m: any, i: number) => (
               <div key={i} style={{ padding: 8, borderBottom: '1px solid #1a1a1a', fontSize: 13, fontFamily: 'monospace' }}>
-                <span style={{ color: m.role === 'user' ? '#4fc3f7' : m.role === 'assistant' ? '#81c784' : '#ffb74d', marginRight: 8 }}>
+                <span style={{ color: m.role === 'user' ? '#4fc3f7' : m.role === 'assistant' ? '#81c784' : m.role === 'tool' ? '#ffb74d' : '#888', marginRight: 8 }}>
                   [{m.role}]
                 </span>
                 <span style={{ color: '#ccc' }}>
-                  {(m.content || '(tool call)').slice(0, 300)}
+                  {m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0 && !m.content
+                    ? m.tool_calls.map((tc: any) => tc.function?.name || tc.name || 'unknown').join(', ')
+                    : m.role === 'tool' && !m.content
+                    ? '(result)'
+                    : (m.content || '').slice(0, 300)}
                   {m.content && m.content.length > 300 ? '...' : ''}
                 </span>
+                {m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0 && (
+                  <span style={{ marginLeft: 8, fontSize: 10, color: '#666' }}>
+                    [{m.tool_calls.map((tc: any) => tc.function?.name || tc.name || '?').join(', ')}]
+                  </span>
+                )}
               </div>
             ))}
           </div>
