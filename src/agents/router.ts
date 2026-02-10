@@ -176,7 +176,7 @@ export class AgentRouter {
   }
 
   /** Handle a slash command, routing to correct agent */
-  handleCommand(sessionId: string, command: string, userId?: string): string | null {
+  async handleCommand(sessionId: string, command: string, userId?: string): Promise<string | null> {
     // Router-level commands
     const parts = command.trim().toLowerCase().split(/\s+/);
     if (parts[0] === '/agents') {
@@ -185,7 +185,7 @@ export class AgentRouter {
 
     const managed = this.route(sessionId, userId);
     if (!managed) return 'No agent available for this channel.';
-    return managed.agent.handleCommand(sessionId, command);
+    return await managed.agent.handleCommand(sessionId, command);
   }
 
   private handleAgentsCommand(args: string[]): string {
