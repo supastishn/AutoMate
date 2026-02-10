@@ -457,6 +457,34 @@ export default function Settings() {
         )
       })}
 
+      {/* Webhook test */}
+      <div style={{ ...cardStyle, padding: 16, marginBottom: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: '#e0e0e0' }}>Test Webhook</div>
+            <div style={{ fontSize: 12, color: '#888', marginTop: 2 }}>Send a test event to verify webhook configuration</div>
+          </div>
+          <button
+            onClick={() => {
+              fetch(`${API}/api/webhook`, {
+                method: 'POST',
+                headers: { ...authHeaders(), 'X-Webhook-Token': deepGet(config, 'webhooks.token') || '' },
+                body: JSON.stringify({ event: 'test', data: { message: 'Webhook test from Settings UI', timestamp: new Date().toISOString() } }),
+              })
+                .then(r => r.json())
+                .then((d: any) => showToast(d.ok ? 'Webhook test sent!' : (d.error || 'Failed'), !d.ok))
+                .catch(e => showToast(`Webhook test failed: ${e.message}`, true))
+            }}
+            style={{
+              padding: '8px 20px', background: '#1a1a2e', color: '#4fc3f7',
+              border: '1px solid #333', borderRadius: 4, cursor: 'pointer', fontSize: 13,
+            }}
+          >
+            Send Test
+          </button>
+        </div>
+      </div>
+
       <div style={{ marginTop: 20, marginBottom: 40, textAlign: 'right' }}>
         <button
           onClick={handleSave}

@@ -5,8 +5,12 @@ import Sessions from './pages/Sessions'
 import Skills from './pages/Skills'
 import Canvas from './pages/Canvas'
 import Settings from './pages/Settings'
+import Cron from './pages/Cron'
+import Memory from './pages/Memory'
+import Plugins from './pages/Plugins'
+import Doctor from './pages/Doctor'
 
-const tabs = ['Dashboard', 'Chat', 'Canvas', 'Sessions', 'Skills', 'Settings'] as const
+const tabs = ['Dashboard', 'Chat', 'Canvas', 'Sessions', 'Skills', 'Cron', 'Memory', 'Plugins', 'Settings', 'Doctor'] as const
 type Tab = typeof tabs[number]
 
 const tabIcons: Record<Tab, string> = {
@@ -15,7 +19,11 @@ const tabIcons: Record<Tab, string> = {
   Canvas: '\u{1F3A8}',
   Sessions: '\u{1F4C1}',
   Skills: '\u26A1',
+  Cron: '\u23F0',
+  Memory: '\u{1F9E0}',
+  Plugins: '\u{1F50C}',
   Settings: '\u2699\uFE0F',
+  Doctor: '\u{1FA7A}',
 }
 
 export default function App() {
@@ -110,6 +118,10 @@ export default function App() {
         {tab === 'Sessions' && <Sessions onOpenInChat={(id) => { setLoadSessionId(id); setTab('Chat') }} />}
         {tab === 'Skills' && <Skills />}
         {tab === 'Settings' && <Settings />}
+        {tab === 'Cron' && <Cron />}
+        {tab === 'Memory' && <Memory />}
+        {tab === 'Plugins' && <Plugins />}
+        {tab === 'Doctor' && <Doctor />}
       </div>
     </div>
   )

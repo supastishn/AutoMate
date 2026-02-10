@@ -206,16 +206,26 @@ export default function Dashboard() {
 
         <div style={{ marginTop: 12 }}>
           <div style={{ fontSize: 11, color: '#666', marginBottom: 4 }}>Core Tools</div>
-          <div>{tools.coreTools.map(t => <span key={t} style={pillGreen}>{t}</span>)}</div>
+          <div>{tools.coreTools.map(t => (
+              <span key={t} style={{ ...pillGreen, cursor: 'pointer' }} onClick={() => {
+                fetch('/api/tools/unload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: t }) })
+                  .then(() => fetchData()).catch(() => {})
+              }} title="Click to unload">
+                {t} ×
+              </span>
+            ))}</div>
         </div>
 
         <div style={{ marginTop: 10 }}>
           <div style={{ fontSize: 11, color: '#666', marginBottom: 4 }}>Deferred Catalog</div>
           <div>{tools.deferredTools.map(t => (
-            <span key={t.name} style={pill} title={t.summary + (t.actions ? `\nActions: ${t.actions.join(', ')}` : '')}>
-              {t.name}{t.actions ? ` (${t.actions.length})` : ''}
-            </span>
-          ))}</div>
+              <span key={t.name} style={{ ...pill, cursor: 'pointer' }} title={t.summary + (t.actions ? `\nActions: ${t.actions.join(', ')}` : '') + '\nClick to load'} onClick={() => {
+                fetch('/api/tools/load', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: t.name }) })
+                  .then(() => fetchData()).catch(() => {})
+              }}>
+                + {t.name}{t.actions ? ` (${t.actions.length})` : ''}
+              </span>
+            ))}</div>
         </div>
 
         {/* Per-session promotions */}
@@ -345,6 +355,44 @@ export default function Dashboard() {
               )}
             </div>
           )) : <div style={mono}>No plugin tools registered</div>}
+        </div>
+      </div>
+
+      {/* ── Index & Heartbeat Controls ──────────────────────────────── */}
+      <div style={grid2}>
+        <div style={card}>
+          <div style={sectionTitle}>Index Controls</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {['on', 'off', 'rebuild'].map(action => (
+              <button key={action} onClick={() => {
+                fetch('/api/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command: `/index ${action}` }) })
+                  .then(r => r.json()).then((d: any) => alert(d.result || 'Done')).catch(() => {})
+              }} style={{
+                padding: '6px 16px', background: '#1a1a2e', color: '#4fc3f7',
+                border: '1px solid #333', borderRadius: 4, cursor: 'pointer', fontSize: 12,
+                textTransform: 'capitalize' as const,
+              }}>
+                {action === 'on' ? 'Enable' : action === 'off' ? 'Disable' : 'Rebuild'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={card}>
+          <div style={sectionTitle}>Heartbeat Controls</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {['on', 'off', 'now'].map(action => (
+              <button key={action} onClick={() => {
+                fetch('/api/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command: `/heartbeat ${action}` }) })
+                  .then(r => r.json()).then((d: any) => alert(d.result || 'Done')).catch(() => {})
+              }} style={{
+                padding: '6px 16px', background: '#1a1a2e', color: '#4fc3f7',
+                border: '1px solid #333', borderRadius: 4, cursor: 'pointer', fontSize: 12,
+                textTransform: 'capitalize' as const,
+              }}>
+                {action === 'on' ? 'Enable' : action === 'off' ? 'Disable' : 'Trigger Now'}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
     </div>
