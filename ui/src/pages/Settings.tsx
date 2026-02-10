@@ -211,6 +211,12 @@ const toastStyle = (isError: boolean): React.CSSProperties => ({
   boxShadow: '0 4px 20px rgba(0,0,0,.5)',
 })
 
+interface ProviderInfo {
+  name: string
+  model: string
+  active: boolean
+}
+
 export default function Settings() {
   const [config, setConfig] = useState<any>(null)
   const [original, setOriginal] = useState<any>(null)
@@ -219,6 +225,9 @@ export default function Settings() {
   const [toast, setToast] = useState<{ msg: string; err: boolean } | null>(null)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const [tagInputs, setTagInputs] = useState<Record<string, string>>({})
+  const [providers, setProviders] = useState<ProviderInfo[]>([])
+  const [currentModel, setCurrentModel] = useState('')
+  const [switching, setSwitching] = useState(false)
 
   useEffect(() => {
     fetch(`${API}/api/config/full`, { headers: authHeaders() })
@@ -236,7 +245,36 @@ export default function Settings() {
         showToast(`Failed to load config: ${e.message}`, true)
         setLoading(false)
       })
+
+    fetch(`${API}/api/models`, { headers: authHeaders() })
+      .then(r => r.json())
+      .then((d: any) => {
+        setProviders(d.providers || [])
+        setCurrentModel(d.current?.model || '')
+      })
+      .catch(() => {})
   }, [])
+
+  function switchProvider(name: string) {
+    setSwitching(true)
+    fetch(`${API}/api/models/switch`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ name }),
+    })
+      .then(r => r.json())
+      .then((d: any) => {
+        if (d.success) {
+          setCurrentModel(d.model || name)
+          setProviders(prev => prev.map(p => ({ ...p, active: p.name === name })))
+          showToast(`Switched to ${name}`, false)
+        } else {
+          showToast(d.error || 'Switch failed', true)
+        }
+      })
+      .catch(e => showToast(`Switch failed: ${e.message}`, true))
+      .finally(() => setSwitching(false))
+  }
 
   function showToast(msg: string, err: boolean) {
     setToast({ msg, err })
@@ -457,6 +495,88 @@ export default function Settings() {
         )
       })}
 
+      {/* System Prompt Editor */}
+      <div style={cardStyle}>
+        <div style={sectionHeaderStyle} onClick={() => toggleSection('System Prompt')}>
+          <span>System Prompt</span>
+          <span style={{ color: '#888', fontSize: 18, transform: collapsed['System Prompt'] ? 'rotate(-90deg)' : 'rotate(0deg)', transition: 'transform .2s' }}>
+            ▼
+          </span>
+        </div>
+        {!collapsed['System Prompt'] && (
+          <div style={{ padding: 20 }}>
+            <textarea
+              value={deepGet(config, 'agent.systemPrompt') || ''}
+              onChange={e => handleChange('agent.systemPrompt', e.target.value)}
+              style={{
+                width: '100%', minHeight: 300, resize: 'vertical',
+                background: '#1a1a2e', border: '1px solid #333', borderRadius: 4,
+                color: '#e0e0e0', padding: 16, fontFamily: 'monospace', fontSize: 13,
+                lineHeight: 1.6, outline: 'none', boxSizing: 'border-box' as const,
+              }}
+              spellCheck={false}
+            />
+            <div style={{ fontSize: 11, color: '#666', marginTop: 6 }}>
+              This prompt is injected at the start of every conversation. Markdown supported.
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Providers / Model Switcher */}
+      <div style={cardStyle}>
+        <div style={sectionHeaderStyle} onClick={() => toggleSection('Providers')}>
+          <span>Providers</span>
+          <span style={{ color: '#888', fontSize: 18, transform: collapsed['Providers'] ? 'rotate(-90deg)' : 'rotate(0deg)', transition: 'transform .2s' }}>
+            ▼
+          </span>
+        </div>
+        {!collapsed['Providers'] && (
+          <div style={{ padding: 20 }}>
+            {currentModel && (
+              <div style={{ marginBottom: 16, fontSize: 13, color: '#999' }}>
+                Current model: <span style={{ color: '#4fc3f7', fontFamily: 'monospace' }}>{currentModel}</span>
+              </div>
+            )}
+            {providers.length === 0 ? (
+              <div style={{ fontSize: 13, color: '#555' }}>No providers loaded.</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {providers.map((p, i) => (
+                  <div key={i} style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '10px 16px', borderRadius: 6,
+                    background: p.active ? '#0d2137' : '#141414',
+                    border: p.active ? '1px solid #1a5276' : '1px solid #222',
+                  }}>
+                    <div>
+                      <div style={{ fontSize: 14, color: p.active ? '#4fc3f7' : '#ccc', fontWeight: p.active ? 600 : 400 }}>
+                        {p.name}
+                        {p.active && <span style={{ marginLeft: 8, fontSize: 10, color: '#4fc3f7', background: '#0d2137', border: '1px solid #1a5276', borderRadius: 10, padding: '2px 8px' }}>active</span>}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#666', fontFamily: 'monospace', marginTop: 2 }}>{p.model}</div>
+                    </div>
+                    {!p.active && (
+                      <button
+                        onClick={() => switchProvider(p.name)}
+                        disabled={switching}
+                        style={{
+                          padding: '6px 16px', background: 'transparent', color: '#4fc3f7',
+                          border: '1px solid #333', borderRadius: 4, cursor: switching ? 'not-allowed' : 'pointer',
+                          fontSize: 12, fontWeight: 600, opacity: switching ? 0.5 : 1,
+                        }}
+                      >
+                        Switch
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Webhook test */}
       <div style={{ ...cardStyle, padding: 16, marginBottom: 12 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -503,6 +623,40 @@ export default function Settings() {
         >
           {saving ? 'Saving...' : 'Save'}
         </button>
+      </div>
+
+      {/* Danger Zone */}
+      <div style={{ ...cardStyle, padding: 16, marginBottom: 40, border: '1px solid #4a2a2a' }}>
+        <h3 style={{ fontSize: 16, fontWeight: 600, color: '#f44336', marginBottom: 8 }}>Danger Zone</h3>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: '#e0e0e0' }}>Factory Reset</div>
+            <div style={{ fontSize: 12, color: '#888', marginTop: 2 }}>
+              Wipes all memory, identity files, sessions, and restores BOOTSTRAP.md. This cannot be undone.
+            </div>
+          </div>
+          <button
+            onClick={() => {
+              if (!confirm('Are you sure you want to factory reset? This will wipe all memory, identity, and sessions.')) return
+              if (!confirm('This CANNOT be undone. Type OK in the next prompt to confirm.')) return
+              fetch(`${API}/api/command`, {
+                method: 'POST',
+                headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ command: '/factory-reset' }),
+              })
+                .then(r => r.json())
+                .then((d: any) => showToast(d.result || 'Factory reset complete'))
+                .catch(e => showToast(`Factory reset failed: ${e.message}`, true))
+            }}
+            style={{
+              padding: '8px 20px', background: '#2e1a1a', color: '#f44336',
+              border: '1px solid #4a2a2a', borderRadius: 4, cursor: 'pointer',
+              fontSize: 13, fontWeight: 600, flexShrink: 0,
+            }}
+          >
+            Factory Reset
+          </button>
+        </div>
       </div>
 
       {toast && (

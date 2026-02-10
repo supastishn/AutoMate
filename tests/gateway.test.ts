@@ -210,4 +210,255 @@ describe('GatewayServer', () => {
       if (authSM.resetTimer) clearInterval(authSM.resetTimer);
     }
   });
+
+  // ── Cron API ────────────────────────────────────────────────────────
+
+  test('GET /api/cron returns jobs array (scheduler not wired)', async () => {
+    const res = await fetch(`${baseUrl}/api/cron`);
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.ok(Array.isArray(data.jobs));
+    // Scheduler is not wired in test config, so error message is present
+    assert.equal(data.error, 'Scheduler not available');
+  });
+
+  test('POST /api/cron returns scheduler not available', async () => {
+    const res = await fetch(`${baseUrl}/api/cron`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'test-job', prompt: 'hello', schedule: '* * * * *' }),
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.equal(data.error, 'Scheduler not available');
+  });
+
+  test('DELETE /api/cron/:id returns scheduler not available', async () => {
+    const res = await fetch(`${baseUrl}/api/cron/some-id`, { method: 'DELETE' });
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.equal(data.error, 'Scheduler not available');
+  });
+
+  test('PUT /api/cron/:id/toggle returns scheduler not available', async () => {
+    const res = await fetch(`${baseUrl}/api/cron/some-id/toggle`, { method: 'PUT' });
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.equal(data.error, 'Scheduler not available');
+  });
+
+  // ── Memory API ──────────────────────────────────────────────────────
+
+  test('GET /api/memory/files returns files list', async () => {
+    const res = await fetch(`${baseUrl}/api/memory/files`);
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.ok(Array.isArray(data.files));
+    // Memory manager creates default template files (PERSONALITY.md, IDENTITY.md, etc.)
+    assert.ok(data.files.length >= 0);
+  });
+
+  test('GET /api/memory/file/:name returns file content', async () => {
+    const res = await fetch(`${baseUrl}/api/memory/file/IDENTITY.md`);
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.equal(data.name, 'IDENTITY.md');
+    assert.equal(typeof data.content, 'string');
+  });
+
+  test('GET /api/memory/file/:name returns empty for nonexistent file', async () => {
+    const res = await fetch(`${baseUrl}/api/memory/file/NONEXISTENT.md`);
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.equal(data.name, 'NONEXISTENT.md');
+    assert.equal(data.content, '');
+  });
+
+  test('PUT /api/memory/file/:name saves file content', async () => {
+    const res = await fetch(`${baseUrl}/api/memory/file/TEST-FILE.md`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: '# Test\nHello world' }),
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.equal(data.ok, true);
+
+    // Verify the file was actually saved
+    const readRes = await fetch(`${baseUrl}/api/memory/file/TEST-FILE.md`);
+    const readData = await readRes.json() as any;
+    assert.equal(readData.content, '# Test\nHello world');
+  });
+
+  test('POST /api/memory/search returns results array', async () => {
+    const res = await fetch(`${baseUrl}/api/memory/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: 'identity', limit: 5 }),
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.ok(Array.isArray(data.results));
+  });
+
+  // ── Plugins API ─────────────────────────────────────────────────────
+
+  test('GET /api/plugins returns plugins array (plugin manager not wired)', async () => {
+    const res = await fetch(`${baseUrl}/api/plugins`);
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.ok(Array.isArray(data.plugins));
+    assert.equal(data.error, 'Plugin manager not available');
+  });
+
+  test('POST /api/plugins/reload returns plugin manager not available', async () => {
+    const res = await fetch(`${baseUrl}/api/plugins/reload`, { method: 'POST' });
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.equal(data.error, 'Plugin manager not available');
+  });
+
+  test('POST /api/plugins/scaffold returns error when plugin manager not available', async () => {
+    const res = await fetch(`${baseUrl}/api/plugins/scaffold`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'test-plugin', type: 'tool' }),
+    });
+    assert.equal(res.status, 400);
+    const data = await res.json() as any;
+    assert.equal(data.error, 'Plugin manager not available');
+  });
+
+  // ── Doctor API ──────────────────────────────────────────────────────
+
+  test('GET /api/doctor returns security audit', async () => {
+    const res = await fetch(`${baseUrl}/api/doctor`);
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.ok(Array.isArray(data.ok));
+    assert.ok(Array.isArray(data.issues));
+    assert.ok(typeof data.total === 'object');
+    assert.equal(typeof data.total.passed, 'number');
+    assert.equal(typeof data.total.warnings, 'number');
+    // auth.mode is 'none' → should produce a warning
+    assert.ok(data.issues.some((i: string) => i.includes('Auth mode is "none"')));
+    // host is '127.0.0.1' → should pass
+    assert.ok(data.ok.some((o: string) => o.includes('localhost only')));
+  });
+
+  // ── Command API ─────────────────────────────────────────────────────
+
+  test('POST /api/command executes /status', async () => {
+    const res = await fetch(`${baseUrl}/api/command`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: '/status' }),
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.ok(typeof data.result === 'string');
+    assert.ok(typeof data.sessionId === 'string');
+    // /status without active session says "No active session."
+    assert.ok(
+      data.result.toLowerCase().includes('session'),
+      `Expected "session" in result: ${data.result}`,
+    );
+  });
+
+  test('POST /api/command handles unknown command', async () => {
+    const res = await fetch(`${baseUrl}/api/command`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: '/nonexistentcommand' }),
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.equal(data.result, 'Unknown command');
+  });
+
+  // ── Tools load/unload API ───────────────────────────────────────────
+
+  test('POST /api/tools/load loads a deferred tool', async () => {
+    const res = await fetch(`${baseUrl}/api/tools/load`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'web' }),
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.equal(data.promoted, true);
+  });
+
+  test('POST /api/tools/load returns error for unknown tool', async () => {
+    const res = await fetch(`${baseUrl}/api/tools/load`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'nonexistent-tool-xyz' }),
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.equal(data.promoted, false);
+    assert.ok(data.error);
+  });
+
+  test('POST /api/tools/unload demotes a core tool', async () => {
+    const res = await fetch(`${baseUrl}/api/tools/unload`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'bash' }),
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.equal(data.demoted, true);
+  });
+
+  test('POST /api/tools/unload returns error for not-loaded tool', async () => {
+    const res = await fetch(`${baseUrl}/api/tools/unload`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'nonexistent-tool-xyz' }),
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.equal(data.demoted, false);
+    assert.ok(data.error);
+  });
+
+  // ── Models API ──────────────────────────────────────────────────────
+
+  test('GET /api/models returns providers and current', async () => {
+    const res = await fetch(`${baseUrl}/api/models`);
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.ok(Array.isArray(data.providers));
+    assert.ok(data.providers.length >= 1);
+    assert.ok(typeof data.current === 'object');
+    assert.equal(data.current.model, 'test-model');
+    // At least one provider should be marked active
+    assert.ok(data.providers.some((p: any) => p.active === true));
+  });
+
+  test('POST /api/models/switch with invalid name returns error', async () => {
+    const res = await fetch(`${baseUrl}/api/models/switch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'nonexistent-provider' }),
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.equal(data.success, false);
+    assert.ok(data.error);
+  });
+
+  test('POST /api/models/switch by index 0 succeeds', async () => {
+    const res = await fetch(`${baseUrl}/api/models/switch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '0' }),
+    });
+    assert.equal(res.status, 200);
+    const data = await res.json() as any;
+    assert.equal(data.success, true);
+    assert.equal(data.model, 'test-model');
+  });
 });

@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useRef } from 'react'
+import { onDataUpdate } from '../hooks/useDataUpdates'
 
 interface Session {
   id: string
@@ -17,6 +18,15 @@ const card = {
 export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: string) => void }) {
   const [sessions, setSessions] = useState<Session[]>([])
   const [selected, setSelected] = useState<any>(null)
+  const [importStatus, setImportStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
+
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768)
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
 
   const fetchSessions = async () => {
     try {
@@ -28,8 +38,15 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
 
   useEffect(() => {
     fetchSessions()
-    const i = setInterval(fetchSessions, 5000)
+    const i = setInterval(fetchSessions, 30000)
     return () => clearInterval(i)
+  }, [])
+
+  // Refetch when sessions change via WebSocket push
+  useEffect(() => {
+    return onDataUpdate((resource) => {
+      if (resource === 'sessions') fetchSessions()
+    })
   }, [])
 
   const viewSession = async (id: string) => {
@@ -50,9 +67,57 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
     if (e) e.stopPropagation()
     if (!confirm(`Delete session "${id}" permanently?`)) return
     await fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
-    // Immediately remove from local state so UI updates instantly
     setSessions(prev => prev.filter(s => s.id !== id))
     if (selected?.session?.id === id) setSelected(null)
+  }
+
+  const exportSession = (id: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation()
+    window.open('/api/sessions/' + encodeURIComponent(id) + '/export')
+  }
+
+  const exportAll = async () => {
+    try {
+      const allSessions: any[] = []
+      for (const s of sessions) {
+        const r = await fetch(`/api/sessions/${encodeURIComponent(s.id)}`)
+        const data = await r.json()
+        if (data.session) allSessions.push(data.session)
+      }
+      const blob = new Blob([JSON.stringify({ version: '1.0', exportedAt: new Date().toISOString(), sessions: allSessions }, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `all-sessions-${Date.now()}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch { /* ignore */ }
+  }
+
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setImportStatus(null)
+    try {
+      const text = await file.text()
+      const parsed = JSON.parse(text)
+      const payload = parsed.session || parsed
+      const r = await fetch('/api/sessions/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: payload }),
+      })
+      const result = await r.json() as any
+      if (r.ok && result.ok) {
+        setImportStatus({ type: 'success', message: `Imported ${result.messageCount} messages into session "${result.sessionId}"` })
+        fetchSessions()
+      } else {
+        setImportStatus({ type: 'error', message: result.error || 'Import failed' })
+      }
+    } catch (err: any) {
+      setImportStatus({ type: 'error', message: err.message || 'Failed to parse file' })
+    }
+    if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
   const ago = (date: string) => {
@@ -62,14 +127,47 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
     return `${Math.floor(s / 3600)}h ago`
   }
 
+  const gridStyle: React.CSSProperties = {
+    display: 'grid',
+    gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr',
+    gap: 12,
+  }
+
   return (
     <div style={{ padding: 30, maxWidth: 1000 }}>
-      <h1 style={{ fontSize: 24, marginBottom: 24, fontWeight: 600 }}>Sessions</h1>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+        <h1 style={{ fontSize: 24, fontWeight: 600, margin: 0 }}>Sessions</h1>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={exportAll}
+            style={{ padding: '6px 14px', background: '#1a2a3a', color: '#4fc3f7', border: '1px solid #2a4a6a', borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
+            Export All
+          </button>
+        </div>
+      </div>
+
+      {/* Import Section */}
+      <div style={{ background: '#141414', border: '1px solid #222', borderRadius: 8, padding: 16, marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ fontSize: 13, color: '#888' }}>Import Session:</span>
+          <label style={{ padding: '4px 12px', background: '#1a2a3a', color: '#4fc3f7', border: '1px solid #2a4a6a', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
+            Choose JSON file
+            <input ref={fileInputRef} type="file" accept=".json" onChange={handleImport} style={{ display: 'none' }} />
+          </label>
+        </div>
+        {importStatus && (
+          <div style={{ marginTop: 8, fontSize: 12, color: importStatus.type === 'success' ? '#81c784' : '#f44' }}>
+            {importStatus.message}
+          </div>
+        )}
+      </div>
 
       {sessions.length === 0 ? (
-        <div style={{ color: '#666', padding: 20 }}>No active sessions</div>
+        <div style={{ color: '#666', padding: 40, textAlign: 'center' as const }}>
+          <div style={{ fontSize: 32, marginBottom: 8, opacity: 0.3 }}>💬</div>
+          No active sessions
+        </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div style={gridStyle}>
           {sessions.map(s => (
             <div key={s.id} style={card} onClick={() => viewSession(s.id)}
               onMouseEnter={e => (e.currentTarget.style.borderColor = '#4fc3f7')}
@@ -84,6 +182,11 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
                       Chat
                     </button>
                   )}
+                  <button onClick={(e) => exportSession(s.id, e)}
+                    title="Export session"
+                    style={{ padding: '2px 8px', background: '#1a2a1a', color: '#81c784', border: '1px solid #2a4a2a', borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
+                    Export
+                  </button>
                   <button onClick={(e) => deleteSession(s.id, e)}
                     title="Delete session"
                     style={{ padding: '2px 8px', background: '#2a1a1a', color: '#f44', border: '1px solid #4a2a2a', borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
@@ -91,7 +194,7 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
                   </button>
                 </div>
               </div>
-              <div style={{ display: 'flex', gap: 16, fontSize: 12, color: '#888' }}>
+              <div style={{ display: 'flex', gap: 16, fontSize: 12, color: '#888', flexWrap: 'wrap' as const }}>
                 <span>Channel: {s.channel}</span>
                 <span>Messages: {s.messageCount}</span>
                 <span>Updated: {ago(s.updatedAt)}</span>
@@ -112,6 +215,10 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
                   Open in Chat
                 </button>
               )}
+              <button onClick={() => exportSession(selected.session.id)}
+                style={{ padding: '6px 12px', background: '#1a3a1c', color: '#81c784', border: '1px solid #2a5a2c', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
+                Export
+              </button>
               <button onClick={() => deleteSession(selected.session.id)}
                 style={{ padding: '6px 12px', background: '#f44336', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
                 Delete

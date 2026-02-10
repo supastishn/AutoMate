@@ -25,6 +25,12 @@ interface SearchResult {
   score: number
 }
 
+interface Toast {
+  id: number
+  message: string
+  type: 'success' | 'error'
+}
+
 const colors = {
   bg: '#0a0a0a',
   card: '#141414',
@@ -36,6 +42,17 @@ const colors = {
   textDim: '#888',
 } as const
 
+const spinnerKeyframes = `
+@keyframes mem-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+@keyframes mem-toast-in {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+`
+
 const Memory: React.FC = () => {
   const [files, setFiles] = React.useState<MemoryFile[]>([])
   const [selectedFile, setSelectedFile] = React.useState<string | null>(null)
@@ -46,6 +63,31 @@ const Memory: React.FC = () => {
   const [searchQuery, setSearchQuery] = React.useState('')
   const [searchResults, setSearchResults] = React.useState<SearchResult[]>([])
   const [searching, setSearching] = React.useState(false)
+  const [loadingContent, setLoadingContent] = React.useState(false)
+  const [toasts, setToasts] = React.useState<Toast[]>([])
+  const toastIdRef = React.useRef(0)
+
+  // Mobile sidebar
+  const [isMobile, setIsMobile] = React.useState(window.innerWidth < 768)
+  const [sidebarOpen, setSidebarOpen] = React.useState(false)
+
+  React.useEffect(() => {
+    const handleResize = () => {
+      const mobile = window.innerWidth < 768
+      setIsMobile(mobile)
+      if (!mobile) setSidebarOpen(false)
+    }
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
+  const addToast = React.useCallback((message: string, type: 'success' | 'error') => {
+    const id = ++toastIdRef.current
+    setToasts(prev => [...prev, { id, message, type }])
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id))
+    }, 3000)
+  }, [])
 
   const loadFiles = React.useCallback(() => {
     fetch(`${API}/api/memory/files`, { headers: authHeaders() })
@@ -64,6 +106,8 @@ const Memory: React.FC = () => {
     setSelectedFile(name)
     setEditing(false)
     setSearchResults([])
+    setLoadingContent(true)
+    if (isMobile) setSidebarOpen(false)
     fetch(`${API}/api/memory/file/${encodeURIComponent(name)}`, {
       headers: authHeaders(),
     })
@@ -76,6 +120,7 @@ const Memory: React.FC = () => {
         setFileContent('')
         setEditContent('')
       })
+      .finally(() => setLoadingContent(false))
   }
 
   const saveFile = () => {
@@ -91,9 +136,14 @@ const Memory: React.FC = () => {
           setFileContent(editContent)
           setEditing(false)
           loadFiles()
+          addToast('File saved successfully', 'success')
+        } else {
+          addToast(`Save failed: HTTP ${r.status}`, 'error')
         }
       })
-      .catch(() => {})
+      .catch(() => {
+        addToast('Save failed: network error', 'error')
+      })
       .finally(() => setSaving(false))
   }
 
@@ -129,6 +179,7 @@ const Memory: React.FC = () => {
     background: colors.bg,
     color: colors.text,
     fontFamily: 'system-ui, -apple-system, sans-serif',
+    position: 'relative',
   }
 
   const searchBarStyle: React.CSSProperties = {
@@ -137,6 +188,7 @@ const Memory: React.FC = () => {
     padding: '12px 16px',
     borderBottom: `1px solid ${colors.border}`,
     background: colors.card,
+    alignItems: 'center',
   }
 
   const searchInputStyle: React.CSSProperties = {
@@ -167,15 +219,33 @@ const Memory: React.FC = () => {
     display: 'flex',
     flex: 1,
     overflow: 'hidden',
+    position: 'relative',
+    flexDirection: isMobile ? 'column' : 'row',
   }
 
-  const sidebarStyle: React.CSSProperties = {
-    width: 240,
-    minWidth: 240,
-    borderRight: `1px solid ${colors.border}`,
-    overflowY: 'auto',
-    background: colors.card,
-  }
+  const sidebarStyle: React.CSSProperties = isMobile
+    ? {
+        position: 'absolute' as const,
+        top: 0,
+        left: 0,
+        width: '80%',
+        maxWidth: 300,
+        height: '100%',
+        zIndex: 20,
+        borderRight: `1px solid ${colors.border}`,
+        overflowY: 'auto',
+        background: colors.card,
+        transform: sidebarOpen ? 'translateX(0)' : 'translateX(-100%)',
+        transition: 'transform 0.2s ease',
+        boxShadow: sidebarOpen ? '4px 0 20px rgba(0,0,0,0.5)' : 'none',
+      }
+    : {
+        width: 240,
+        minWidth: 240,
+        borderRight: `1px solid ${colors.border}`,
+        overflowY: 'auto',
+        background: colors.card,
+      }
 
   const sidebarHeaderStyle: React.CSSProperties = {
     padding: '12px 16px',
@@ -285,6 +355,8 @@ const Memory: React.FC = () => {
     flex: 1,
     color: colors.textDim,
     fontSize: 14,
+    flexDirection: 'column',
+    gap: 8,
   }
 
   const resultCardStyle: React.CSSProperties = {
@@ -322,10 +394,33 @@ const Memory: React.FC = () => {
     fontWeight: 600,
   }
 
+  const sidebarToggleBtnStyle: React.CSSProperties = {
+    background: colors.card,
+    border: `1px solid ${colors.border}`,
+    borderRadius: 4,
+    color: colors.accent,
+    cursor: 'pointer',
+    padding: '6px 10px',
+    fontSize: 16,
+    lineHeight: 1,
+    fontWeight: 700,
+    flexShrink: 0,
+  }
+
   return (
     <div style={containerStyle}>
+      <style>{spinnerKeyframes}</style>
       {/* Search Bar */}
       <div style={searchBarStyle}>
+        {isMobile && (
+          <button
+            style={sidebarToggleBtnStyle}
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+            title="Toggle sidebar"
+          >
+            ☰
+          </button>
+        )}
         <input
           style={searchInputStyle}
           placeholder="Search memory..."
@@ -346,6 +441,22 @@ const Memory: React.FC = () => {
 
       {/* Body */}
       <div style={bodyStyle}>
+        {/* Mobile overlay backdrop */}
+        {isMobile && sidebarOpen && (
+          <div
+            onClick={() => setSidebarOpen(false)}
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              background: 'rgba(0,0,0,0.5)',
+              zIndex: 10,
+            }}
+          />
+        )}
+
         {/* Sidebar */}
         <div style={sidebarStyle}>
           <div style={sidebarHeaderStyle}>Memory Files</div>
@@ -435,7 +546,21 @@ const Memory: React.FC = () => {
                 </div>
               </div>
               <div style={contentStyle}>
-                {editing ? (
+                {loadingContent ? (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 10 }}>
+                    <div
+                      style={{
+                        width: 20,
+                        height: 20,
+                        border: `3px solid ${colors.border}`,
+                        borderTop: `3px solid ${colors.accent}`,
+                        borderRadius: '50%',
+                        animation: 'mem-spin 0.8s linear infinite',
+                      }}
+                    />
+                    <span style={{ color: colors.textDim, fontSize: 13 }}>Loading file…</span>
+                  </div>
+                ) : editing ? (
                   <textarea
                     style={textareaStyle}
                     value={editContent}
@@ -449,10 +574,45 @@ const Memory: React.FC = () => {
             </>
           ) : (
             <div style={emptyStateStyle}>
+              <div style={{ fontSize: 28, opacity: 0.3 }}>📁</div>
               Select a file from the sidebar or search memory
             </div>
           )}
         </div>
+      </div>
+
+      {/* Toast notifications */}
+      <div style={{
+        position: 'fixed',
+        bottom: 20,
+        right: 20,
+        zIndex: 1000,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+      }}>
+        {toasts.map(t => (
+          <div
+            key={t.id}
+            style={{
+              padding: '10px 16px',
+              borderRadius: 6,
+              fontSize: 13,
+              fontWeight: 600,
+              color: '#fff',
+              background: t.type === 'success' ? colors.green : colors.red,
+              boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+              animation: 'mem-toast-in 0.25s ease-out',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              minWidth: 200,
+            }}
+          >
+            <span>{t.type === 'success' ? '✓' : '✕'}</span>
+            <span>{t.message}</span>
+          </div>
+        ))}
       </div>
     </div>
   )
