@@ -255,10 +255,8 @@ function highlightCode(code: string, lang: string): React.ReactNode {
 
 interface HeartbeatActivity {
   sessionId: string
-  round: number
-  toolCalls: string[]
   content: string
-  status: 'running' | 'finished' | 'error' | 'max_rounds'
+  status: 'running' | 'ok-empty' | 'ok-token' | 'sent' | 'skipped' | 'failed'
   timestamp: number
 }
 
@@ -454,29 +452,25 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         if (msg.event === 'start') {
           setHeartbeat({
             sessionId: msg.sessionId || msg.session_id || '',
-            round: 0,
-            toolCalls: [],
             content: '',
             status: 'running',
             timestamp: msg.timestamp || Date.now(),
           })
-        } else if (msg.event === 'round') {
-          setHeartbeat(prev => ({
-            sessionId: msg.sessionId || msg.session_id || prev?.sessionId || '',
-            round: msg.round || (prev?.round || 0) + 1,
-            toolCalls: msg.toolCalls || [],
-            content: msg.content || '',
-            status: 'running',
+        } else if (msg.event === 'skipped') {
+          setHeartbeat({
+            sessionId: '',
+            content: 'Skipped (empty checklist)',
+            status: 'skipped',
             timestamp: msg.timestamp || Date.now(),
-          }))
+          })
+          setTimeout(() => setHeartbeat(null), 5000)
         } else if (msg.event === 'end') {
-          setHeartbeat(prev => prev ? {
-            ...prev,
-            status: msg.status || 'finished',
-            round: msg.round || prev.round,
+          setHeartbeat({
+            sessionId: msg.sessionId || msg.session_id || '',
+            content: msg.content || '',
+            status: msg.status || 'ok-empty',
             timestamp: msg.timestamp || Date.now(),
-          } : null)
-          // Auto-dismiss after 8 seconds
+          })
           setTimeout(() => setHeartbeat(null), 8000)
         }
       }
@@ -792,41 +786,35 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
       {heartbeat && (
         <div style={{
           padding: '8px 20px',
-          background: heartbeat.status === 'running' ? '#1a1520' : heartbeat.status === 'finished' ? '#151a15' : '#1a1515',
-          borderBottom: `1px solid ${heartbeat.status === 'running' ? '#3a2a4a' : heartbeat.status === 'finished' ? '#2a4a2a' : '#4a2a2a'}`,
+          background: heartbeat.status === 'running' ? '#1a1520' : heartbeat.status === 'sent' ? '#1a1a2e' : heartbeat.status === 'failed' ? '#1a1515' : '#151a15',
+          borderBottom: `1px solid ${heartbeat.status === 'running' ? '#3a2a4a' : heartbeat.status === 'sent' ? '#2a2a4a' : heartbeat.status === 'failed' ? '#4a2a2a' : '#2a4a2a'}`,
           display: 'flex', alignItems: 'center', gap: 12, fontSize: 12,
         }}>
           <span style={{
             display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
-            background: heartbeat.status === 'running' ? '#ce93d8' : heartbeat.status === 'finished' ? '#81c784' : '#f44',
+            background: heartbeat.status === 'running' ? '#ce93d8' : heartbeat.status === 'sent' ? '#4fc3f7' : heartbeat.status === 'failed' ? '#f44' : '#81c784',
             animation: heartbeat.status === 'running' ? 'pulse 1.5s infinite' : 'none',
           }} />
           <span style={{ color: '#ce93d8', fontWeight: 600, fontFamily: 'monospace' }}>Heartbeat</span>
           {heartbeat.status === 'running' && (
-            <>
-              <span style={{ color: '#888' }}>Round {heartbeat.round}</span>
-              {heartbeat.toolCalls.length > 0 && (
-                <span style={{ color: '#666' }}>
-                  Tools: {heartbeat.toolCalls.map((t, i) => (
-                    <span key={i} style={{ color: '#4fc3f7', background: '#1a1a2e', padding: '1px 5px', borderRadius: 3, marginLeft: 4, fontSize: 10 }}>{t}</span>
-                  ))}
-                </span>
-              )}
-              {heartbeat.content && (
-                <span style={{ color: '#aaa', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {heartbeat.content.slice(0, 120)}{heartbeat.content.length > 120 ? '...' : ''}
-                </span>
-              )}
-            </>
+            <span style={{ color: '#888' }}>Checking...</span>
           )}
-          {heartbeat.status === 'finished' && (
-            <span style={{ color: '#81c784' }}>Completed (round {heartbeat.round})</span>
+          {heartbeat.status === 'ok-empty' && (
+            <span style={{ color: '#81c784' }}>All clear (empty response)</span>
           )}
-          {heartbeat.status === 'error' && (
-            <span style={{ color: '#f44' }}>Failed at round {heartbeat.round}</span>
+          {heartbeat.status === 'ok-token' && (
+            <span style={{ color: '#81c784' }}>All clear</span>
           )}
-          {heartbeat.status === 'max_rounds' && (
-            <span style={{ color: '#ff9800' }}>Hit max rounds ({heartbeat.round})</span>
+          {heartbeat.status === 'skipped' && (
+            <span style={{ color: '#888' }}>Skipped (empty checklist)</span>
+          )}
+          {heartbeat.status === 'sent' && (
+            <span style={{ color: '#4fc3f7', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              Alert: {heartbeat.content.slice(0, 120)}{heartbeat.content.length > 120 ? '...' : ''}
+            </span>
+          )}
+          {heartbeat.status === 'failed' && (
+            <span style={{ color: '#f44' }}>Failed</span>
           )}
           <button onClick={() => setHeartbeat(null)} style={{
             background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 14, marginLeft: 'auto', padding: '0 4px',
