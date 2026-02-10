@@ -242,12 +242,28 @@ const styles: Record<string, React.CSSProperties> = {
   },
 }
 
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  const totalSec = Math.round(ms / 1000)
+  if (totalSec < 60) return `${totalSec}s`
+  const totalMin = Math.round(totalSec / 60)
+  if (totalMin < 60) return `${totalMin}m`
+  const hours = Math.floor(totalMin / 60)
+  const mins = totalMin % 60
+  return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`
+}
+
 function formatSchedule(schedule: CronJob['schedule']): string {
   switch (schedule.type) {
     case 'once':
       return schedule.at ? `Once at ${new Date(schedule.at).toLocaleString()}` : 'Once'
-    case 'interval':
-      return `Every ${schedule.every ?? '?'} min`
+    case 'interval': {
+      const every = schedule.every
+      if (every == null) return 'Every ?'
+      // Values >= 1000 are milliseconds (from scheduler/heartbeat); smaller values are legacy minutes
+      const label = every >= 1000 ? formatDuration(every) : `${every}m`
+      return `Every ${label}`
+    }
     case 'cron':
       return schedule.cron ?? 'cron'
     default:
@@ -336,7 +352,7 @@ function Cron() {
       if (form.scheduleType === 'cron') {
         schedule.cron = form.cronExpression
       } else if (form.scheduleType === 'interval') {
-        schedule.every = parseInt(form.intervalMinutes, 10) || 60
+        schedule.every = (parseInt(form.intervalMinutes, 10) || 60) * 60 * 1000
       }
       const body: any = {
         name: form.name.trim(),
