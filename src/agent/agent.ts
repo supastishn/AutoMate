@@ -40,6 +40,7 @@ export class Agent {
   private skillsLoader: SkillsLoader | null = null;
   private presenceManager: PresenceManager | null = null;
   private pluginManager: PluginManager | null = null;
+  private scheduler: Scheduler | null = null;
   private processing: Set<string> = new Set();
   private messageQueue: Map<string, { message: string; onStream?: StreamCallback; resolve: Function; reject: Function }[]> = new Map();
   // Per-session elevated permissions: sessionId -> elevated state
@@ -364,6 +365,7 @@ export class Agent {
 
   /** Wire in the scheduler (called from index.ts after construction) */
   setScheduler(s: Scheduler): void {
+    this.scheduler = s;
     setScheduler(s);
   }
 
@@ -1265,5 +1267,25 @@ export class Agent {
   /** Get the tool registry (for gateway dashboard API). */
   getToolRegistry(): ToolRegistry {
     return this.tools;
+  }
+
+  /** Get the scheduler reference (for gateway API). */
+  getScheduler(): Scheduler | null {
+    return this.scheduler;
+  }
+
+  /** Get the plugin manager reference (for gateway API). */
+  getPluginManager(): PluginManager | null {
+    return this.pluginManager;
+  }
+
+  /** Get the LLM client reference (for gateway API — model listing/switching). */
+  getLLM(): LLMClient {
+    return this.llm;
+  }
+
+  /** Get the config reference (for gateway API — doctor endpoint). */
+  getConfig(): Config {
+    return this.config;
   }
 }

@@ -365,6 +365,176 @@ export class GatewayServer {
         plugins: this.agent.getToolStats().deferredTools.filter(t => t.summary.startsWith('Plugin tool:')),
       };
     });
+
+    // ── Cron API ──────────────────────────────────────────────────────
+    this.app.get('/api/cron', async () => {
+      const scheduler = this.agent.getScheduler();
+      if (!scheduler) return { error: 'Scheduler not available', jobs: [] };
+      return { jobs: scheduler.listJobs() };
+    });
+
+    this.app.post<{ Body: { name: string; prompt: string; schedule: any; sessionId?: string } }>('/api/cron', async (req) => {
+      const scheduler = this.agent.getScheduler();
+      if (!scheduler) return { error: 'Scheduler not available' };
+      const { name, prompt, schedule, sessionId } = req.body;
+      const job = scheduler.addJob(name, prompt, schedule, sessionId);
+      return { ok: true, job };
+    });
+
+    this.app.delete<{ Params: { id: string } }>('/api/cron/:id', async (req) => {
+      const scheduler = this.agent.getScheduler();
+      if (!scheduler) return { error: 'Scheduler not available' };
+      scheduler.removeJob(req.params.id);
+      return { ok: true };
+    });
+
+    this.app.put<{ Params: { id: string } }>('/api/cron/:id/toggle', async (req) => {
+      const scheduler = this.agent.getScheduler();
+      if (!scheduler) return { error: 'Scheduler not available' };
+      const job = scheduler.getJob(req.params.id);
+      if (!job) return { error: 'Job not found' };
+      if (job.enabled) {
+        scheduler.disableJob(req.params.id);
+      } else {
+        scheduler.enableJob(req.params.id);
+      }
+      return { ok: true, enabled: !job.enabled };
+    });
+
+    // ── Memory API ───────────────────────────────────────────────────
+    this.app.get('/api/memory/files', async () => {
+      const mm = this.agent.getMemoryManager();
+      if (!mm) return { error: 'Memory manager not available', files: [] };
+      return { files: mm.listFiles() };
+    });
+
+    this.app.get<{ Params: { name: string } }>('/api/memory/file/:name', async (req) => {
+      const mm = this.agent.getMemoryManager();
+      if (!mm) return { error: 'Memory manager not available' };
+      const content = mm.getIdentityFile(req.params.name);
+      return { name: req.params.name, content: content || '' };
+    });
+
+    this.app.put<{ Params: { name: string }; Body: { content: string } }>('/api/memory/file/:name', async (req) => {
+      const mm = this.agent.getMemoryManager();
+      if (!mm) return { error: 'Memory manager not available' };
+      mm.saveIdentityFile(req.params.name, req.body.content);
+      return { ok: true };
+    });
+
+    this.app.post<{ Body: { query: string; limit?: number } }>('/api/memory/search', async (req) => {
+      const mm = this.agent.getMemoryManager();
+      if (!mm) return { error: 'Memory manager not available', results: [] };
+      const results = await mm.semanticSearch(req.body.query, req.body.limit || 10);
+      return { results };
+    });
+
+    // ── Plugins API ──────────────────────────────────────────────────
+    this.app.get('/api/plugins', async () => {
+      const pm = this.agent.getPluginManager();
+      if (!pm) return { error: 'Plugin manager not available', plugins: [] };
+      return { plugins: pm.getPlugins() };
+    });
+
+    this.app.post('/api/plugins/reload', async () => {
+      const pm = this.agent.getPluginManager();
+      if (!pm) return { error: 'Plugin manager not available' };
+      await pm.loadAll();
+      this.agent.refreshPluginTools();
+      return { ok: true, plugins: pm.getPlugins() };
+    });
+
+    this.app.post<{ Body: { name: string; type?: string } }>('/api/plugins/scaffold', async (req, reply) => {
+      const pm = this.agent.getPluginManager();
+      if (!pm) return reply.code(400).send({ error: 'Plugin manager not available' });
+      try {
+        const { PluginManager } = await import('../plugins/manager.js');
+        const pluginDir = this.config.plugins?.directory || join(this.config.memory.directory, 'plugins');
+        PluginManager.scaffold(pluginDir, req.body.name, (req.body.type || 'tool') as any);
+        return { ok: true, name: req.body.name };
+      } catch (err: any) {
+        return reply.code(400).send({ error: err.message });
+      }
+    });
+
+    // ── Doctor API (security audit) ──────────────────────────────────
+    this.app.get('/api/doctor', async () => {
+      const config = this.agent.getConfig();
+      const issues: string[] = [];
+      const ok: string[] = [];
+
+      if (config.gateway.auth.mode === 'none') {
+        issues.push('[WARN] Auth mode is "none" - anyone can access the API');
+      } else {
+        ok.push('[OK] Auth mode: ' + config.gateway.auth.mode);
+      }
+      if (config.gateway.auth.mode === 'token' && !config.gateway.auth.token) {
+        issues.push('[WARN] Token auth enabled but no token set');
+      }
+      if (config.gateway.host !== '127.0.0.1' && config.gateway.host !== 'localhost') {
+        issues.push(`[WARN] Gateway bound to ${config.gateway.host} - exposed to network`);
+      } else {
+        ok.push('[OK] Gateway bound to localhost only');
+      }
+      if (config.channels.discord.enabled) {
+        if (config.channels.discord.allowFrom.includes('*')) {
+          issues.push('[WARN] Discord allows messages from ALL users');
+        } else {
+          ok.push(`[OK] Discord restricted to ${config.channels.discord.allowFrom.length} users`);
+        }
+      }
+      if (config.tools.deny.length > 0) {
+        ok.push(`[OK] ${config.tools.deny.length} tools denied by policy`);
+      } else {
+        issues.push('[INFO] No tool deny list configured - agent can use all tools');
+      }
+      if (config.browser.enabled) {
+        issues.push('[INFO] Browser automation enabled - agent can browse the web');
+      }
+      if ((config as any).webhooks?.enabled && !(config as any).webhooks?.token) {
+        issues.push('[WARN] Webhooks enabled without auth token');
+      }
+      if (config.cron.enabled) {
+        ok.push('[OK] Cron scheduler enabled');
+      }
+      ok.push(`[OK] Memory directory: ${config.memory.directory}`);
+
+      return { ok, issues, total: { passed: ok.length, warnings: issues.length } };
+    });
+
+    // ── Command API (execute slash commands from UI) ──────────────────
+    this.app.post<{ Body: { command: string; sessionId?: string } }>('/api/command', async (req) => {
+      const sessionId = req.body.sessionId || `webchat:api:${Date.now()}`;
+      const result = this.agent.handleCommand(sessionId, req.body.command);
+      return { result: result || 'Unknown command', sessionId };
+    });
+
+    // ── Tool load/unload API ─────────────────────────────────────────
+    this.app.post<{ Body: { name: string; sessionId?: string } }>('/api/tools/load', async (req) => {
+      const sessionId = req.body.sessionId || 'webchat:api:default';
+      const view = this.agent.getToolRegistry().getSessionView(sessionId);
+      const result = view.promote(req.body.name);
+      return result;
+    });
+
+    this.app.post<{ Body: { name: string; sessionId?: string } }>('/api/tools/unload', async (req) => {
+      const sessionId = req.body.sessionId || 'webchat:api:default';
+      const view = this.agent.getToolRegistry().getSessionView(sessionId);
+      const result = view.demote(req.body.name);
+      return result;
+    });
+
+    // ── Models API ───────────────────────────────────────────────────
+    this.app.get('/api/models', async () => {
+      const llm = this.agent.getLLM();
+      return { providers: llm.listProviders(), current: llm.getCurrentProvider() };
+    });
+
+    this.app.post<{ Body: { name: string } }>('/api/models/switch', async (req) => {
+      const llm = this.agent.getLLM();
+      const result = llm.switchModel(req.body.name);
+      return result;
+    });
   }
 
   private registerWebSocket(): void {

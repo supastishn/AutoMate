@@ -1,5 +1,18 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react'
 
+const SLASH_COMMANDS = [
+  { cmd: '/new', desc: 'Start a new session' },
+  { cmd: '/reset', desc: 'Reset current session' },
+  { cmd: '/factory-reset', desc: 'Wipe everything' },
+  { cmd: '/status', desc: 'Session info' },
+  { cmd: '/compact', desc: 'Compact context' },
+  { cmd: '/elevated on|off', desc: 'Toggle elevated permissions' },
+  { cmd: '/model', desc: 'List or switch models' },
+  { cmd: '/context', desc: 'Context diagnostics' },
+  { cmd: '/index on|off|rebuild', desc: 'Manage search index' },
+  { cmd: '/heartbeat on|off|now', desc: 'Manage heartbeat' },
+] as const
+
 interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
@@ -252,6 +265,12 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
   const [sessionsList, setSessionsList] = useState<{ id: string; channel: string; messageCount: number; updatedAt: string }[]>([])
   const [showSessionPicker, setShowSessionPicker] = useState(false)
   const [contextInfo, setContextInfo] = useState<{ used: number; limit: number; percent: number } | null>(null)
+  const [elevated, setElevated] = useState(false)
+  const [currentModel, setCurrentModel] = useState('')
+  const [models, setModels] = useState<{name: string; model: string; active: boolean}[]>([])
+  const [showModelPicker, setShowModelPicker] = useState(false)
+  const [showSlashMenu, setShowSlashMenu] = useState(false)
+  const [slashFilter, setSlashFilter] = useState('')
   const wsRef = useRef<WebSocket | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -263,6 +282,13 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
   useEffect(() => {
     connect()
     return () => { wsRef.current?.close() }
+  }, [])
+
+  useEffect(() => {
+    fetch('/api/models').then(r => r.json()).then((d: any) => {
+      setModels(d.providers || [])
+      setCurrentModel(d.current?.model || '')
+    }).catch(() => {})
   }, [])
 
   // Fetch sessions list for the picker
@@ -571,7 +597,53 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
             </span>
           </div>
         )}
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {/* Elevated toggle */}
+          <button onClick={() => {
+            const next = !elevated
+            setElevated(next)
+            fetch('/api/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command: `/elevated ${next ? 'on' : 'off'}`, sessionId: currentSessionId }) }).catch(() => {})
+          }} title={elevated ? 'Elevated: ON' : 'Elevated: OFF'} style={{
+            padding: '4px 10px', background: elevated ? '#1a2e1a' : '#1a1a2e',
+            color: elevated ? '#4caf50' : '#888', border: `1px solid ${elevated ? '#4caf50' : '#333'}`,
+            borderRadius: 4, cursor: 'pointer', fontSize: 13,
+          }}>
+            {elevated ? '\u{1F6E1}\uFE0F' : '\u{1F512}'}
+          </button>
+          {/* Model picker */}
+          <div style={{ position: 'relative' }}>
+            <button onClick={() => setShowModelPicker(!showModelPicker)} style={{
+              padding: '4px 12px', background: '#1a1a2e', color: '#4fc3f7',
+              border: '1px solid #333', borderRadius: 4, cursor: 'pointer', fontSize: 11,
+              maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>
+              {currentModel.split('/').pop() || 'Model'}
+            </button>
+            {showModelPicker && (
+              <div style={{
+                position: 'absolute', top: 30, right: 0, zIndex: 100,
+                background: '#141414', border: '1px solid #333', borderRadius: 8,
+                minWidth: 220, boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
+              }}>
+                {models.map((m, i) => (
+                  <div key={i} onClick={() => {
+                    fetch('/api/models/switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: m.name }) })
+                      .then(r => r.json()).then((d: any) => { if (d.success) setCurrentModel(d.model || m.model) }).catch(() => {})
+                    setShowModelPicker(false)
+                  }} style={{
+                    padding: '8px 14px', cursor: 'pointer', borderBottom: '1px solid #1a1a1a',
+                    background: m.active ? '#1a1a2e' : 'transparent',
+                  }}
+                  onMouseEnter={e => (e.currentTarget.style.background = '#1a1a2e')}
+                  onMouseLeave={e => (e.currentTarget.style.background = m.active ? '#1a1a2e' : 'transparent')}
+                  >
+                    <div style={{ fontSize: 12, color: m.active ? '#4fc3f7' : '#ccc' }}>{m.name}</div>
+                    <div style={{ fontSize: 10, color: '#666' }}>{m.model}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           <button onClick={() => {
             fetchSessionsList()
             setShowSessionPicker(!showSessionPicker)
@@ -592,7 +664,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
             padding: '4px 12px', background: '#1a1a2e', color: '#888',
             border: '1px solid #333', borderRadius: 4, cursor: 'pointer', fontSize: 11,
           }}>
-            New Session
+            New
           </button>
         </div>
       </div>
@@ -695,6 +767,31 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
               </div>
             )}
 
+            {/* Quick actions */}
+            {m.role === 'assistant' && m.content && (
+              <div style={{ marginTop: 6, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                {['Summarize', 'Explain', 'Translate'].map(action => (
+                  <button key={action} onClick={() => {
+                    if (wsRef.current) {
+                      const prompt = `${action} the above response concisely.`
+                      setMessages(prev => [...prev, { id: makeId(), role: 'user', content: prompt, timestamp: Date.now() }])
+                      wsRef.current.send(JSON.stringify({ type: 'message', content: prompt }))
+                      setStreaming('')
+                    }
+                  }} style={{
+                    padding: '2px 8px', background: '#1a1a2e', color: '#888',
+                    border: '1px solid #2a2a2a', borderRadius: 10, cursor: 'pointer',
+                    fontSize: 10, transition: 'all 0.15s',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.color = '#4fc3f7'; e.currentTarget.style.borderColor = '#4fc3f7' }}
+                  onMouseLeave={e => { e.currentTarget.style.color = '#888'; e.currentTarget.style.borderColor = '#2a2a2a' }}
+                  >
+                    {action}
+                  </button>
+                ))}
+              </div>
+            )}
+
             {/* Reactions */}
             {m.role === 'assistant' && (
               <div style={{ marginTop: 6, display: 'flex', gap: 4 }}>
@@ -743,6 +840,31 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         <div ref={bottomRef} />
       </div>
 
+      {/* Slash command autocomplete */}
+      {showSlashMenu && (
+        <div style={{
+          position: 'absolute', bottom: 70, left: 20, right: 20, zIndex: 50,
+          background: '#141414', border: '1px solid #333', borderRadius: 8,
+          maxHeight: 240, overflow: 'auto', boxShadow: '0 -4px 20px rgba(0,0,0,0.5)',
+        }}>
+          {SLASH_COMMANDS.filter(c => c.cmd.toLowerCase().includes(slashFilter)).map(c => (
+            <div
+              key={c.cmd}
+              onClick={() => { setInput(c.cmd + ' '); setShowSlashMenu(false); inputRef.current?.focus() }}
+              style={{
+                padding: '8px 14px', cursor: 'pointer', borderBottom: '1px solid #1a1a1a',
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              }}
+              onMouseEnter={e => (e.currentTarget.style.background = '#1a1a2e')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+            >
+              <span style={{ fontFamily: 'monospace', color: '#4fc3f7', fontSize: 13 }}>{c.cmd}</span>
+              <span style={{ fontSize: 11, color: '#666' }}>{c.desc}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Input area */}
       <div style={{ padding: '12px 20px', borderTop: '1px solid #222' }}>
         {/* File upload indicator */}
@@ -774,7 +896,16 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           <input
             ref={inputRef}
             value={input}
-            onChange={e => setInput(e.target.value)}
+            onChange={e => {
+              const v = e.target.value
+              setInput(v)
+              if (v.startsWith('/')) {
+                setShowSlashMenu(true)
+                setSlashFilter(v.slice(1).toLowerCase())
+              } else {
+                setShowSlashMenu(false)
+              }
+            }}
             onKeyDown={e => e.key === 'Enter' && !e.shiftKey && send()}
             onPaste={e => {
               // Handle pasted images
