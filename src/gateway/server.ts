@@ -287,8 +287,8 @@ export class GatewayServer {
       // Check for commands
       if (message.startsWith('/')) {
         const cmdResult = this.router
-          ? this.router.handleCommand(sessionId, message)
-          : this.agent.handleCommand(sessionId, message);
+          ? await this.router.handleCommand(sessionId, message)
+          : await this.agent.handleCommand(sessionId, message);
         if (cmdResult) return { response: cmdResult, session_id: sessionId };
       }
 
@@ -581,7 +581,7 @@ export class GatewayServer {
     // ── Command API (execute slash commands from UI) ──────────────────
     this.app.post<{ Body: { command: string; sessionId?: string } }>('/api/command', async (req) => {
       const sessionId = req.body.sessionId || `webchat:api:${Date.now()}`;
-      const result = this.agent.handleCommand(sessionId, req.body.command);
+      const result = await this.agent.handleCommand(sessionId, req.body.command);
       return { result: result || 'Unknown command', sessionId };
     });
 
@@ -717,7 +717,7 @@ export class GatewayServer {
         return reply.code(404).send({ error: `Agent "${name}" not found` });
       }
       // Use the router's internal default switch (via handleCommand)
-      const result = this.router.handleCommand('system', `/agents switch ${name}`);
+      const result = await this.router.handleCommand('system', `/agents switch ${name}`);
       this.broadcastDataUpdate('agents');
       return { ok: true, message: result };
     });
@@ -789,8 +789,8 @@ export class GatewayServer {
             // Check commands — route through router if available
             if (content.startsWith('/')) {
               const cmdResult = this.router
-                ? this.router.handleCommand(sessionId, content)
-                : this.agent.handleCommand(sessionId, content);
+                ? await this.router.handleCommand(sessionId, content)
+                : await this.agent.handleCommand(sessionId, content);
               if (cmdResult) {
                 socket.send(JSON.stringify({ type: 'response', content: cmdResult, done: true }));
                 return;

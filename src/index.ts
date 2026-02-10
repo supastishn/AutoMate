@@ -270,7 +270,7 @@ program
 
       // Commands
       if (input.startsWith('/')) {
-        const cmdResult = agent.handleCommand(sessionId, input);
+        const cmdResult = await agent.handleCommand(sessionId, input);
         if (cmdResult) {
           console.log(cmdResult);
           rl.prompt();

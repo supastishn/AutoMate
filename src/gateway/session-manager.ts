@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { nanoid } from 'nanoid';
 import type { Config } from '../config/schema.js';
 import type { LLMMessage } from '../agent/llm-client.js';
+import type { LLMClient } from '../agent/llm-client.js';
 
 export interface Session {
   id: string;
@@ -20,6 +21,8 @@ export class SessionManager {
   private config: Config;
   private dir: string;
   private resetTimer: NodeJS.Timeout | null = null;
+  private llm: LLMClient | null = null;
+  private compactingSessions: Set<string> = new Set(); // prevent concurrent compactions
 
   constructor(config: Config) {
     this.config = config;
@@ -99,6 +102,11 @@ export class SessionManager {
     this.onBeforeCompact = fn;
   }
 
+  /** Set the LLM client for summary-based compaction */
+  setLLMClient(llm: LLMClient): void {
+    this.llm = llm;
+  }
+
   addMessage(sessionId: string, message: LLMMessage): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
@@ -110,13 +118,11 @@ export class SessionManager {
     const tokenLimit = this.config.sessions.contextLimit;
     const threshold = Math.floor(tokenLimit * this.config.sessions.compactAt);
     const currentTokens = this.estimateTokensForMessages(session.messages);
-    if (currentTokens > threshold) {
-      // Fire pre-compaction flush (async, don't block)
-      if (this.onBeforeCompact) {
-        const msgs = [...session.messages];
-        this.onBeforeCompact(sessionId, msgs).catch(() => {});
-      }
-      this.compact(sessionId);
+    if (currentTokens > threshold && !this.compactingSessions.has(sessionId)) {
+      this.compactingSessions.add(sessionId);
+      this.compactWithSummary(sessionId, this.llm || undefined)
+        .catch(err => console.error(`[session] Auto-compact failed for ${sessionId}:`, err))
+        .finally(() => this.compactingSessions.delete(sessionId));
     }
   }
 
@@ -141,64 +147,148 @@ export class SessionManager {
     if (existsSync(path)) unlinkSync(path);
   }
 
-  compact(sessionId: string): void {
-    const session = this.sessions.get(sessionId);
-    if (!session || session.messages.length < 10) return;
-
-    // Target: trim until tokens <= 50% of contextLimit
-    const targetTokens = Math.floor(this.config.sessions.contextLimit * 0.5);
+  /**
+   * Emergency truncation when LLM is unavailable: keep system messages
+   * and only the last 4 non-system messages, then sanitize tool pairs.
+   */
+  private emergencyTruncate(session: Session): void {
     const systemMsgs = session.messages.filter(m => m.role === 'system');
     const nonSystem = session.messages.filter(m => m.role !== 'system');
-
-    // Keep removing oldest non-system messages until under target
-    let kept = [...nonSystem];
-    while (kept.length > 2 && this.estimateTokensForMessages([...systemMsgs, ...kept]) > targetTokens) {
-      kept.shift();
-    }
-    
-    const compactedCount = nonSystem.length - kept.length;
-    if (compactedCount > 0) {
-      kept.unshift({
-        role: 'system',
-        content: `[Context compacted: ${compactedCount} earlier messages were removed to save context space]`,
-      });
-    }
-    
-    session.messages = [...systemMsgs, ...kept];
+    const kept = nonSystem.slice(-4);
+    const removedCount = nonSystem.length - kept.length;
+    session.messages = [
+      ...systemMsgs,
+      ...(removedCount > 0
+        ? [{ role: 'system' as const, content: `[Emergency compaction: ${removedCount} messages truncated without summary]` }]
+        : []),
+      ...kept,
+    ];
+    this.sanitizeToolPairs(session);
     session.updatedAt = new Date().toISOString();
   }
 
-  /** Compact with custom instructions about what to keep */
-  compactWithInstructions(sessionId: string, instructions: string): string {
+  /**
+   * Remove orphaned tool_call / tool_result messages after compaction.
+   * - Remove any `tool` role message whose `tool_call_id` doesn't match
+   *   a `tool_calls[].id` in a preceding `assistant` message.
+   * - Remove any `assistant` message with `tool_calls` that has NO
+   *   corresponding `tool` result following it.
+   */
+  private sanitizeToolPairs(session: Session): void {
+    const messages = session.messages;
+
+    // Pass 1: collect all tool_call IDs from assistant messages
+    const assistantToolCallIds = new Set<string>();
+    for (const m of messages) {
+      if (m.role === 'assistant' && m.tool_calls) {
+        for (const tc of m.tool_calls) {
+          assistantToolCallIds.add(tc.id);
+        }
+      }
+    }
+
+    // Pass 2: collect all tool_call_ids from tool result messages
+    const toolResultIds = new Set<string>();
+    for (const m of messages) {
+      if (m.role === 'tool' && m.tool_call_id) {
+        toolResultIds.add(m.tool_call_id);
+      }
+    }
+
+    // Filter: remove orphaned tool results and orphaned assistant tool_calls
+    session.messages = messages.filter(m => {
+      // Remove tool results with no matching assistant tool_call
+      if (m.role === 'tool' && m.tool_call_id) {
+        if (!assistantToolCallIds.has(m.tool_call_id)) return false;
+      }
+      // Remove assistant messages with tool_calls but no matching tool results
+      if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
+        const hasAnyResult = m.tool_calls.some(tc => toolResultIds.has(tc.id));
+        if (!hasAnyResult) return false;
+      }
+      return true;
+    });
+  }
+
+  /**
+   * Compact with AI summary: call the LLM to summarize the entire conversation,
+   * then delete ALL non-system messages and insert the summary as a system message.
+   * Returns a status string for user feedback.
+   */
+  async compactWithSummary(sessionId: string, llm?: LLMClient, instructions?: string): Promise<string> {
+    const client = llm || this.llm;
     const session = this.sessions.get(sessionId);
     if (!session) return 'No active session.';
     if (session.messages.length < 5) return 'Session too short to compact.';
+    if (!client) {
+      // No LLM available — emergency truncation: keep only last 4 non-system messages
+      this.emergencyTruncate(session);
+      this.saveSession(sessionId);
+      return 'Compacted (no LLM available for summary — emergency truncation applied).';
+    }
 
     const beforeCount = session.messages.length;
     const beforeTokens = this.estimateTokensForMessages(session.messages);
-    const targetTokens = Math.floor(this.config.sessions.contextLimit * 0.33); // keep fewer when manual
-    const systemMsgs = session.messages.filter(m => m.role === 'system');
+
+    // Fire pre-compaction flush hook (saves to daily log)
+    if (this.onBeforeCompact) {
+      const msgs = [...session.messages];
+      await this.onBeforeCompact(sessionId, msgs).catch(() => {});
+    }
+
+    // Build conversation text for summarization (skip system messages)
     const nonSystem = session.messages.filter(m => m.role !== 'system');
+    const conversationText = nonSystem
+      .filter(m => m.content)
+      .map(m => {
+        const role = m.role === 'assistant' ? 'Assistant' : m.role === 'user' ? 'User' : 'Tool';
+        return `[${role}] ${(m.content || '').slice(0, 500)}`;
+      })
+      .join('\n');
 
-    let kept = [...nonSystem];
-    while (kept.length > 2 && this.estimateTokensForMessages([...systemMsgs, ...kept]) > targetTokens) {
-      kept.shift();
+    // Generate summary via LLM
+    let summary = '';
+    try {
+      const summaryPrompt: LLMMessage[] = [
+        {
+          role: 'system',
+          content: 'You are a conversation summarizer. Produce a concise, structured summary of the conversation below. Focus on:\n- Key decisions and outcomes\n- Important context and facts established\n- Current state of any ongoing tasks\n- User preferences or instructions learned\n\nBe thorough but concise. Use bullet points. This summary will replace the entire conversation history, so include everything needed to continue the conversation seamlessly.',
+        },
+        {
+          role: 'user',
+          content: `Summarize this conversation:\n\n${conversationText.slice(0, 16000)}${instructions ? `\n\nAdditional instructions: ${instructions}` : ''}`,
+        },
+      ];
+
+      const response = await client.chat(summaryPrompt);
+      summary = response.choices[0]?.message?.content?.trim() || '';
+    } catch (err) {
+      console.error(`[session] Summary generation failed: ${err}`);
+      this.emergencyTruncate(session);
+      this.saveSession(sessionId);
+      return `Summary generation failed, applied emergency truncation.`;
     }
-    const compactedCount = nonSystem.length - kept.length;
 
-    if (compactedCount > 0) {
-      kept.unshift({
+    if (!summary || summary.length < 20) {
+      this.emergencyTruncate(session);
+      this.saveSession(sessionId);
+      return `Summary was too short, applied emergency truncation.`;
+    }
+
+    // Keep only system messages, delete everything else, insert summary
+    const systemMsgs = session.messages.filter(m => m.role === 'system');
+    session.messages = [
+      ...systemMsgs,
+      {
         role: 'system',
-        content: `[Context compacted: ${compactedCount} earlier messages removed. User instructions: ${instructions}]`,
-      });
-    }
-
-    session.messages = [...systemMsgs, ...kept];
+        content: `[Conversation Summary — ${beforeCount} messages compacted at ${new Date().toISOString()}]\n\n${summary}`,
+      },
+    ];
     session.updatedAt = new Date().toISOString();
     this.saveSession(sessionId);
 
     const afterTokens = this.estimateTokensForMessages(session.messages);
-    return `Compacted: ${beforeCount} → ${session.messages.length} messages (~${beforeTokens} → ~${afterTokens} tokens). Instructions noted: "${instructions}"`;
+    return `Compacted with AI summary: ${beforeCount} → ${session.messages.length} messages (~${beforeTokens} → ~${afterTokens} tokens).`;
   }
 
   /** Estimate tokens for an arbitrary array of messages */

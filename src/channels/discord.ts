@@ -196,7 +196,7 @@ export class DiscordChannel {
     }
 
     if (cmdName === 'status') {
-      const result = this.agent.handleCommand(sessionId, '/status');
+      const result = await this.agent.handleCommand(sessionId, '/status');
       await interaction.reply({
         embeds: [this.buildStatusEmbed(result || 'No active session.')],
         ephemeral: true,
@@ -205,7 +205,7 @@ export class DiscordChannel {
     }
 
     if (cmdName === 'reset') {
-      this.agent.handleCommand(sessionId, '/new');
+      await this.agent.handleCommand(sessionId, '/new');
       this.threadTrackers.delete(sessionId);
       await interaction.reply({
         embeds: [new EmbedBuilder()
@@ -220,7 +220,7 @@ export class DiscordChannel {
       const name = interaction.options.getString('name');
       if (!name) {
         // Show model picker select menu
-        const result = this.agent.handleCommand(sessionId, '/model list');
+        const result = await this.agent.handleCommand(sessionId, '/model list');
         if (result) {
           const providers = this.parseModelList(result);
           if (providers.length > 0) {
@@ -248,7 +248,7 @@ export class DiscordChannel {
         });
         return;
       }
-      const result = this.agent.handleCommand(sessionId, `/model ${name}`);
+      const result = await this.agent.handleCommand(sessionId, `/model ${name}`);
       await interaction.reply({
         embeds: [new EmbedBuilder().setColor(0x4fc3f7).setTitle('Model').setDescription(result || 'Unknown')],
         ephemeral: true,
@@ -259,7 +259,7 @@ export class DiscordChannel {
     if (cmdName === 'elevated') {
       const mode = interaction.options.getString('mode');
       const cmd = mode ? `/elevated ${mode}` : '/elevated';
-      const result = this.agent.handleCommand(sessionId, cmd);
+      const result = await this.agent.handleCommand(sessionId, cmd);
       await interaction.reply({
         embeds: [new EmbedBuilder()
           .setColor(mode === 'on' ? 0xff9800 : 0x4caf50)
@@ -270,7 +270,7 @@ export class DiscordChannel {
     }
 
     if (cmdName === 'compact') {
-      const result = this.agent.handleCommand(sessionId, '/compact');
+      const result = await this.agent.handleCommand(sessionId, '/compact');
       await interaction.reply({
         embeds: [new EmbedBuilder().setColor(0x4fc3f7).setDescription(result || 'Compacted.')],
         ephemeral: true,
@@ -413,7 +413,7 @@ export class DiscordChannel {
 
     if (interaction.customId === 'select_model') {
       const selected = interaction.values[0];
-      const result = this.agent.handleCommand(sessionId, `/model ${selected}`);
+      const result = await this.agent.handleCommand(sessionId, `/model ${selected}`);
       await interaction.update({
         embeds: [new EmbedBuilder().setColor(0x4caf50).setDescription(result || `Switched to ${selected}`)],
         components: [],
@@ -428,20 +428,20 @@ export class DiscordChannel {
     const sessionId = this.makeSessionId(interaction);
 
     if (customId === 'btn_reset') {
-      this.agent.handleCommand(sessionId, '/new');
+      await this.agent.handleCommand(sessionId, '/new');
       this.threadTrackers.delete(sessionId);
       await interaction.reply({
         embeds: [new EmbedBuilder().setColor(0x4caf50).setDescription('Session reset.')],
         ephemeral: true,
       });
     } else if (customId === 'btn_status') {
-      const result = this.agent.handleCommand(sessionId, '/status');
+      const result = await this.agent.handleCommand(sessionId, '/status');
       await interaction.reply({
         embeds: [this.buildStatusEmbed(result || 'No active session.')],
         ephemeral: true,
       });
     } else if (customId === 'btn_compact') {
-      const result = this.agent.handleCommand(sessionId, '/compact');
+      const result = await this.agent.handleCommand(sessionId, '/compact');
       await interaction.reply({
         embeds: [new EmbedBuilder().setColor(0x4fc3f7).setDescription(result || 'Compacted.')],
         ephemeral: true,
@@ -553,7 +553,7 @@ export class DiscordChannel {
         });
         return;
       }
-      const cmdResult = this.agent.handleCommand(sessionId, content);
+      const cmdResult = await this.agent.handleCommand(sessionId, content);
       if (cmdResult) {
         if (discordConfig.useEmbeds) {
           await msg.reply({

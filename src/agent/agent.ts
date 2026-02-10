@@ -52,6 +52,9 @@ export class Agent {
     this.tools = new ToolRegistry();
     this.sessionManager = sessionManager;
 
+    // Wire LLM into session manager for summary-based auto-compaction
+    this.sessionManager.setLLMClient(this.llm);
+
     // ── Core tools (always loaded — essential for every interaction) ──────
 
     this.tools.register(bashTool);
@@ -652,29 +655,9 @@ export class Agent {
         return { content: content || '', toolCalls: toolCallResults, usage };
       } else {
         // Non-streaming mode
-        const isHeartbeat = sessionId.startsWith('heartbeat:');
-        if (isHeartbeat) {
-          console.log(`[heartbeat-debug] Iteration ${iterations}: sending ${messages.length} messages to LLM with ${toolDefs.length} tool defs`);
-          console.log(`[heartbeat-debug] Tool defs: ${toolDefs.map(t => t.function.name).join(', ')}`);
-          console.log(`[heartbeat-debug] Last user message (${messages[messages.length-1]?.role}): ${(messages[messages.length-1]?.content || '').slice(0, 200)}...`);
-        }
-        // Force tool usage for heartbeat sessions on first iteration
-        const toolChoice = (isHeartbeat && iterations === 1 && toolDefs.length > 0) ? 'required' as const : undefined;
-        if (isHeartbeat && toolChoice) {
-          console.log(`[heartbeat-debug] Using tool_choice='required' for iteration ${iterations}`);
-        }
-        const response = await this.llm.chat(messages, toolDefs, toolChoice);
+        const response = await this.llm.chat(messages, toolDefs);
         const choice = response.choices[0];
         const msg = choice.message;
-
-        if (isHeartbeat) {
-          console.log(`[heartbeat-debug] LLM response: finish_reason=${choice.finish_reason}, has_tool_calls=${!!(msg.tool_calls && msg.tool_calls.length > 0)}, tool_calls_count=${msg.tool_calls?.length || 0}, content_length=${(msg.content || '').length}`);
-          if (msg.tool_calls && msg.tool_calls.length > 0) {
-            console.log(`[heartbeat-debug] Tool calls: ${msg.tool_calls.map(tc => `${tc.function.name}(${tc.function.arguments.slice(0, 80)})`).join(', ')}`);
-          } else {
-            console.log(`[heartbeat-debug] Text response: ${(msg.content || '').slice(0, 300)}`);
-          }
-        }
 
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           this.sessionManager.addMessage(sessionId, {
@@ -770,7 +753,7 @@ export class Agent {
   }
 
   // Handle chat commands
-  handleCommand(sessionId: string, command: string): string | null {
+  async handleCommand(sessionId: string, command: string): Promise<string | null> {
     const cmd = command.trim().toLowerCase();
     const parts = cmd.split(/\s+/);
     const rawParts = command.trim().split(/\s+/);
@@ -813,13 +796,8 @@ export class Agent {
     
     // /compact [instructions]
     if (parts[0] === '/compact') {
-      const instructions = rawParts.slice(1).join(' ');
-      if (instructions) {
-        return this.sessionManager.compactWithInstructions(sessionId, instructions);
-      }
-      this.sessionManager.compact(sessionId);
-      this.sessionManager.saveSession(sessionId);
-      return 'Session compacted.';
+      const instructions = rawParts.slice(1).join(' ') || undefined;
+      return await this.sessionManager.compactWithSummary(sessionId, this.llm, instructions);
     }
 
     // /elevated on|off
