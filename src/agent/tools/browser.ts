@@ -7,10 +7,8 @@ import type { Tool } from '../tool-registry.js';
  * Browser integration via persistent Python process.
  * Uses: undetected-chromedriver + selenium-stealth + Xvfb for bot-proof browsing.
  * The Python engine handles all Selenium operations; we communicate via JSON lines over stdio.
- * 
- * Pruned to essential tools only. Niche tools (shadow DOM, media control, geolocation,
- * accessibility audit, canvas data, device emulation, network interception, etc.)
- * are handled via browser_execute_js when needed.
+ *
+ * Single unified tool with action parameter — keeps the tool list lean.
  */
 
 let pyProc: ChildProcess | null = null;
@@ -142,94 +140,92 @@ function fmt(result: Record<string, unknown>): string {
 }
 
 // ============================================================================
-// Tool Definitions - Essential browser tools (18 tools)
-// For niche operations (shadow DOM, media, canvas, etc.) use browser_execute_js
+// Single unified browser tool — all actions via one tool with action parameter
 // ============================================================================
 
-const t = (name: string, desc: string, params: Record<string, unknown>, exec: (p: Record<string, unknown>) => Promise<{ output: string }>): Tool => ({
-  name, description: desc, parameters: { type: 'object', ...params }, execute: exec,
-});
-
 export const browserTools: Tool[] = [
-  // ==== Navigation ====
-  t('browser_navigate', 'Navigate to a URL using undetected Chrome with anti-bot stealth.', {
-    properties: { url: { type: 'string', description: 'URL to navigate to' } }, required: ['url'],
-  }, async (p) => ({ output: fmt(await cmd({ action: 'navigate', url: p.url })) })),
+  {
+    name: 'browser',
+    description: [
+      'Control an undetected Chrome browser with anti-bot stealth (selenium-stealth + Xvfb).',
+      'Actions: navigate, back, screenshot, click, type, find, scroll, get_page, get_html,',
+      'execute_js, fill_form, select, wait_element, press_key, human_click, human_type,',
+      'upload, close.',
+      'Use execute_js for advanced operations (cookies, localStorage, shadow DOM, etc.).',
+      'Use human_click/human_type for stealth-critical sites.',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          description: 'Action to perform: navigate|back|screenshot|click|type|find|scroll|get_page|get_html|execute_js|fill_form|select|wait_element|press_key|human_click|human_type|upload|close',
+        },
+        url: { type: 'string', description: 'URL (for navigate)' },
+        selector: { type: 'string', description: 'CSS/XPath selector (for click, type, find, etc.)' },
+        by: { type: 'string', description: 'Selector strategy: css|xpath|id|class|tag|name (default: css)' },
+        text: { type: 'string', description: 'Text to type (for type, human_type)' },
+        key: { type: 'string', description: 'Key to press (for press_key): enter, tab, escape, etc.' },
+        direction: { type: 'string', description: 'Scroll direction: up|down|top|bottom' },
+        amount: { type: 'number', description: 'Scroll amount in pixels (default 500)' },
+        script: { type: 'string', description: 'JavaScript code (for execute_js)' },
+        data: { type: 'object', description: 'Form field map (for fill_form)' },
+        value: { type: 'string', description: 'Option value (for select)' },
+        index: { type: 'number', description: 'Option index (for select)' },
+        timeout: { type: 'number', description: 'Wait timeout in seconds (for wait_element, default 10)' },
+        condition: { type: 'string', description: 'Wait condition: present|visible|clickable|invisible' },
+        clear_first: { type: 'boolean', description: 'Clear input before typing (default true)' },
+        save_path: { type: 'string', description: 'File path to save screenshot' },
+        file_path: { type: 'string', description: 'File to upload (for upload)' },
+        limit: { type: 'number', description: 'Max elements to return (for find, default 10)' },
+      },
+      required: ['action'],
+    },
+    execute: async (params: Record<string, unknown>) => {
+      const action = params.action as string;
+      const by = (params.by as string) || 'css';
 
-  t('browser_back', 'Navigate back in browser history.', { properties: {} },
-    async () => ({ output: fmt(await cmd({ action: 'back' })) })),
-
-  // ==== Screenshots ====
-  t('browser_screenshot', 'Take a screenshot of the current page.', {
-    properties: { save_path: { type: 'string', description: 'Optional file path to save screenshot' } },
-  }, async (p) => ({ output: fmt(await cmd({ action: 'screenshot', save_path: p.save_path })) })),
-
-  // ==== Element interaction ====
-  t('browser_click', 'Click an element on the page. For stealth-critical sites, use browser_human_click instead.', {
-    properties: { selector: { type: 'string' }, by: { type: 'string', description: 'css/xpath/id/class/tag/name (default css)' } }, required: ['selector'],
-  }, async (p) => ({ output: fmt(await cmd({ action: 'click', selector: p.selector, by: p.by || 'css' })) })),
-
-  t('browser_type', 'Type text into an input element. For stealth-critical sites, use browser_human_type instead.', {
-    properties: { selector: { type: 'string' }, text: { type: 'string' }, by: { type: 'string' }, clear_first: { type: 'boolean' } }, required: ['selector', 'text'],
-  }, async (p) => ({ output: fmt(await cmd({ action: 'type', selector: p.selector, text: p.text, by: p.by || 'css', clear: p.clear_first !== false })) })),
-
-  t('browser_find', 'Find elements on the page matching a selector. Returns text, tag, attributes.', {
-    properties: { selector: { type: 'string' }, by: { type: 'string' }, limit: { type: 'number' } }, required: ['selector'],
-  }, async (p) => ({ output: fmt(await cmd({ action: 'find', selector: p.selector, by: p.by || 'css', limit: p.limit || 10 })) })),
-
-  t('browser_scroll', 'Scroll the page. Directions: up, down, top, bottom.', {
-    properties: { direction: { type: 'string' }, amount: { type: 'number' } },
-  }, async (p) => ({ output: fmt(await cmd({ action: 'scroll', direction: p.direction || 'down', amount: p.amount || 500 })) })),
-
-  // ==== Page content ====
-  t('browser_get_page', 'Get page URL, title, and visible text content.', {
-    properties: {},
-  }, async () => ({ output: fmt(await cmd({ action: 'get_page' })) })),
-
-  t('browser_get_html', 'Get the full HTML source of the current page.', {
-    properties: {},
-  }, async () => ({ output: fmt(await cmd({ action: 'get_html' })) })),
-
-  t('browser_execute_js', 'Execute JavaScript in the browser and return the result. Use this for any advanced operations (cookies, localStorage, shadow DOM, media, canvas, accessibility, etc.).', {
-    properties: { script: { type: 'string', description: 'JavaScript code to execute' } }, required: ['script'],
-  }, async (p) => ({ output: fmt(await cmd({ action: 'execute_js', script: p.script })) })),
-
-  // ==== Forms ====
-  t('browser_fill_form', 'Fill a form with multiple field values. Fields matched by name/id/placeholder.', {
-    properties: { data: { type: 'object', description: 'Map of field names to values' } }, required: ['data'],
-  }, async (p) => ({ output: fmt(await cmd({ action: 'fill_form', data: p.data })) })),
-
-  t('browser_select', 'Select an option from a dropdown by value, text, or index.', {
-    properties: { selector: { type: 'string' }, by: { type: 'string' }, value: { type: 'string' }, text: { type: 'string' }, index: { type: 'number' } }, required: ['selector'],
-  }, async (p) => ({ output: fmt(await cmd({ action: 'select', selector: p.selector, by: p.by || 'css', value: p.value, text: p.text, index: p.index })) })),
-
-  // ==== Waiting ====
-  t('browser_wait_element', 'Wait for an element to appear/become visible/clickable.', {
-    properties: { selector: { type: 'string' }, by: { type: 'string' }, timeout: { type: 'number' }, condition: { type: 'string', description: 'present/visible/clickable/invisible' } }, required: ['selector'],
-  }, async (p) => ({ output: fmt(await cmd({ action: 'wait_element', selector: p.selector, by: p.by || 'css', timeout: p.timeout || 10, condition: p.condition || 'present' })) })),
-
-  // ==== Keyboard ====
-  t('browser_press_key', 'Press a key (enter, tab, escape, backspace, delete, space, arrow keys, etc.).', {
-    properties: { key: { type: 'string' }, selector: { type: 'string' }, by: { type: 'string' } }, required: ['key'],
-  }, async (p) => ({ output: fmt(await cmd({ action: 'press_key', key: p.key, selector: p.selector, by: p.by || 'css' })) })),
-
-  // ==== Stealth / Human-like ====
-  t('browser_human_click', 'Click with human-like mouse movement (bezier curve path). Stealthier than browser_click.', {
-    properties: { selector: { type: 'string' }, by: { type: 'string' } }, required: ['selector'],
-  }, async (p) => ({ output: fmt(await cmd({ action: 'human_click', selector: p.selector, by: p.by || 'css' })) })),
-
-  t('browser_human_type', 'Type text with human-like variable-speed keystrokes. Stealthier than browser_type.', {
-    properties: { selector: { type: 'string' }, text: { type: 'string' }, by: { type: 'string' }, clear_first: { type: 'boolean' } }, required: ['selector', 'text'],
-  }, async (p) => ({ output: fmt(await cmd({ action: 'human_type', selector: p.selector, text: p.text, by: p.by || 'css', clear: p.clear_first !== false })) })),
-
-  // ==== File upload ====
-  t('browser_upload_file', 'Upload a file via a file input element.', {
-    properties: { selector: { type: 'string' }, file_path: { type: 'string' }, by: { type: 'string' } }, required: ['selector', 'file_path'],
-  }, async (p) => ({ output: fmt(await cmd({ action: 'upload', selector: p.selector, file_path: p.file_path, by: p.by || 'css' })) })),
-
-  // ==== Close ====
-  t('browser_close', 'Close the browser and clean up resources.', { properties: {} }, async () => {
-    try { const r = await cmd({ action: 'close' }); return { output: fmt(r) }; }
-    catch { pyProc = null; browserStarted = false; return { output: 'Browser closed' }; }
-  }),
+      switch (action) {
+        case 'navigate':
+          return { output: fmt(await cmd({ action: 'navigate', url: params.url })) };
+        case 'back':
+          return { output: fmt(await cmd({ action: 'back' })) };
+        case 'screenshot':
+          return { output: fmt(await cmd({ action: 'screenshot', save_path: params.save_path })) };
+        case 'click':
+          return { output: fmt(await cmd({ action: 'click', selector: params.selector, by })) };
+        case 'type':
+          return { output: fmt(await cmd({ action: 'type', selector: params.selector, text: params.text, by, clear: params.clear_first !== false })) };
+        case 'find':
+          return { output: fmt(await cmd({ action: 'find', selector: params.selector, by, limit: params.limit || 10 })) };
+        case 'scroll':
+          return { output: fmt(await cmd({ action: 'scroll', direction: params.direction || 'down', amount: params.amount || 500 })) };
+        case 'get_page':
+          return { output: fmt(await cmd({ action: 'get_page' })) };
+        case 'get_html':
+          return { output: fmt(await cmd({ action: 'get_html' })) };
+        case 'execute_js':
+          return { output: fmt(await cmd({ action: 'execute_js', script: params.script })) };
+        case 'fill_form':
+          return { output: fmt(await cmd({ action: 'fill_form', data: params.data })) };
+        case 'select':
+          return { output: fmt(await cmd({ action: 'select', selector: params.selector, by, value: params.value, text: params.text, index: params.index })) };
+        case 'wait_element':
+          return { output: fmt(await cmd({ action: 'wait_element', selector: params.selector, by, timeout: params.timeout || 10, condition: params.condition || 'present' })) };
+        case 'press_key':
+          return { output: fmt(await cmd({ action: 'press_key', key: params.key, selector: params.selector, by })) };
+        case 'human_click':
+          return { output: fmt(await cmd({ action: 'human_click', selector: params.selector, by })) };
+        case 'human_type':
+          return { output: fmt(await cmd({ action: 'human_type', selector: params.selector, text: params.text, by, clear: params.clear_first !== false })) };
+        case 'upload':
+          return { output: fmt(await cmd({ action: 'upload', selector: params.selector, file_path: params.file_path, by })) };
+        case 'close':
+          try { return { output: fmt(await cmd({ action: 'close' })) }; }
+          catch { pyProc = null; browserStarted = false; return { output: 'Browser closed' }; }
+        default:
+          return { output: `Error: Unknown action "${action}". Valid: navigate, back, screenshot, click, type, find, scroll, get_page, get_html, execute_js, fill_form, select, wait_element, press_key, human_click, human_type, upload, close` };
+      }
+    },
+  },
 ];

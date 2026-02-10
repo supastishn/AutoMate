@@ -251,6 +251,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
   const [sessionsList, setSessionsList] = useState<{ id: string; channel: string; messageCount: number; updatedAt: string }[]>([])
   const [showSessionPicker, setShowSessionPicker] = useState(false)
+  const [contextInfo, setContextInfo] = useState<{ used: number; limit: number; percent: number } | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -318,6 +319,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
 
       if (msg.type === 'connected') {
         setCurrentSessionId(msg.session_id)
+        if (msg.context) setContextInfo(msg.context)
         setMessages(prev => [...prev, {
           id: makeId(),
           role: 'system',
@@ -327,6 +329,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
       }
       if (msg.type === 'session_loaded') {
         setCurrentSessionId(msg.session_id)
+        if (msg.context) setContextInfo(msg.context)
         // Replace messages with loaded session history
         const loaded: ChatMessage[] = (msg.messages || []).map((m: any) => ({
           id: makeId(),
@@ -349,6 +352,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
       }
       if (msg.type === 'response') {
         setTyping(false)
+        if (msg.context) setContextInfo(msg.context)
         // Use accumulated streaming content if available — msg.content only has the
         // final LLM response (after tool calls), so it would wipe earlier streamed text.
         setStreaming(prev => {
@@ -551,6 +555,22 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           <div style={{ width: 8, height: 8, borderRadius: '50%', background: connected ? '#4caf50' : '#f44' }} />
           <span style={{ fontSize: 14, color: '#888' }}>{connected ? 'Connected' : 'Disconnected'}</span>
         </div>
+        {contextInfo && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }} title={`${contextInfo.used.toLocaleString()} / ${contextInfo.limit.toLocaleString()} tokens`}>
+            <div style={{
+              width: 80, height: 6, background: '#1a1a2e', borderRadius: 3, overflow: 'hidden',
+            }}>
+              <div style={{
+                width: `${Math.min(contextInfo.percent, 100)}%`, height: '100%', borderRadius: 3,
+                background: contextInfo.percent > 80 ? '#f44' : contextInfo.percent > 50 ? '#ff9800' : '#4caf50',
+                transition: 'width 0.3s, background 0.3s',
+              }} />
+            </div>
+            <span style={{ fontSize: 10, color: contextInfo.percent > 80 ? '#f44' : '#666', fontFamily: 'monospace' }}>
+              {contextInfo.percent}%
+            </span>
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 8 }}>
           <button onClick={() => {
             fetchSessionsList()

@@ -1,6 +1,5 @@
 import type { Tool } from '../tool-registry.js';
 
-// Will be injected by the session manager at runtime
 let sessionManagerRef: any = null;
 let agentRef: any = null;
 
@@ -12,89 +11,76 @@ export function setAgent(a: any): void {
   agentRef = a;
 }
 
-export const sessionsListTool: Tool = {
-  name: 'sessions_list',
-  description: 'List all active sessions with their IDs and metadata.',
-  parameters: {
-    type: 'object',
-    properties: {},
-  },
-  async execute() {
-    if (!sessionManagerRef) return { output: 'Session manager not available' };
-    const sessions = sessionManagerRef.listSessions();
-    if (sessions.length === 0) return { output: 'No active sessions' };
-    const lines = sessions.map((s: any) =>
-      `${s.id} | channel=${s.channel} | messages=${s.messageCount} | created=${s.createdAt}`
-    );
-    return { output: lines.join('\n') };
-  },
-};
-
-export const sessionsHistoryTool: Tool = {
-  name: 'sessions_history',
-  description: 'Get the message history of a session by ID.',
-  parameters: {
-    type: 'object',
-    properties: {
-      session_id: { type: 'string', description: 'Session ID to get history for' },
-      limit: { type: 'number', description: 'Max messages to return (default 20)' },
+export const sessionTools: Tool[] = [
+  {
+    name: 'session',
+    description: [
+      'Manage chat sessions.',
+      'Actions: list, history, send, spawn.',
+      'list — list all active sessions.',
+      'history — get message history of a session.',
+      'send — send a message to another session.',
+      'spawn — spawn a new background sub-session with a task.',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          description: 'Action: list|history|send|spawn',
+        },
+        session_id: { type: 'string', description: 'Session ID (for history, send)' },
+        message: { type: 'string', description: 'Message to send (for send action)' },
+        prompt: { type: 'string', description: 'Task/prompt for spawned session (for spawn action)' },
+        session_name: { type: 'string', description: 'Optional name for spawned session (for spawn action)' },
+        limit: { type: 'number', description: 'Max messages to return (for history, default 20)' },
+      },
+      required: ['action'],
     },
-    required: ['session_id'],
-  },
-  async execute(params) {
-    if (!sessionManagerRef) return { output: 'Session manager not available' };
-    const session = sessionManagerRef.getSession(params.session_id as string);
-    if (!session) return { output: '', error: `Session not found: ${params.session_id}` };
-    const limit = (params.limit as number) || 20;
-    const messages = session.messages.slice(-limit);
-    const lines = messages.map((m: any) => `[${m.role}]: ${(m.content || '').slice(0, 500)}`);
-    return { output: lines.join('\n\n') };
-  },
-};
+    async execute(params) {
+      const action = params.action as string;
 
-export const sessionsSendTool: Tool = {
-  name: 'sessions_send',
-  description: 'Send a message to another session.',
-  parameters: {
-    type: 'object',
-    properties: {
-      session_id: { type: 'string', description: 'Target session ID' },
-      message: { type: 'string', description: 'Message to send' },
+      switch (action) {
+        case 'list': {
+          if (!sessionManagerRef) return { output: 'Session manager not available' };
+          const sessions = sessionManagerRef.listSessions();
+          if (sessions.length === 0) return { output: 'No active sessions' };
+          const lines = sessions.map((s: any) =>
+            `${s.id} | channel=${s.channel} | messages=${s.messageCount} | created=${s.createdAt}`
+          );
+          return { output: lines.join('\n') };
+        }
+
+        case 'history': {
+          if (!sessionManagerRef) return { output: 'Session manager not available' };
+          const session = sessionManagerRef.getSession(params.session_id as string);
+          if (!session) return { output: '', error: `Session not found: ${params.session_id}` };
+          const limit = (params.limit as number) || 20;
+          const messages = session.messages.slice(-limit);
+          const lines = messages.map((m: any) => `[${m.role}]: ${(m.content || '').slice(0, 500)}`);
+          return { output: lines.join('\n\n') };
+        }
+
+        case 'send': {
+          if (!sessionManagerRef) return { output: 'Session manager not available' };
+          const session = sessionManagerRef.getSession(params.session_id as string);
+          if (!session) return { output: '', error: `Session not found: ${params.session_id}` };
+          session.messages.push({ role: 'user', content: params.message as string });
+          sessionManagerRef.saveSession(params.session_id as string);
+          return { output: `Message sent to session ${params.session_id}` };
+        }
+
+        case 'spawn': {
+          if (!sessionManagerRef || !agentRef) return { output: '', error: 'Not available' };
+          const name = (params.session_name as string) || `spawn:${Date.now()}`;
+          const sessionId = `spawn:${name}`;
+          agentRef.processMessage(sessionId, params.prompt as string).catch(() => {});
+          return { output: `Spawned sub-session '${sessionId}' with task. Use session history to check progress.` };
+        }
+
+        default:
+          return { output: `Error: Unknown action "${action}". Valid: list, history, send, spawn` };
+      }
     },
-    required: ['session_id', 'message'],
   },
-  async execute(params) {
-    if (!sessionManagerRef) return { output: 'Session manager not available' };
-    const session = sessionManagerRef.getSession(params.session_id as string);
-    if (!session) return { output: '', error: `Session not found: ${params.session_id}` };
-    // Queue message for processing
-    session.messages.push({ role: 'user', content: params.message as string });
-    sessionManagerRef.saveSession(params.session_id as string);
-    return { output: `Message sent to session ${params.session_id}` };
-  },
-};
-
-export const sessionsSpawnTool: Tool = {
-  name: 'sessions_spawn',
-  description: 'Spawn a new sub-session and send it a message. The sub-session runs independently (non-blocking). Useful for background research tasks.',
-  parameters: {
-    type: 'object',
-    properties: {
-      prompt: { type: 'string', description: 'The message/task to send to the new session' },
-      session_name: { type: 'string', description: 'Optional name for the session (default: auto-generated)' },
-    },
-    required: ['prompt'],
-  },
-  async execute(params) {
-    if (!sessionManagerRef || !agentRef) return { output: '', error: 'Not available' };
-    const name = (params.session_name as string) || `spawn:${Date.now()}`;
-    const sessionId = `spawn:${name}`;
-
-    // Fire and forget — don't await
-    agentRef.processMessage(sessionId, params.prompt as string).catch(() => {});
-
-    return { output: `Spawned sub-session '${sessionId}' with task. Use sessions_history to check progress.` };
-  },
-};
-
-export const sessionTools = [sessionsListTool, sessionsHistoryTool, sessionsSendTool];
+];

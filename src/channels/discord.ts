@@ -11,7 +11,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Config } from '../config/schema.js';
 import type { Agent } from '../agent/agent.js';
-import { setImageBroadcaster, type ImageEvent } from '../agent/tools/image-send.js';
+import { setImageBroadcaster, type ImageEvent } from '../agent/tools/image.js';
 
 // Track per-channel thread usage for auto-thread creation
 interface ThreadTracker {
