@@ -22,6 +22,7 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
   const [folder, setFolder] = useState<'normal' | 'heartbeat'>('normal')
+  const [mainSessionId, setMainSessionId] = useState<string | null>(null)
 
   useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth < 768)
@@ -37,8 +38,30 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
     } catch { /* ignore */ }
   }
 
+  const fetchMainSession = async () => {
+    try {
+      const r = await fetch('/api/sessions/main')
+      const data = await r.json() as any
+      setMainSessionId(data.mainSessionId || null)
+    } catch { /* ignore */ }
+  }
+
+  const toggleMainSession = async (id: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation()
+    const newId = mainSessionId === id ? null : id
+    try {
+      await fetch('/api/sessions/main', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: newId }),
+      })
+      setMainSessionId(newId)
+    } catch { /* ignore */ }
+  }
+
   useEffect(() => {
     fetchSessions()
+    fetchMainSession()
     const i = setInterval(fetchSessions, 30000)
     return () => clearInterval(i)
   }, [])
@@ -207,7 +230,18 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
               onMouseEnter={e => (e.currentTarget.style.borderColor = '#4fc3f7')}
               onMouseLeave={e => (e.currentTarget.style.borderColor = '#222')}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                <div style={{ fontSize: 13, fontFamily: 'monospace', color: '#4fc3f7', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.id}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, overflow: 'hidden' }}>
+                  <button onClick={(e) => toggleMainSession(s.id, e)}
+                    title={mainSessionId === s.id ? 'Unset as main session' : 'Set as main session'}
+                    style={{
+                      padding: 0, background: 'none', border: 'none', cursor: 'pointer', fontSize: 16,
+                      color: mainSessionId === s.id ? '#ffb74d' : '#333',
+                      flexShrink: 0,
+                    }}>
+                    {mainSessionId === s.id ? '\u2605' : '\u2606'}
+                  </button>
+                  <div style={{ fontSize: 13, fontFamily: 'monospace', color: mainSessionId === s.id ? '#ffb74d' : '#4fc3f7', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.id}</div>
+                </div>
                 <div style={{ display: 'flex', gap: 4, marginLeft: 8 }}>
                   {onOpenInChat && (
                     <button onClick={(e) => { e.stopPropagation(); onOpenInChat(s.id) }}
