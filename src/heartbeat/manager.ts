@@ -24,17 +24,22 @@ export class HeartbeatManager {
   }
 
   /** Start the heartbeat system. Creates a cron job if one doesn't exist. */
-  start(intervalMs?: number): void {
+  start(intervalMs?: number, force?: boolean): void {
     const interval = intervalMs || DEFAULT_INTERVAL_MS;
 
     // Check if heartbeat job already exists
     const existing = this.scheduler.listJobs().find(j => j.name === HEARTBEAT_JOB_NAME);
     if (existing) {
-      if (!existing.enabled) {
-        this.scheduler.enableJob(existing.id);
+      if (force) {
+        // Force: delete and recreate with new interval
+        this.scheduler.removeJob(existing.id);
+      } else {
+        if (!existing.enabled) {
+          this.scheduler.enableJob(existing.id);
+        }
+        this.enabled = true;
+        return;
       }
-      this.enabled = true;
-      return;
     }
 
     // Create the heartbeat job
@@ -73,18 +78,31 @@ export class HeartbeatManager {
 
     const sessionId = `heartbeat:${Date.now()}`;
 
-    // Build the heartbeat prompt
+    // Auto-elevate heartbeat sessions so the agent has full tool access
+    this.agent.elevateSession(sessionId);
+
+    // Build the heartbeat prompt — structured as a task list with explicit tool calls
     const prompt = [
-      '[HEARTBEAT — Proactive Check-in]',
+      '[SYSTEM HEARTBEAT — AUTOMATED TASK EXECUTION]',
       '',
-      'This is an automatic heartbeat trigger. Review your HEARTBEAT.md checklist below and take any actions that are due.',
-      'If nothing needs attention, just log that you checked and found nothing actionable.',
+      'This is an automated heartbeat. You are REQUIRED to use tools to complete these tasks.',
+      'Do NOT respond with text only. You MUST call tools.',
+      '',
+      'MANDATORY FIRST STEP: Call `memory_log` with a note that heartbeat started.',
+      '',
+      'Then execute EACH task below using the appropriate tools:',
       '',
       '---',
       heartbeatContent,
       '---',
       '',
-      'Check each item. For any that need action, do them now. Log what you did or found to your daily log.',
+      'For EACH task above:',
+      '1. Use `bash` to run commands, `read_file` to check files, `memory_log` to log findings',
+      '2. If anything should be saved permanently, use `memory_save` or `memory_append`',
+      '3. If daily log needs review, use `identity_read` to read MEMORY.md, then `memory_log` results',
+      '',
+      'IMPORTANT: Your response MUST include tool calls. A text-only response is a failure.',
+      'Start by calling memory_log right now.',
     ].join('\n');
 
     try {
