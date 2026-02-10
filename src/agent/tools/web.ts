@@ -61,7 +61,7 @@ export const webTools: Tool[] = [
           try {
             const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}`;
             const res = await fetch(url, {
-              headers: { Accept: 'application/json', 'X-Subscription-Token': apiKey },
+              headers: { Accept: 'application/json', 'X-Subscription-Token': apiKey, 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36' },
             });
 
             if (!res.ok) return { output: '', error: `Brave Search API error: ${res.status} ${res.statusText}` };
@@ -94,7 +94,7 @@ export const webTools: Tool[] = [
             const timer = setTimeout(() => controller.abort(), 15000);
 
             const res = await fetch(url, {
-              headers: { 'User-Agent': 'Mozilla/5.0 (compatible; AutoMate/0.1)' },
+              headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36' },
               signal: controller.signal,
               redirect: 'follow',
             });

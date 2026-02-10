@@ -40,7 +40,13 @@ import tempfile
 
 import undetected_chromedriver as uc
 from selenium_stealth import stealth
-from pyvirtualdisplay import Display
+
+# pyvirtualdisplay is optional — unavailable on Termux/Android
+try:
+    from pyvirtualdisplay import Display as _Display
+except ImportError:
+    _Display = None
+
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
@@ -619,13 +625,21 @@ def start(config=None):
     tz_prof = _stealth_profile["timezone"]
 
     # Determine headless strategy
+    # Auto-detect Termux/Android — Xvfb is never available there
+    _is_termux = (
+        os.path.isdir("/data/data/com.termux")
+        or os.environ.get("TERMUX_VERSION")
+        or "android" in os.uname().sysname.lower()
+    )
     use_headless_new = (
         config.get("headless", os.environ.get("AUTOMATE_HEADLESS", "")) == "new"
+        or _is_termux
+        or _Display is None
     )
 
     if not use_headless_new:
         try:
-            display = Display(
+            display = _Display(
                 visible=False, size=(screen_prof["width"], screen_prof["height"])
             )
             display.start()
@@ -683,6 +697,9 @@ def start(config=None):
     opts.add_experimental_option("prefs", prefs)
 
     chrome_paths = [
+        "/data/data/com.termux/files/usr/bin/chromium-browser",
+        "/data/data/com.termux/files/usr/bin/chromium",
+        "/data/data/com.termux/files/usr/bin/google-chrome",
         "/usr/bin/google-chrome",
         "/usr/bin/chromium",
         "/usr/bin/chromium-browser",
@@ -693,6 +710,7 @@ def start(config=None):
             break
 
     driver_paths = [
+        "/data/data/com.termux/files/usr/bin/chromedriver",
         "/usr/bin/chromedriver",
         "/usr/sbin/chromedriver",
         "/usr/local/bin/chromedriver",
