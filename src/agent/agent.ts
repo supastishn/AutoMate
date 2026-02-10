@@ -976,6 +976,11 @@ export class Agent {
       return 'Heartbeat ENABLED. Will check HEARTBEAT.md periodically.';
     }
 
+    if (arg === 'force') {
+      this.heartbeatManager.start(undefined, true);
+      return 'Heartbeat FORCE-STARTED. Existing job replaced with fresh interval.';
+    }
+
     if (arg === 'off') {
       this.heartbeatManager.stop();
       return 'Heartbeat DISABLED.';
@@ -986,7 +991,7 @@ export class Agent {
       return 'Heartbeat triggered manually. Check daily log for results.';
     }
 
-    return 'Usage: /heartbeat [on|off|status|now]';
+    return 'Usage: /heartbeat [on|off|force|status|now]';
   }
 
   /** Pre-compaction memory flush: silently save important context before compaction */
@@ -1036,6 +1041,11 @@ export class Agent {
   /** Check if a session has elevated permissions */
   isElevated(sessionId: string): boolean {
     return this.elevatedSessions.has(sessionId);
+  }
+
+  /** Elevate a session programmatically (e.g. for heartbeat/cron) */
+  elevateSession(sessionId: string): void {
+    this.elevatedSessions.add(sessionId);
   }
 
   /** Process message with restricted tool access (for public/non-owner users) */
