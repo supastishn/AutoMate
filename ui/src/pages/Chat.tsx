@@ -282,11 +282,13 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
   const [showSlashMenu, setShowSlashMenu] = useState(false)
   const [slashFilter, setSlashFilter] = useState('')
   const [heartbeat, setHeartbeat] = useState<HeartbeatActivity | null>(null)
+  const [awaitingResponse, setAwaitingResponse] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const msgIdRef = useRef(0)
+  const awaitingResponseRef = useRef(false)
 
   const makeId = () => `msg_${++msgIdRef.current}_${Date.now()}`
 
@@ -402,7 +404,12 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         setStreaming('')
       }
       if (msg.type === 'typing') {
-        setTyping(msg.active)
+        // Only show typing if we're awaiting a response, to avoid stale typing indicators
+        if (msg.active) {
+          setTyping(awaitingResponseRef.current)
+        } else {
+          setTyping(false)
+        }
       }
       if (msg.type === 'stream') {
         setStreaming(prev => prev + msg.content)
@@ -410,6 +417,8 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
       }
       if (msg.type === 'response') {
         setTyping(false)
+        setAwaitingResponse(false)
+        awaitingResponseRef.current = false
         if (msg.context) setContextInfo(msg.context)
         // Use accumulated streaming content if available — msg.content only has the
         // final LLM response (after tool calls), so it would wipe earlier streamed text.
@@ -426,6 +435,9 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         })
       }
       if (msg.type === 'error') {
+        setTyping(false)
+        setAwaitingResponse(false)
+        awaitingResponseRef.current = false
         setMessages(prev => [...prev, {
           id: makeId(),
           role: 'system',
@@ -506,6 +518,8 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
     wsRef.current.send(JSON.stringify({ type: 'message', content: input }))
     setInput('')
     setStreaming('')
+    setAwaitingResponse(true)
+    awaitingResponseRef.current = true
     inputRef.current?.focus()
   }
 
