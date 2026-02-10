@@ -1,6 +1,6 @@
 import type { Config } from '../config/schema.js';
 import { LLMClient, type LLMMessage, type StreamChunk } from './llm-client.js';
-import { ToolRegistry, type ToolContext, type Tool } from './tool-registry.js';
+import { ToolRegistry, type ToolContext, type Tool, type SessionToolView, type ToolRegistryStats } from './tool-registry.js';
 import { bashTool } from './tools/bash.js';
 import { readFileTool, writeFileTool, editFileTool, applyPatchTool } from './tools/files.js';
 import { browserTools } from './tools/browser.js';
@@ -15,7 +15,7 @@ import { clawHubTools, setClawHubConfig } from '../clawhub/registry.js';
 import { skillBuilderTools, setSkillBuilderConfig } from './tools/skill-builder.js';
 import { subAgentTools, setSubAgentSpawner } from './tools/subagent.js';
 import { sharedMemoryTools, setSharedMemoryDir } from './tools/shared-memory.js';
-import { pluginTools, setPluginManager } from '../plugins/manager.js';
+import { pluginTools, setPluginManager, setPluginReloadCallback } from '../plugins/manager.js';
 import type { PluginManager } from '../plugins/manager.js';
 import type { PresenceManager } from '../gateway/presence.js';
 import type { SessionManager } from '../gateway/session-manager.js';
@@ -68,6 +68,7 @@ export class Agent {
 
     this.tools.register(this._createListToolsTool());
     this.tools.register(this._createLoadToolTool());
+    this.tools.register(this._createUnloadToolTool());
 
     // ── Wire module-level setters (needed even before tools are promoted) ─
 
@@ -205,11 +206,11 @@ export class Agent {
   }
 
   /** Rebuild full system prompt content (base + catalog + skills + memory). */
-  private _rebuildSystemContent(): string {
+  private _rebuildSystemContent(sessionView?: SessionToolView): string {
     let systemContent = this.config.agent.systemPrompt;
 
     // Inject tool catalog (deferred tools the agent can load on demand)
-    const toolCatalog = this._buildToolCatalog();
+    const toolCatalog = this._buildToolCatalog(sessionView);
     if (toolCatalog) {
       systemContent += toolCatalog;
     }
@@ -235,8 +236,10 @@ export class Agent {
   }
 
   /** Build the tool catalog string for system prompt injection. */
-  private _buildToolCatalog(): string {
-    const catalog = this.tools.getDeferredCatalog();
+  private _buildToolCatalog(sessionView?: SessionToolView): string {
+    const catalog = sessionView
+      ? sessionView.getDeferredCatalog()
+      : this.tools.getDeferredCatalog();
     if (catalog.length === 0) return '';
 
     const lines = catalog.map(entry => {
@@ -248,7 +251,7 @@ export class Agent {
       '',
       '## Additional Tools',
       'The following tools are available but not yet loaded. To use one, call `load_tool` with its name.',
-      'You can also call `list_tools` to see all available and loaded tools.',
+      'You can also call `list_tools` to see all available and loaded tools. Use `unload_tool` to free up tools you no longer need.',
       '',
       ...lines,
       '',
@@ -266,9 +269,10 @@ export class Agent {
         properties: {},
         required: [],
       },
-      async execute() {
-        const active = registry.getAll().map(t => t.name).sort();
-        const deferred = registry.getDeferredCatalog();
+      async execute(_params, ctx) {
+        const view = registry.getSessionView(ctx.sessionId);
+        const active = view.getActiveTools().map(t => t.name).sort();
+        const deferred = view.getDeferredCatalog();
 
         const lines: string[] = ['Loaded tools:'];
         for (const name of active) {
@@ -305,14 +309,44 @@ export class Agent {
         },
         required: ['name'],
       },
-      async execute(params) {
+      async execute(params, ctx) {
         const name = params.name as string;
         if (!name) return { output: '', error: 'name is required' };
-        const result = registry.promote(name);
+        const view = registry.getSessionView(ctx.sessionId);
+        const result = view.promote(name);
         if (result.promoted) {
           return { output: `Tool "${name}" loaded and ready to use. ${result.description || ''}` };
         }
         return { output: '', error: result.error || `Failed to load tool "${name}"` };
+      },
+    };
+  }
+
+  /** Create the unload_tool meta-tool. */
+  private _createUnloadToolTool(): Tool {
+    const registry = this.tools;
+    return {
+      name: 'unload_tool',
+      description: 'Unload a tool from your active toolset to free up context. The tool returns to the available pool and can be re-loaded later with load_tool. Meta-tools (list_tools, load_tool, unload_tool) cannot be unloaded.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: 'Name of the tool to unload (e.g. "web", "browser", "image")',
+          },
+        },
+        required: ['name'],
+      },
+      async execute(params, ctx) {
+        const name = params.name as string;
+        if (!name) return { output: '', error: 'name is required' };
+        const view = registry.getSessionView(ctx.sessionId);
+        const result = view.demote(name);
+        if (result.demoted) {
+          return { output: `Tool "${name}" unloaded. It is now available in the catalog and can be re-loaded with load_tool.` };
+        }
+        return { output: '', error: result.error || `Failed to unload tool "${name}"` };
       },
     };
   }
@@ -363,9 +397,27 @@ export class Agent {
   setPluginManager(pm: PluginManager): void {
     this.pluginManager = pm;
     setPluginManager(pm);
-    // Register plugin-provided tools
+    setPluginReloadCallback(() => this.refreshPluginTools());
+    // Register plugin-provided tools as deferred (dynamically loadable)
     for (const tool of pm.getAllTools()) {
-      this.tools.register(tool);
+      this.tools.registerDynamic(tool, `Plugin tool: ${tool.description.slice(0, 80)}`);
+    }
+  }
+
+  /** Re-register plugin tools after plugin reload/create. */
+  refreshPluginTools(): void {
+    if (!this.pluginManager) return;
+    const currentPluginToolNames = new Set(this.pluginManager.getAllTools().map(t => t.name));
+    // Remove stale dynamic tools no longer provided by any plugin
+    for (const entry of this.tools.getGlobalDeferredCatalog()) {
+      if (entry.summary.startsWith('Plugin tool:') && !currentPluginToolNames.has(entry.tool.name)) {
+        this.tools.removeDynamic(entry.tool.name);
+      }
+    }
+    // Upsert current plugin tools (remove first to allow overwrite)
+    for (const tool of this.pluginManager.getAllTools()) {
+      this.tools.removeDynamic(tool.name);
+      this.tools.registerDynamic(tool, `Plugin tool: ${tool.description.slice(0, 80)}`);
     }
   }
 
@@ -508,10 +560,13 @@ export class Agent {
     // Add user message
     this.sessionManager.addMessage(sessionId, { role: 'user', content: userMessage });
 
+    // Get per-session tool view
+    const sessionView = this.tools.getSessionView(sessionId);
+
     // Build system prompt dynamically
     const systemMessage: LLMMessage = {
       role: 'system',
-      content: this._rebuildSystemContent(),
+      content: this._rebuildSystemContent(sessionView),
     };
 
     const toolCallResults: { name: string; result: string }[] = [];
@@ -524,10 +579,10 @@ export class Agent {
     while (iterations < maxIterations) {
       iterations++;
 
-      // Rebuild tool defs each iteration (load_tool may have promoted new tools)
-      const toolDefs = isElevated ? this.tools.getToolDefsElevated() : this.tools.getToolDefs();
-      // Rebuild system prompt too (catalog shrinks as tools are loaded)
-      systemMessage.content = this._rebuildSystemContent();
+      // Rebuild tool defs each iteration using session view (load/unload may change set)
+      const toolDefs = sessionView.getToolDefs();
+      // Rebuild system prompt too (catalog shrinks/grows as tools are loaded/unloaded)
+      systemMessage.content = this._rebuildSystemContent(sessionView);
       const messages: LLMMessage[] = [systemMessage, ...this.sessionManager.getMessages(sessionId)];
 
       if (onStream) {
@@ -542,7 +597,7 @@ export class Agent {
             tool_calls: toolCalls,
           });
 
-          // Execute tools in parallel for speed
+          // Execute tools in parallel for speed (using session view)
           const results = await Promise.all(
             toolCalls.map(async (tc) => {
               let args: Record<string, unknown>;
@@ -555,7 +610,7 @@ export class Agent {
               if (onStream) {
                 onStream(`\n[used tool: ${tc.function.name}]\n`);
               }
-              const result = await this.tools.execute(tc.function.name, args, ctx);
+              const result = await sessionView.execute(tc.function.name, args, ctx);
               toolCallResults.push({ name: tc.function.name, result: result.output || result.error || '' });
               return { id: tc.id, result };
             })
@@ -602,7 +657,7 @@ export class Agent {
               } catch {
                 args = {};
               }
-              const result = await this.tools.execute(tc.function.name, args, ctx);
+              const result = await sessionView.execute(tc.function.name, args, ctx);
               toolCallResults.push({ name: tc.function.name, result: result.output || result.error || '' });
               return { id: tc.id, result };
             })
@@ -689,6 +744,7 @@ export class Agent {
     if (cmd === '/new' || cmd === '/reset') {
       this.sessionManager.resetSession(sessionId);
       this.elevatedSessions.delete(sessionId);
+      this.tools.clearSessionView(sessionId);
       return 'Session reset.';
     }
 
@@ -698,6 +754,7 @@ export class Agent {
       }
       for (const s of this.sessionManager.listSessions()) {
         this.sessionManager.resetSession(s.id);
+        this.tools.clearSessionView(s.id);
       }
       this.elevatedSessions.clear();
       return 'Factory reset complete. All memory, identity, and sessions wiped. BOOTSTRAP.md restored — next message will start the first-run conversation.';
@@ -1079,7 +1136,8 @@ export class Agent {
     }
 
     const systemMessage: LLMMessage = { role: 'system', content: systemContent };
-    const toolDefs = this.tools.getToolDefsFiltered(allowedTools);
+    const sessionView = this.tools.getSessionView(sessionId);
+    const toolDefs = sessionView.getToolDefsFiltered(allowedTools);
     const ctx: ToolContext = { sessionId, workdir: process.cwd(), elevated: false };
     const toolCallResults: { name: string; result: string }[] = [];
 
@@ -1114,7 +1172,7 @@ export class Agent {
               if (onStream) {
                 onStream(`\n[used tool: ${tc.function.name}]\n`);
               }
-              const result = await this.tools.execute(tc.function.name, args, ctx);
+              const result = await sessionView.execute(tc.function.name, args, ctx);
               toolCallResults.push({ name: tc.function.name, result: result.output || result.error || '' });
               return { id: tc.id, result };
             })
@@ -1156,7 +1214,7 @@ export class Agent {
               }
               let args: Record<string, unknown>;
               try { args = JSON.parse(tc.function.arguments); } catch { args = {}; }
-              const result = await this.tools.execute(tc.function.name, args, ctx);
+              const result = await sessionView.execute(tc.function.name, args, ctx);
               toolCallResults.push({ name: tc.function.name, result: result.output || result.error || '' });
               return { id: tc.id, result };
             })
@@ -1197,5 +1255,15 @@ export class Agent {
   /** Get the memory manager reference */
   getMemoryManager(): MemoryManager | null {
     return this.memoryManager;
+  }
+
+  /** Get tool registry stats for dashboard. */
+  getToolStats(): ToolRegistryStats {
+    return this.tools.getStats();
+  }
+
+  /** Get the tool registry (for gateway dashboard API). */
+  getToolRegistry(): ToolRegistry {
+    return this.tools;
   }
 }

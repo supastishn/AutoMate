@@ -185,9 +185,15 @@ export class PluginManager {
 // ── Unified plugin management tool ────────────────────────────────────────
 
 let pluginManagerRef: PluginManager | null = null;
+let pluginReloadCallback: (() => void) | null = null;
 
 export function setPluginManager(pm: PluginManager): void {
   pluginManagerRef = pm;
+}
+
+/** Register a callback invoked after plugin reload/create to refresh tool registry. */
+export function setPluginReloadCallback(cb: () => void): void {
+  pluginReloadCallback = cb;
 }
 
 export const pluginTools: Tool[] = [
@@ -246,6 +252,7 @@ export const pluginTools: Tool[] = [
         case 'reload': {
           try {
             const loaded = await pluginManagerRef.loadAll();
+            if (pluginReloadCallback) pluginReloadCallback();
             return { output: `Reloaded ${loaded.length} plugins: ${loaded.map(p => p.manifest.name).join(', ') || 'none'}` };
           } catch (err) {
             return { output: '', error: `Reload failed: ${(err as Error).message}` };
@@ -270,6 +277,7 @@ export const pluginTools: Tool[] = [
           try {
             const loaded = await pluginManagerRef.loadPlugin(name);
             if (!loaded) return { output: '', error: 'Plugin created but failed to load.' };
+            if (pluginReloadCallback) pluginReloadCallback();
             const toolNames = loaded.tools.map(t => t.name).join(', ');
             return { output: `Plugin "${name}" created and loaded!\n  Type: ${type}\n  Tools: ${toolNames || 'none'}\n  Channel: ${loaded.channel?.name || 'none'}\n  Path: ${pluginDir}` };
           } catch (err) {
