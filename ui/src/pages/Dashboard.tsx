@@ -41,6 +41,21 @@ interface PresenceState {
 interface SkillInfo { name: string; description: string }
 interface PluginInfo { name: string; summary: string; actions?: string[] }
 
+interface HeartbeatSummaryCategory {
+  category: string
+  items: string[]
+}
+
+interface HeartbeatLogEntry {
+  sessionId: string
+  timestamp: number
+  summary: string
+  categories: HeartbeatSummaryCategory[]
+  rounds: number
+  status: 'finished' | 'max_rounds' | 'error'
+  toolsUsed: string[]
+}
+
 interface DashboardData {
   uptime: number
   model: string
@@ -52,6 +67,7 @@ interface DashboardData {
   presence: PresenceState
   skills: SkillInfo[]
   plugins: PluginInfo[]
+  heartbeatLog: HeartbeatLogEntry[]
 }
 
 interface InlineStatus {
@@ -80,6 +96,32 @@ const pillRed: React.CSSProperties = { ...pill, background: '#2e1a1a', color: '#
 const mono: React.CSSProperties = { fontFamily: 'monospace', fontSize: 12, color: '#aaa' }
 const grid2: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }
 const grid3: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }
+
+const overlay: React.CSSProperties = {
+  position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+  background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)',
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+  zIndex: 1000,
+}
+const modal: React.CSSProperties = {
+  background: '#1a1a1a', border: '1px solid #333', borderRadius: 12,
+  padding: 24, maxWidth: 600, width: '90%', maxHeight: '80vh',
+  overflowY: 'auto', position: 'relative',
+}
+const statusBadge = (status: string): React.CSSProperties => ({
+  display: 'inline-block', padding: '2px 8px', borderRadius: 10,
+  fontSize: 10, fontWeight: 600, textTransform: 'uppercase' as const,
+  background: status === 'finished' ? '#1a2e1a' : status === 'error' ? '#2e1a1a' : '#2e2a1a',
+  color: status === 'finished' ? '#4caf50' : status === 'error' ? '#f44336' : '#ff9800',
+})
+const catColor = (cat: string): string => {
+  const colors: Record<string, string> = {
+    memory: '#4fc3f7', system: '#81c784', tasks: '#ffb74d',
+    monitoring: '#ce93d8', communication: '#f48fb1', maintenance: '#a1887f',
+    error: '#f44336', general: '#90a4ae',
+  }
+  return colors[cat.toLowerCase()] || '#4fc3f7'
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -112,7 +154,87 @@ function timeSince(ts: number): string {
   const diff = Math.floor((Date.now() - ts) / 1000)
   if (diff < 60) return `${diff}s ago`
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
-  return `${Math.floor(diff / 3600)}h ago`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+  return `${Math.floor(diff / 86400)}d ago`
+}
+
+function fmtDate(ts: number): string {
+  return new Date(ts).toLocaleString(undefined, {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  })
+}
+
+// ── Heartbeat Detail Modal ───────────────────────────────────────────
+
+function HeartbeatModal({ entry, onClose }: { entry: HeartbeatLogEntry; onClose: () => void }) {
+  return (
+    <div style={overlay} onClick={onClose}>
+      <div style={modal} onClick={e => e.stopPropagation()}>
+        <button
+          onClick={onClose}
+          style={{
+            position: 'absolute', top: 12, right: 12, background: 'none',
+            border: 'none', color: '#888', fontSize: 20, cursor: 'pointer',
+          }}
+        >
+          x
+        </button>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+          <span style={statusBadge(entry.status)}>{entry.status.replace('_', ' ')}</span>
+          <span style={{ fontSize: 13, color: '#aaa' }}>{fmtDate(entry.timestamp)}</span>
+          <span style={{ fontSize: 11, color: '#666' }}>({timeSince(entry.timestamp)})</span>
+        </div>
+
+        <div style={{ display: 'flex', gap: 16, marginBottom: 16, ...mono }}>
+          <span>Rounds: <span style={{ color: '#4fc3f7' }}>{entry.rounds}</span></span>
+          <span>Tools: <span style={{ color: '#4fc3f7' }}>{entry.toolsUsed.length}</span></span>
+        </div>
+
+        {/* Categories */}
+        <div style={{ marginBottom: 16 }}>
+          {entry.categories.map((cat, i) => (
+            <div key={i} style={{
+              marginBottom: 12, padding: '10px 14px', borderRadius: 8,
+              background: '#111', border: `1px solid ${catColor(cat.category)}22`,
+              borderLeft: `3px solid ${catColor(cat.category)}`,
+            }}>
+              <div style={{
+                fontSize: 12, fontWeight: 600, color: catColor(cat.category),
+                marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5,
+              }}>
+                {cat.category}
+              </div>
+              <ul style={{ margin: 0, paddingLeft: 18, listStyle: 'disc' }}>
+                {cat.items.map((item, j) => (
+                  <li key={j} style={{ ...mono, marginBottom: 3, lineHeight: 1.5 }}>
+                    {item}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+
+        {/* Tools Used */}
+        {entry.toolsUsed.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, color: '#666', marginBottom: 6 }}>TOOLS USED</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+              {entry.toolsUsed.map(t => (
+                <span key={t} style={pill}>{t}</span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Session ID */}
+        <div style={{ marginTop: 12, ...mono, fontSize: 10, color: '#555' }}>
+          Session: {entry.sessionId}
+        </div>
+      </div>
+    </div>
+  )
 }
 
 // ── Stat Card ───────────────────────────────────────────────────────────
@@ -134,6 +256,7 @@ export default function Dashboard() {
   const [expandedSessions, setExpandedSessions] = useState(false)
   const [indexStatus, setIndexStatus] = useState<InlineStatus | null>(null)
   const [heartbeatStatus, setHeartbeatStatus] = useState<InlineStatus | null>(null)
+  const [selectedHeartbeat, setSelectedHeartbeat] = useState<HeartbeatLogEntry | null>(null)
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
 
   useEffect(() => {
@@ -162,7 +285,7 @@ export default function Dashboard() {
   // Refetch when any relevant resource changes via WebSocket
   useEffect(() => {
     return onDataUpdate((resource) => {
-      if (['cron', 'plugins', 'tools', 'memory_files', 'sessions'].includes(resource)) {
+      if (['cron', 'plugins', 'tools', 'memory_files', 'sessions', 'heartbeat_log'].includes(resource)) {
         fetchData()
       }
     })
@@ -469,6 +592,67 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+
+      {/* ── Heartbeat History ──────────────────────────────────────────── */}
+      <div style={card}>
+        <div style={sectionTitle}>Heartbeat History</div>
+        {data.heartbeatLog && data.heartbeatLog.length > 0 ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {data.heartbeatLog.map((entry, i) => (
+              <div
+                key={entry.sessionId + i}
+                onClick={() => setSelectedHeartbeat(entry)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '8px 12px', borderRadius: 6,
+                  background: '#111', border: '1px solid #222',
+                  cursor: 'pointer', transition: 'border-color 0.15s',
+                }}
+                onMouseEnter={e => (e.currentTarget.style.borderColor = '#444')}
+                onMouseLeave={e => (e.currentTarget.style.borderColor = '#222')}
+              >
+                <span style={statusBadge(entry.status)}>
+                  {entry.status === 'finished' ? 'OK' : entry.status === 'error' ? 'ERR' : 'MAX'}
+                </span>
+                <span style={{ ...mono, color: '#888', minWidth: 70, fontSize: 11 }}>
+                  {timeSince(entry.timestamp)}
+                </span>
+                <div style={{ flex: 1, overflow: 'hidden' }}>
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                    {entry.categories.slice(0, 4).map((cat, j) => (
+                      <span key={j} style={{
+                        fontSize: 10, padding: '1px 6px', borderRadius: 8,
+                        background: `${catColor(cat.category)}15`,
+                        color: catColor(cat.category),
+                        border: `1px solid ${catColor(cat.category)}30`,
+                      }}>
+                        {cat.category}
+                      </span>
+                    ))}
+                    {entry.categories.length > 4 && (
+                      <span style={{ fontSize: 10, color: '#555' }}>
+                        +{entry.categories.length - 4} more
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <span style={{ ...mono, fontSize: 10, color: '#555' }}>
+                  {entry.rounds}r / {entry.toolsUsed.length}t
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ ...mono, color: '#555', padding: '12px 0' }}>
+            No heartbeat runs yet. Enable heartbeat and trigger one to see results here.
+          </div>
+        )}
+      </div>
+
+      {/* Heartbeat Detail Modal */}
+      {selectedHeartbeat && (
+        <HeartbeatModal entry={selectedHeartbeat} onClose={() => setSelectedHeartbeat(null)} />
+      )}
     </div>
   )
 }

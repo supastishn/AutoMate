@@ -35,6 +35,11 @@ export class MemoryManager {
     }
   }
 
+  /** Get the memory directory path. */
+  getDirectory(): string {
+    return this.dir;
+  }
+
   /** Copy default templates for any missing identity files on first run */
   private ensureDefaults(): void {
     for (const file of TEMPLATE_FILES) {
