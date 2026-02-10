@@ -18,8 +18,22 @@ export interface Tool {
   execute(params: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
 }
 
+/** Metadata for a deferred tool (shown in catalog, not yet loaded into tool defs). */
+export interface DeferredToolEntry {
+  tool: Tool;
+  /** Short one-line description for the system prompt catalog. */
+  summary: string;
+  /** List of actions (for action-based tools). */
+  actions?: string[];
+  /** Whether this tool requires a config gate (e.g. browser.enabled). */
+  conditional?: string;
+}
+
 export class ToolRegistry {
+  /** Active tools — included in LLM tool defs, callable. */
   private tools: Map<string, Tool> = new Map();
+  /** Deferred tools — discoverable via catalog, loadable on demand. */
+  private deferred: Map<string, DeferredToolEntry> = new Map();
   private allowList: string[] = [];
   private denyList: string[] = [];
 
@@ -34,6 +48,41 @@ export class ToolRegistry {
 
   unregister(name: string): void {
     this.tools.delete(name);
+  }
+
+  /** Register a tool as deferred (not in LLM tool defs until promoted). */
+  registerDeferred(entry: DeferredToolEntry): void {
+    this.deferred.set(entry.tool.name, entry);
+  }
+
+  /** Promote a deferred tool into the active set. Returns true if found and promoted. */
+  promote(name: string): { promoted: boolean; description?: string; error?: string } {
+    const entry = this.deferred.get(name);
+    if (!entry) {
+      // Already active?
+      if (this.tools.has(name)) {
+        return { promoted: false, error: `Tool "${name}" is already loaded.` };
+      }
+      return { promoted: false, error: `Tool "${name}" not found. Use list_tools to see available tools.` };
+    }
+    this.tools.set(name, entry.tool);
+    this.deferred.delete(name);
+    return { promoted: true, description: entry.summary };
+  }
+
+  /** Get the catalog of deferred tools for system prompt injection. */
+  getDeferredCatalog(): DeferredToolEntry[] {
+    return Array.from(this.deferred.values());
+  }
+
+  /** Get names of all deferred tools. */
+  getDeferredNames(): string[] {
+    return Array.from(this.deferred.keys());
+  }
+
+  /** Check if a tool is deferred (not yet loaded). */
+  isDeferred(name: string): boolean {
+    return this.deferred.has(name);
   }
 
   get(name: string): Tool | undefined {
@@ -104,6 +153,10 @@ export class ToolRegistry {
     }
     const tool = this.tools.get(name);
     if (!tool) {
+      // Helpful hint if it's deferred
+      if (this.deferred.has(name)) {
+        return { output: '', error: `Tool '${name}' is available but not loaded. Call load_tool with name="${name}" first.` };
+      }
       return { output: '', error: `Unknown tool: ${name}` };
     }
     try {
