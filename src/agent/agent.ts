@@ -1,6 +1,6 @@
 import type { Config } from '../config/schema.js';
 import { LLMClient, type LLMMessage, type StreamChunk } from './llm-client.js';
-import { ToolRegistry, type ToolContext } from './tool-registry.js';
+import { ToolRegistry, type ToolContext, type Tool } from './tool-registry.js';
 import { bashTool } from './tools/bash.js';
 import { readFileTool, writeFileTool, editFileTool, applyPatchTool } from './tools/files.js';
 import { browserTools } from './tools/browser.js';
@@ -51,89 +51,149 @@ export class Agent {
     this.tools = new ToolRegistry();
     this.sessionManager = sessionManager;
 
-    // Register built-in tools
+    // ── Core tools (always loaded — essential for every interaction) ──────
+
     this.tools.register(bashTool);
     this.tools.register(readFileTool);
     this.tools.register(writeFileTool);
     this.tools.register(editFileTool);
     this.tools.register(applyPatchTool);
 
-    // Browser tools
-    if (config.browser.enabled) {
-      for (const tool of browserTools) {
-        this.tools.register(tool);
-      }
-    }
-
-    // Session tools
-    setSessionManager(sessionManager);
-    setAgent(this);
-    for (const tool of sessionTools) {
-      this.tools.register(tool);
-    }
-
-    // Memory tools
+    // Memory & identity — always available
     for (const tool of memoryTools) {
       this.tools.register(tool);
     }
 
-    // Web tools (search + fetch)
-    for (const tool of webTools) {
-      this.tools.register(tool);
-    }
+    // ── Meta-tools for lazy loading ──────────────────────────────────────
 
-    // Image tools (analyze, generate, send)
+    this.tools.register(this._createListToolsTool());
+    this.tools.register(this._createLoadToolTool());
+
+    // ── Wire module-level setters (needed even before tools are promoted) ─
+
+    setSessionManager(sessionManager);
+    setAgent(this);
     setImageConfig(config.agent.apiBase, config.agent.model, config.agent.apiKey);
-    for (const tool of imageTools) {
-      this.tools.register(tool);
-    }
-
-    // Cron tools
-    if (config.cron.enabled) {
-      for (const tool of cronTools) {
-        this.tools.register(tool);
-      }
-    }
-
-    // Background process tools
-    for (const tool of processTools) {
-      this.tools.register(tool);
-    }
-
-    // Canvas tools
-    if (config.canvas?.enabled !== false) {
-      for (const tool of canvasTools) {
-        this.tools.register(tool);
-      }
-    }
-
-    // ClawHub tools (search, preview, install, uninstall, list)
-    for (const tool of clawHubTools) {
-      this.tools.register(tool);
-    }
-
-    // Self-building skill tools
-    for (const tool of skillBuilderTools) {
-      this.tools.register(tool);
-    }
-
-    // Sub-agent tools
-    for (const tool of subAgentTools) {
-      this.tools.register(tool);
-    }
-
-    // Shared memory tools
     if (config.memory.sharedDirectory) {
       setSharedMemoryDir(config.memory.sharedDirectory);
     }
-    for (const tool of sharedMemoryTools) {
-      this.tools.register(tool);
+
+    // ── Deferred tools (discoverable via list_tools, loaded via load_tool) ─
+
+    // Session management
+    for (const tool of sessionTools) {
+      this.tools.registerDeferred({
+        tool,
+        summary: 'Manage chat sessions: list, view history, send messages, spawn sub-sessions',
+        actions: ['list', 'history', 'send', 'spawn'],
+      });
     }
 
-    // Plugin management tools
+    // Web search & fetch
+    for (const tool of webTools) {
+      this.tools.registerDeferred({
+        tool,
+        summary: 'Search the web and fetch/scrape URLs',
+        actions: ['search', 'fetch'],
+      });
+    }
+
+    // Image tools
+    for (const tool of imageTools) {
+      this.tools.registerDeferred({
+        tool,
+        summary: 'Analyze images (vision), generate images (DALL-E), send images to chat',
+        actions: ['analyze', 'generate', 'send'],
+      });
+    }
+
+    // Browser automation
+    if (config.browser.enabled) {
+      for (const tool of browserTools) {
+        this.tools.registerDeferred({
+          tool,
+          summary: 'Control a headless browser: navigate, click, type, screenshot, execute JS, fill forms',
+          actions: ['navigate', 'back', 'screenshot', 'click', 'type', 'find', 'scroll', 'get_page', 'get_html', 'execute_js', 'fill_form', 'select', 'wait_element', 'press_key', 'human_click', 'human_type', 'upload', 'close'],
+          conditional: 'browser.enabled',
+        });
+      }
+    }
+
+    // Cron scheduling
+    if (config.cron.enabled) {
+      for (const tool of cronTools) {
+        this.tools.registerDeferred({
+          tool,
+          summary: 'Schedule recurring tasks with cron expressions',
+          actions: ['create', 'list', 'delete', 'toggle'],
+          conditional: 'cron.enabled',
+        });
+      }
+    }
+
+    // Background processes
+    for (const tool of processTools) {
+      this.tools.registerDeferred({
+        tool,
+        summary: 'Run and manage long-running background processes',
+        actions: ['start', 'poll', 'write', 'kill', 'list'],
+      });
+    }
+
+    // Canvas (collaborative document)
+    if (config.canvas?.enabled !== false) {
+      for (const tool of canvasTools) {
+        this.tools.registerDeferred({
+          tool,
+          summary: 'Push content to a live canvas document visible in the Web UI',
+          actions: ['push', 'reset', 'snapshot'],
+        });
+      }
+    }
+
+    // ClawHub (skill marketplace)
+    for (const tool of clawHubTools) {
+      this.tools.registerDeferred({
+        tool,
+        summary: 'Browse and install community skills from ClawHub marketplace',
+        actions: ['search', 'preview', 'install', 'uninstall', 'update', 'list'],
+      });
+    }
+
+    // Skill builder (self-modification)
+    for (const tool of skillBuilderTools) {
+      this.tools.registerDeferred({
+        tool,
+        summary: 'Create and manage hot-reloadable SKILL.md files that extend your capabilities',
+        actions: ['create', 'edit', 'read', 'delete', 'list'],
+      });
+    }
+
+    // Sub-agents
+    for (const tool of subAgentTools) {
+      this.tools.registerDeferred({
+        tool,
+        summary: 'Spawn autonomous sub-agents to handle tasks in parallel',
+      });
+    }
+
+    // Shared memory
+    for (const tool of sharedMemoryTools) {
+      this.tools.registerDeferred({
+        tool,
+        summary: 'Read/write shared memory files accessible across sessions and agents',
+        actions: ['read', 'write', 'append', 'list', 'delete'],
+      });
+    }
+
+    // Plugin management
     if (config.plugins?.enabled !== false) {
       for (const tool of pluginTools) {
-        this.tools.register(tool);
+        this.tools.registerDeferred({
+          tool,
+          summary: 'Create, scaffold, and manage runtime plugins that add new tools/channels/middleware',
+          actions: ['list', 'scaffold', 'reload', 'create'],
+        });
       }
     }
 
@@ -142,6 +202,119 @@ export class Agent {
 
     // Wire sub-agent spawner
     this._wireSubAgentSpawner();
+  }
+
+  /** Rebuild full system prompt content (base + catalog + skills + memory). */
+  private _rebuildSystemContent(): string {
+    let systemContent = this.config.agent.systemPrompt;
+
+    // Inject tool catalog (deferred tools the agent can load on demand)
+    const toolCatalog = this._buildToolCatalog();
+    if (toolCatalog) {
+      systemContent += toolCatalog;
+    }
+
+    // Inject skills (hot-reloaded)
+    if (this.skillsLoader) {
+      this.skillsLoader.reloadIfChanged();
+      const skillsPrompt = this.skillsLoader.getSystemPromptInjection();
+      if (skillsPrompt) {
+        systemContent += skillsPrompt;
+      }
+    }
+
+    // Inject memory & identity files
+    if (this.memoryManager) {
+      const memoryPrompt = this.memoryManager.getPromptInjection();
+      if (memoryPrompt) {
+        systemContent += memoryPrompt;
+      }
+    }
+
+    return systemContent;
+  }
+
+  /** Build the tool catalog string for system prompt injection. */
+  private _buildToolCatalog(): string {
+    const catalog = this.tools.getDeferredCatalog();
+    if (catalog.length === 0) return '';
+
+    const lines = catalog.map(entry => {
+      const actions = entry.actions ? ` (actions: ${entry.actions.join(', ')})` : '';
+      return `  - ${entry.tool.name}: ${entry.summary}${actions}`;
+    });
+
+    return [
+      '',
+      '## Additional Tools',
+      'The following tools are available but not yet loaded. To use one, call `load_tool` with its name.',
+      'You can also call `list_tools` to see all available and loaded tools.',
+      '',
+      ...lines,
+      '',
+    ].join('\n');
+  }
+
+  /** Create the list_tools meta-tool. */
+  private _createListToolsTool(): Tool {
+    const registry = this.tools;
+    return {
+      name: 'list_tools',
+      description: 'List all available tools — both currently loaded and available for loading. Shows which tools are active and which can be loaded with load_tool.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+      },
+      async execute() {
+        const active = registry.getAll().map(t => t.name).sort();
+        const deferred = registry.getDeferredCatalog();
+
+        const lines: string[] = ['Loaded tools:'];
+        for (const name of active) {
+          lines.push(`  [loaded] ${name}`);
+        }
+
+        if (deferred.length > 0) {
+          lines.push('');
+          lines.push('Available tools (call load_tool to activate):');
+          for (const entry of deferred) {
+            const actions = entry.actions ? ` — actions: ${entry.actions.join(', ')}` : '';
+            lines.push(`  [available] ${entry.tool.name}: ${entry.summary}${actions}`);
+          }
+        }
+
+        return { output: lines.join('\n') };
+      },
+    };
+  }
+
+  /** Create the load_tool meta-tool. */
+  private _createLoadToolTool(): Tool {
+    const registry = this.tools;
+    return {
+      name: 'load_tool',
+      description: 'Load an available tool into your active toolset. After loading, the tool becomes callable. Use list_tools to see available tools.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: 'Name of the tool to load (e.g. "web", "browser", "image", "cron")',
+          },
+        },
+        required: ['name'],
+      },
+      async execute(params) {
+        const name = params.name as string;
+        if (!name) return { output: '', error: 'name is required' };
+        const result = registry.promote(name);
+        if (result.promoted) {
+          return { output: `Tool "${name}" loaded and ready to use. ${result.description || ''}` };
+        }
+        return { output: '', error: result.error || `Failed to load tool "${name}"` };
+      },
+    };
   }
 
   /** Wire in the memory manager (called from index.ts after construction) */
@@ -335,34 +508,14 @@ export class Agent {
     // Add user message
     this.sessionManager.addMessage(sessionId, { role: 'user', content: userMessage });
 
-    // Build system prompt dynamically (fresh reads every message)
-    let systemContent = this.config.agent.systemPrompt;
-
-    // Inject skills (hot-reloaded)
-    if (this.skillsLoader) {
-      this.skillsLoader.reloadIfChanged();
-      const skillsPrompt = this.skillsLoader.getSystemPromptInjection();
-      if (skillsPrompt) {
-        systemContent += skillsPrompt;
-      }
-    }
-
-    // Inject memory & identity files
-    if (this.memoryManager) {
-      const memoryPrompt = this.memoryManager.getPromptInjection();
-      if (memoryPrompt) {
-        systemContent += memoryPrompt;
-      }
-    }
-
+    // Build system prompt dynamically
     const systemMessage: LLMMessage = {
       role: 'system',
-      content: systemContent,
+      content: this._rebuildSystemContent(),
     };
 
     const toolCallResults: { name: string; result: string }[] = [];
     const isElevated = this.elevatedSessions.has(sessionId);
-    const toolDefs = isElevated ? this.tools.getToolDefsElevated() : this.tools.getToolDefs();
     const ctx: ToolContext = { sessionId, workdir: process.cwd(), elevated: isElevated };
 
     let iterations = 0;
@@ -371,6 +524,10 @@ export class Agent {
     while (iterations < maxIterations) {
       iterations++;
 
+      // Rebuild tool defs each iteration (load_tool may have promoted new tools)
+      const toolDefs = isElevated ? this.tools.getToolDefsElevated() : this.tools.getToolDefs();
+      // Rebuild system prompt too (catalog shrinks as tools are loaded)
+      systemMessage.content = this._rebuildSystemContent();
       const messages: LLMMessage[] = [systemMessage, ...this.sessionManager.getMessages(sessionId)];
 
       if (onStream) {
