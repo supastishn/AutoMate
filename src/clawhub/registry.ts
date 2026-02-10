@@ -10,6 +10,38 @@ const CLAWHUB_API = 'https://raw.githubusercontent.com/openclaw/clawhub/main';
 const CLAWHUB_INDEX = `${CLAWHUB_API}/index.json`;
 const GITHUB_API = 'https://api.github.com';
 
+// Built-in seed registry — always available even when remote sources are unreachable.
+// Skills here can be installed directly by repo. Add community skills as they appear.
+const BUILTIN_REGISTRY: ClawHubSkill[] = [
+  {
+    name: 'web-researcher',
+    description: 'Deep web research skill — searches, summarizes, and cites sources for any topic.',
+    repo: 'openclaw/skill-web-researcher',
+    author: 'openclaw',
+    version: '1.0.0',
+    tags: ['research', 'web', 'search', 'summarize'],
+    downloads: 0,
+  },
+  {
+    name: 'code-reviewer',
+    description: 'Automated code review — analyzes diffs, flags issues, suggests improvements.',
+    repo: 'openclaw/skill-code-reviewer',
+    author: 'openclaw',
+    version: '1.0.0',
+    tags: ['code', 'review', 'quality', 'lint'],
+    downloads: 0,
+  },
+  {
+    name: 'daily-digest',
+    description: 'Daily summary skill — compiles and delivers a digest of recent activity and notes.',
+    repo: 'openclaw/skill-daily-digest',
+    author: 'openclaw',
+    version: '1.0.0',
+    tags: ['digest', 'summary', 'daily', 'productivity'],
+    downloads: 0,
+  },
+];
+
 // ── Skill content security scanner ──────────────────────────────────────────
 
 interface VetResult {
@@ -111,24 +143,55 @@ function saveInstalledMeta(skillsDir: string, meta: InstalledMeta[]): void {
 // ── Registry fetch ──────────────────────────────────────────────────────────
 
 export async function fetchRegistry(): Promise<ClawHubSkill[]> {
+  const remote: ClawHubSkill[] = [];
+
+  // Try official index first
   try {
     const res = await fetch(CLAWHUB_INDEX, { signal: AbortSignal.timeout(10000) });
-    if (res.ok) return await res.json() as ClawHubSkill[];
-  } catch {}
-  try {
-    const res = await fetch(
-      `${GITHUB_API}/search/repositories?q=topic:clawhub-skill+topic:automate-skill&sort=stars&per_page=50`,
-      { headers: { 'Accept': 'application/vnd.github.v3+json' }, signal: AbortSignal.timeout(10000) }
-    );
     if (res.ok) {
-      const data = await res.json() as any;
-      return (data.items || []).map((r: any) => ({
-        name: r.name, description: r.description || '', repo: r.full_name,
-        author: r.owner?.login || '', version: 'latest', tags: r.topics || [], downloads: r.stargazers_count,
-      }));
+      const data = await res.json() as ClawHubSkill[];
+      if (Array.isArray(data)) remote.push(...data);
     }
   } catch {}
-  return [];
+
+  // Fallback: search GitHub for repos with SKILL.md (broader query)
+  if (remote.length === 0) {
+    try {
+      const queries = [
+        'topic:clawhub-skill',
+        'topic:automate-skill',
+        'filename:SKILL.md+topic:ai-skill',
+      ];
+      for (const q of queries) {
+        try {
+          const res = await fetch(
+            `${GITHUB_API}/search/repositories?q=${encodeURIComponent(q)}&sort=stars&per_page=30`,
+            { headers: { 'Accept': 'application/vnd.github.v3+json' }, signal: AbortSignal.timeout(10000) }
+          );
+          if (res.ok) {
+            const data = await res.json() as any;
+            for (const r of (data.items || [])) {
+              if (!remote.some(s => s.repo === r.full_name)) {
+                remote.push({
+                  name: r.name, description: r.description || '', repo: r.full_name,
+                  author: r.owner?.login || '', version: 'latest', tags: r.topics || [], downloads: r.stargazers_count,
+                });
+              }
+            }
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+
+  // Merge: built-in seeds + remote (dedupe by repo)
+  const merged = [...BUILTIN_REGISTRY];
+  for (const skill of remote) {
+    if (!merged.some(s => s.repo === skill.repo)) {
+      merged.push(skill);
+    }
+  }
+  return merged;
 }
 
 export async function searchSkills(query: string): Promise<ClawHubSkill[]> {

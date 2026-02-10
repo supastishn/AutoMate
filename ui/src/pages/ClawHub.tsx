@@ -41,6 +41,7 @@ export default function ClawHub() {
   const [previewLoading, setPreviewLoading] = useState(false)
   const [toast, setToast] = useState<{ msg: string; err: boolean } | null>(null)
   const [tab, setTab] = useState<'browse' | 'installed'>('browse')
+  const [manualRepo, setManualRepo] = useState('')
 
   const showToast = (msg: string, err = false) => {
     setToast({ msg, err })
@@ -272,6 +273,43 @@ export default function ClawHub() {
                 borderRadius: 4, cursor: 'pointer', fontSize: 13,
               }}>Clear</button>
             )}
+          </div>
+
+          {/* Manual install from repo */}
+          <div style={{
+            ...card, display: 'flex', gap: 8, alignItems: 'center', marginBottom: 20,
+            padding: '12px 16px',
+          }}>
+            <span style={{ fontSize: 12, color: '#888', whiteSpace: 'nowrap', flexShrink: 0 }}>Install from repo:</span>
+            <input
+              value={manualRepo}
+              onChange={e => setManualRepo(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && manualRepo.trim() && doInstall(manualRepo.trim())}
+              placeholder="user/repo or https://github.com/user/repo"
+              style={{
+                flex: 1, padding: '6px 10px', background: '#0a0a0a', border: '1px solid #333',
+                borderRadius: 4, color: '#e0e0e0', fontSize: 12, fontFamily: 'monospace', outline: 'none',
+              }}
+            />
+            <button
+              onClick={() => manualRepo.trim() && doPreview(manualRepo.trim())}
+              disabled={!manualRepo.trim() || previewLoading}
+              style={{
+                padding: '6px 12px', background: '#1a1a2e', color: '#4fc3f7',
+                border: '1px solid #333', borderRadius: 4, cursor: 'pointer', fontSize: 11,
+                opacity: !manualRepo.trim() ? 0.4 : 1,
+              }}
+            >Preview</button>
+            <button
+              onClick={() => { if (manualRepo.trim()) { doInstall(manualRepo.trim()); setManualRepo('') } }}
+              disabled={!manualRepo.trim() || installing === manualRepo.trim()}
+              style={{
+                padding: '6px 12px', background: !manualRepo.trim() ? '#333' : '#4fc3f7',
+                color: !manualRepo.trim() ? '#888' : '#000',
+                border: 'none', borderRadius: 4, cursor: !manualRepo.trim() ? 'default' : 'pointer',
+                fontSize: 11, fontWeight: 600,
+              }}
+            >Install</button>
           </div>
 
           {/* Registry grid */}
