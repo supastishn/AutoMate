@@ -101,6 +101,7 @@ export const ConfigSchema = z.object({
   }).default({}),
   skills: z.object({
     directory: z.string().default('~/.automate/skills'),
+    extraDirs: z.array(z.string()).optional(),   // additional skill dirs (lower precedence)
   }).default({}),
   memory: z.object({
     directory: z.string().default('~/.automate/memory'),
