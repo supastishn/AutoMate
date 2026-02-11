@@ -362,6 +362,7 @@ export class Agent {
 
     // Wire pre-compaction memory flush
     this.sessionManager.setBeforeCompactHook(async (sessionId, messages) => {
+      if (this.pluginManager) this.pluginManager.fireCompact(sessionId);
       await this.preCompactionFlush(sessionId, messages);
     });
   }
@@ -627,7 +628,9 @@ export class Agent {
               if (onStream) {
                 onStream(`\n[used tool: ${tc.function.name}]\n`);
               }
+              if (this.pluginManager) this.pluginManager.fireToolCall(tc.function.name, args);
               const result = await sessionView.execute(tc.function.name, args, ctx);
+              if (this.pluginManager) this.pluginManager.fireToolResult(tc.function.name, result.output || result.error || '');
               toolCallResults.push({ name: tc.function.name, result: result.output || result.error || '' });
               return { id: tc.id, result };
             })
@@ -674,7 +677,9 @@ export class Agent {
               } catch {
                 args = {};
               }
+              if (this.pluginManager) this.pluginManager.fireToolCall(tc.function.name, args);
               const result = await sessionView.execute(tc.function.name, args, ctx);
+              if (this.pluginManager) this.pluginManager.fireToolResult(tc.function.name, result.output || result.error || '');
               toolCallResults.push({ name: tc.function.name, result: result.output || result.error || '' });
               return { id: tc.id, result };
             })

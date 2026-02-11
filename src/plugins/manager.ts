@@ -2,7 +2,7 @@
  * Plugin SDK — formal extension architecture for AutoMate.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, watch, type FSWatcher } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { Tool, ToolContext } from '../agent/tool-registry.js';
@@ -26,6 +26,16 @@ export interface PluginContext {
   pluginDir: string;
   pluginConfig: Record<string, unknown>;
   log: (msg: string) => void;
+  events: {
+    emit(event: string, ...args: any[]): void;
+    on(event: string, handler: (...args: any[]) => void): void;
+    off(event: string, handler: (...args: any[]) => void): void;
+  };
+  services?: {
+    memory?: any;
+    sessions?: any;
+    scheduler?: any;
+  };
 }
 
 export interface PluginExports {
@@ -38,6 +48,12 @@ export interface PluginActivation {
   channel?: PluginChannel;
   middleware?: PluginMiddleware;
   onMessage?: (sessionId: string, message: string) => void;
+  // Lifecycle hooks
+  onSessionStart?(sessionId: string): void;
+  onSessionEnd?(sessionId: string): void;
+  onToolCall?(toolName: string, params: Record<string, unknown>): void;
+  onToolResult?(toolName: string, result: string): void;
+  onCompact?(sessionId: string): void;
 }
 
 export interface PluginChannel {
@@ -71,19 +87,219 @@ export class PluginManager {
   private pluginsDir: string;
   private config: Config;
 
+  // Event bus
+  private eventBus: Map<string, Set<(...args: any[]) => void>> = new Map();
+
+  // Core service refs (set externally)
+  private coreServices: { memory?: any; sessions?: any; scheduler?: any } = {};
+
+  // Hot-reload watcher
+  private watcher: FSWatcher | null = null;
+  private dirtyPlugins: Set<string> = new Set();
+  private debounceTimer: NodeJS.Timeout | null = null;
+
   constructor(config: Config, pluginsDir?: string) {
     this.config = config;
     this.pluginsDir = pluginsDir || config.plugins?.directory || join(homedir(), '.automate', 'plugins');
     if (!existsSync(this.pluginsDir)) mkdirSync(this.pluginsDir, { recursive: true });
   }
 
+  // ── Core service injection ──────────────────────────────────────────
+
+  setCoreServices(memory?: any, sessions?: any, scheduler?: any): void {
+    this.coreServices = { memory, sessions, scheduler };
+  }
+
+  // ── Event bus ───────────────────────────────────────────────────────
+
+  emit(event: string, ...args: any[]): void {
+    const handlers = this.eventBus.get(event);
+    if (!handlers) return;
+    for (const handler of handlers) {
+      try { handler(...args); } catch (err) {
+        console.error(`[plugin:event] Error in handler for "${event}":`, (err as Error).message);
+      }
+    }
+  }
+
+  on(event: string, handler: (...args: any[]) => void): void {
+    if (!this.eventBus.has(event)) this.eventBus.set(event, new Set());
+    this.eventBus.get(event)!.add(handler);
+  }
+
+  off(event: string, handler: (...args: any[]) => void): void {
+    this.eventBus.get(event)?.delete(handler);
+  }
+
+  // ── Lifecycle hook firers ───────────────────────────────────────────
+
+  fireSessionStart(sessionId: string): void {
+    for (const p of this.plugins.values()) {
+      try { p.activation.onSessionStart?.(sessionId); } catch {}
+    }
+    this.emit('session:start', sessionId);
+  }
+
+  fireSessionEnd(sessionId: string): void {
+    for (const p of this.plugins.values()) {
+      try { p.activation.onSessionEnd?.(sessionId); } catch {}
+    }
+    this.emit('session:end', sessionId);
+  }
+
+  fireToolCall(toolName: string, params: Record<string, unknown>): void {
+    for (const p of this.plugins.values()) {
+      try { p.activation.onToolCall?.(toolName, params); } catch {}
+    }
+    this.emit('tool:call', toolName, params);
+  }
+
+  fireToolResult(toolName: string, result: string): void {
+    for (const p of this.plugins.values()) {
+      try { p.activation.onToolResult?.(toolName, result); } catch {}
+    }
+    this.emit('tool:result', toolName, result);
+  }
+
+  fireCompact(sessionId: string): void {
+    for (const p of this.plugins.values()) {
+      try { p.activation.onCompact?.(sessionId); } catch {}
+    }
+    this.emit('session:compact', sessionId);
+  }
+
+  // ── Config storage ──────────────────────────────────────────────────
+
+  private getConfigPath(pluginName: string): string {
+    return join(this.pluginsDir, pluginName, 'config.json');
+  }
+
+  loadPluginConfig(name: string): Record<string, unknown> {
+    const configPath = this.getConfigPath(name);
+    let stored: Record<string, unknown> = {};
+    if (existsSync(configPath)) {
+      try { stored = JSON.parse(readFileSync(configPath, 'utf-8')); } catch {}
+    }
+
+    // Merge with defaults from manifest
+    const plugin = this.plugins.get(name);
+    const schema = plugin?.manifest.config;
+    if (schema) {
+      for (const [key, def] of Object.entries(schema)) {
+        if (!(key in stored) && def.default !== undefined) {
+          stored[key] = def.default;
+        }
+      }
+    }
+
+    return stored;
+  }
+
+  savePluginConfig(name: string, config: Record<string, unknown>): { success: boolean; errors?: string[] } {
+    const plugin = this.plugins.get(name);
+    const schema = plugin?.manifest.config;
+    const errors: string[] = [];
+
+    // Basic type validation against manifest schema
+    if (schema) {
+      for (const [key, def] of Object.entries(schema)) {
+        if (def.required && !(key in config)) {
+          errors.push(`Missing required config key: ${key}`);
+        }
+        if (key in config && def.type) {
+          const actual = typeof config[key];
+          if (def.type === 'number' && actual !== 'number') errors.push(`${key}: expected number, got ${actual}`);
+          if (def.type === 'string' && actual !== 'string') errors.push(`${key}: expected string, got ${actual}`);
+          if (def.type === 'boolean' && actual !== 'boolean') errors.push(`${key}: expected boolean, got ${actual}`);
+        }
+      }
+    }
+
+    if (errors.length > 0) return { success: false, errors };
+
+    const configPath = this.getConfigPath(name);
+    writeFileSync(configPath, JSON.stringify(config, null, 2));
+    return { success: true };
+  }
+
+  private getPluginConfig(pluginName: string): Record<string, unknown> {
+    return this.loadPluginConfig(pluginName);
+  }
+
+  // ── Dependency resolution ───────────────────────────────────────────
+
+  private resolveDependencyOrder(dirNames: string[]): string[] {
+    // Read manifests to build dep graph
+    const manifests = new Map<string, PluginManifest>();
+    for (const name of dirNames) {
+      const manifestPath = join(this.pluginsDir, name, 'plugin.json');
+      if (!existsSync(manifestPath)) continue;
+      try {
+        const m: PluginManifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+        manifests.set(m.name, m);
+      } catch {}
+    }
+
+    // Topological sort (Kahn's algorithm)
+    const inDegree = new Map<string, number>();
+    const adjList = new Map<string, string[]>();
+    const nameToDir = new Map<string, string>();
+
+    for (const name of dirNames) {
+      const manifestPath = join(this.pluginsDir, name, 'plugin.json');
+      if (!existsSync(manifestPath)) continue;
+      try {
+        const m: PluginManifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+        nameToDir.set(m.name, name);
+        if (!inDegree.has(m.name)) inDegree.set(m.name, 0);
+        if (!adjList.has(m.name)) adjList.set(m.name, []);
+        for (const dep of (m.dependencies || [])) {
+          if (!adjList.has(dep)) adjList.set(dep, []);
+          adjList.get(dep)!.push(m.name);
+          inDegree.set(m.name, (inDegree.get(m.name) || 0) + 1);
+          if (!inDegree.has(dep)) inDegree.set(dep, 0);
+        }
+      } catch {}
+    }
+
+    const queue: string[] = [];
+    for (const [name, deg] of inDegree) {
+      if (deg === 0) queue.push(name);
+    }
+
+    const sorted: string[] = [];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      const dirName = nameToDir.get(current);
+      if (dirName) sorted.push(dirName);
+      for (const next of (adjList.get(current) || [])) {
+        const newDeg = (inDegree.get(next) || 1) - 1;
+        inDegree.set(next, newDeg);
+        if (newDeg === 0) queue.push(next);
+      }
+    }
+
+    // Append any dirs not in the sorted list (no manifest / isolated)
+    for (const d of dirNames) {
+      if (!sorted.includes(d)) sorted.push(d);
+    }
+
+    return sorted;
+  }
+
+  // ── Load / unload ───────────────────────────────────────────────────
+
   async loadAll(): Promise<LoadedPlugin[]> {
     if (!existsSync(this.pluginsDir)) return [];
-    const dirs = readdirSync(this.pluginsDir, { withFileTypes: true }).filter(d => d.isDirectory());
+    const dirs = readdirSync(this.pluginsDir, { withFileTypes: true })
+      .filter(d => d.isDirectory())
+      .map(d => d.name);
+
+    const ordered = this.resolveDependencyOrder(dirs);
     const loaded: LoadedPlugin[] = [];
-    for (const dir of dirs) {
-      try { const plugin = await this.loadPlugin(dir.name); if (plugin) loaded.push(plugin); }
-      catch (err) { console.error(`[plugin] Failed to load "${dir.name}": ${(err as Error).message}`); }
+    for (const dir of ordered) {
+      try { const plugin = await this.loadPlugin(dir); if (plugin) loaded.push(plugin); }
+      catch (err) { console.error(`[plugin] Failed to load "${dir}": ${(err as Error).message}`); }
     }
     return loaded;
   }
@@ -101,6 +317,12 @@ export class PluginManager {
     const ctx: PluginContext = {
       config: this.config, pluginDir, pluginConfig,
       log: (msg: string) => console.log(`[plugin:${manifest.name}] ${msg}`),
+      events: {
+        emit: (event: string, ...args: any[]) => this.emit(event, ...args),
+        on: (event: string, handler: (...args: any[]) => void) => this.on(event, handler),
+        off: (event: string, handler: (...args: any[]) => void) => this.off(event, handler),
+      },
+      services: this.coreServices,
     };
 
     const activation = await pluginModule.activate(ctx);
@@ -120,6 +342,53 @@ export class PluginManager {
     this.plugins.delete(name);
     return true;
   }
+
+  // ── Hot-reload watching ─────────────────────────────────────────────
+
+  startWatching(): void {
+    if (this.watcher) return;
+    if (!existsSync(this.pluginsDir)) return;
+    try {
+      this.watcher = watch(this.pluginsDir, { recursive: true }, (_event, filename) => {
+        if (!filename) return;
+        // Extract plugin dir name from changed file path
+        const pluginName = filename.split('/')[0] || filename.split('\\')[0];
+        if (!pluginName) return;
+        this.dirtyPlugins.add(pluginName);
+        // Debounce: wait 500ms before reloading
+        if (this.debounceTimer) clearTimeout(this.debounceTimer);
+        this.debounceTimer = setTimeout(() => this.reloadDirtyPlugins(), 500);
+      });
+    } catch {
+      // recursive watch not supported on all platforms
+    }
+  }
+
+  stopWatching(): void {
+    if (this.watcher) { this.watcher.close(); this.watcher = null; }
+    if (this.debounceTimer) { clearTimeout(this.debounceTimer); this.debounceTimer = null; }
+  }
+
+  private async reloadDirtyPlugins(): Promise<void> {
+    const dirty = [...this.dirtyPlugins];
+    this.dirtyPlugins.clear();
+    for (const name of dirty) {
+      try {
+        // Unload if currently loaded
+        const existing = [...this.plugins.entries()].find(([_, p]) => p.directory.endsWith(name));
+        if (existing) {
+          await this.unloadPlugin(existing[0]);
+        }
+        await this.loadPlugin(name);
+        console.log(`[plugin] Hot-reloaded "${name}"`);
+      } catch (err) {
+        console.error(`[plugin] Hot-reload failed for "${name}": ${(err as Error).message}`);
+      }
+    }
+    if (pluginReloadCallback) pluginReloadCallback();
+  }
+
+  // ── Query ───────────────────────────────────────────────────────────
 
   getPlugins(): LoadedPlugin[] { return Array.from(this.plugins.values()); }
 
@@ -156,8 +425,6 @@ export class PluginManager {
     }
     return current;
   }
-
-  private getPluginConfig(pluginName: string): Record<string, unknown> { return {}; }
 
   static scaffold(pluginsDir: string, name: string, type: PluginManifest['type'] = 'tools'): string {
     const pluginDir = join(pluginsDir, name);
@@ -201,23 +468,27 @@ export const pluginTools: Tool[] = [
     name: 'plugin',
     description: [
       'Manage AutoMate plugins.',
-      'Actions: list, scaffold, reload, create.',
+      'Actions: list, scaffold, reload, create, config.',
       'list — list all loaded plugins with types and tools.',
       'scaffold — create a new plugin scaffold with boilerplate.',
       'reload — reload all plugins from the plugins directory.',
       'create — create a complete plugin with provided code (immediately loaded).',
+      'config — get or set plugin configuration (use key/value params).',
     ].join(' '),
     parameters: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          description: 'Action: list|scaffold|reload|create',
+          description: 'Action: list|scaffold|reload|create|config',
         },
-        name: { type: 'string', description: 'Plugin name (for scaffold, create)' },
+        name: { type: 'string', description: 'Plugin name (for scaffold, create, config)' },
         type: { type: 'string', description: 'Plugin type (for scaffold, create)', enum: ['tools', 'channel', 'middleware', 'mixed'] },
         description: { type: 'string', description: 'Plugin description (for create)' },
         code: { type: 'string', description: 'Full index.js content (for create)' },
+        key: { type: 'string', description: 'Config key (for config set)' },
+        value: { type: 'string', description: 'Config value as JSON (for config set)' },
+        subaction: { type: 'string', description: 'Config sub-action: get|set (for config)' },
       },
       required: ['action'],
     },
@@ -285,8 +556,36 @@ export const pluginTools: Tool[] = [
           }
         }
 
+        case 'config': {
+          const name = params.name as string;
+          if (!name) return { output: '', error: 'name is required for config' };
+          const sub = (params.subaction as string) || 'get';
+
+          if (sub === 'get') {
+            const cfg = pluginManagerRef.loadPluginConfig(name);
+            if (Object.keys(cfg).length === 0) return { output: `No config for plugin "${name}".` };
+            const lines = Object.entries(cfg).map(([k, v]) => `  ${k}: ${JSON.stringify(v)}`);
+            return { output: `Config for "${name}":\n${lines.join('\n')}` };
+          }
+
+          if (sub === 'set') {
+            const key = params.key as string;
+            const value = params.value as string;
+            if (!key || value === undefined) return { output: '', error: 'key and value are required for config set' };
+            let parsed: unknown;
+            try { parsed = JSON.parse(value); } catch { parsed = value; }
+            const cfg = pluginManagerRef.loadPluginConfig(name);
+            cfg[key] = parsed;
+            const result = pluginManagerRef.savePluginConfig(name, cfg);
+            if (!result.success) return { output: '', error: `Validation errors:\n${result.errors?.join('\n')}` };
+            return { output: `Set ${name}.${key} = ${JSON.stringify(parsed)}` };
+          }
+
+          return { output: '', error: `Unknown config subaction "${sub}". Use get or set.` };
+        }
+
         default:
-          return { output: `Error: Unknown action "${action}". Valid: list, scaffold, reload, create` };
+          return { output: `Error: Unknown action "${action}". Valid: list, scaffold, reload, create, config` };
       }
     },
   },
