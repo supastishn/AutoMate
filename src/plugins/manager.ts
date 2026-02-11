@@ -431,18 +431,104 @@ export class PluginManager {
     if (existsSync(pluginDir)) throw new Error(`Plugin "${name}" already exists at ${pluginDir}`);
     mkdirSync(pluginDir, { recursive: true });
 
-    const manifest: PluginManifest = { name, version: '0.1.0', description: `AutoMate plugin: ${name}`, type, entry: 'index.js' };
+    const manifest: PluginManifest = {
+      name, version: '0.1.0', description: `AutoMate plugin: ${name}`, type, entry: 'index.js',
+      config: { enabled: { type: 'boolean', description: 'Enable this plugin', default: true } },
+    };
     writeFileSync(join(pluginDir, 'plugin.json'), JSON.stringify(manifest, null, 2));
 
     let entryContent: string;
     if (type === 'tools') {
-      entryContent = `export function activate(ctx) {\n  ctx.log('Plugin activated');\n  return {\n    tools: [{\n      name: '${name}_example',\n      description: 'Example tool from ${name}',\n      parameters: { type: 'object', properties: { input: { type: 'string', description: 'Input text' } }, required: ['input'] },\n      async execute(params) { return { output: 'Hello from ${name}: ' + params.input }; },\n    }],\n  };\n}\nexport function deactivate() {}\n`;
+      entryContent = `// ${name} plugin - tools type
+// Available in ctx:
+//   ctx.config        - global AutoMate config
+//   ctx.pluginDir     - this plugin's directory
+//   ctx.pluginConfig  - plugin-specific config (from config.json, merged with manifest defaults)
+//   ctx.log(msg)      - log with plugin prefix
+//   ctx.events.emit/on/off - event bus for cross-plugin communication
+//   ctx.services      - {memory, sessions, scheduler} core service references
+
+export function activate(ctx) {
+  ctx.log('Plugin activated');
+  
+  // Listen to events from other plugins or core
+  ctx.events.on('custom:event', (data) => {
+    ctx.log('Received custom event: ' + JSON.stringify(data));
+  });
+
+  return {
+    tools: [{
+      name: '${name}_example',
+      description: 'Example tool from ${name}',
+      parameters: { type: 'object', properties: { input: { type: 'string', description: 'Input text' } }, required: ['input'] },
+      async execute(params) {
+        // Emit event for other plugins
+        ctx.events.emit('${name}:called', { input: params.input });
+        return { output: 'Hello from ${name}: ' + params.input };
+      },
+    }],
+    // Lifecycle hooks (all optional)
+    onSessionStart(sessionId) { ctx.log('Session started: ' + sessionId); },
+    onSessionEnd(sessionId) { ctx.log('Session ended: ' + sessionId); },
+    onToolCall(toolName, params) { ctx.log('Tool called: ' + toolName); },
+    onToolResult(toolName, result) { ctx.log('Tool result: ' + toolName); },
+    onCompact(sessionId) { ctx.log('Session compacted: ' + sessionId); },
+  };
+}
+
+export function deactivate() {}
+`;
     } else if (type === 'channel') {
-      entryContent = `export function activate(ctx) {\n  ctx.log('Channel plugin activated');\n  return {\n    channel: {\n      name: '${name}',\n      async start() { ctx.log('Channel started'); },\n      async stop() { ctx.log('Channel stopped'); },\n      async send(sessionId, message) { ctx.log('Sending: ' + message.slice(0, 50)); },\n    },\n  };\n}\nexport function deactivate() {}\n`;
+      entryContent = `// ${name} plugin - channel type
+export function activate(ctx) {
+  ctx.log('Channel plugin activated');
+  return {
+    channel: {
+      name: '${name}',
+      async start() { ctx.log('Channel started'); },
+      async stop() { ctx.log('Channel stopped'); },
+      async send(sessionId, message) { ctx.log('Sending: ' + message.slice(0, 50)); },
+    },
+    onSessionStart(sessionId) { ctx.log('Session started: ' + sessionId); },
+  };
+}
+export function deactivate() {}
+`;
     } else if (type === 'middleware') {
-      entryContent = `export function activate(ctx) {\n  ctx.log('Middleware plugin activated');\n  return {\n    middleware: {\n      async beforeMessage(sessionId, message) { return message; },\n      async afterResponse(sessionId, response) { return response; },\n    },\n  };\n}\nexport function deactivate() {}\n`;
+      entryContent = `// ${name} plugin - middleware type
+export function activate(ctx) {
+  ctx.log('Middleware plugin activated');
+  return {
+    middleware: {
+      async beforeMessage(sessionId, message) {
+        // Transform incoming messages before AI sees them
+        return message;
+      },
+      async afterResponse(sessionId, response) {
+        // Transform AI responses before user sees them
+        return response;
+      },
+    },
+    onToolCall(toolName, params) { ctx.log('Intercepted tool call: ' + toolName); },
+  };
+}
+export function deactivate() {}
+`;
     } else {
-      entryContent = `export function activate(ctx) {\n  ctx.log('Plugin activated');\n  return { tools: [], middleware: { async beforeMessage(s, m) { return m; }, async afterResponse(s, r) { return r; } } };\n}\nexport function deactivate() {}\n`;
+      entryContent = `// ${name} plugin - mixed type
+export function activate(ctx) {
+  ctx.log('Plugin activated');
+  return {
+    tools: [],
+    middleware: {
+      async beforeMessage(s, m) { return m; },
+      async afterResponse(s, r) { return r; },
+    },
+    onSessionStart(sessionId) { ctx.log('Session: ' + sessionId); },
+  };
+}
+export function deactivate() {}
+`;
     }
     writeFileSync(join(pluginDir, 'index.js'), entryContent);
     return pluginDir;
@@ -470,9 +556,9 @@ export const pluginTools: Tool[] = [
       'Manage AutoMate plugins.',
       'Actions: list, scaffold, reload, create, config.',
       'list — list all loaded plugins with types and tools.',
-      'scaffold — create a new plugin scaffold with boilerplate.',
+      'scaffold — create a new plugin scaffold with boilerplate demonstrating lifecycle hooks, events, and services.',
       'reload — reload all plugins from the plugins directory.',
-      'create — create a complete plugin with provided code (immediately loaded).',
+      'create — create a complete plugin with provided code (immediately loaded). Supports dependencies and configSchema params.',
       'config — get or set plugin configuration (use key/value params).',
     ].join(' '),
     parameters: {
@@ -486,6 +572,8 @@ export const pluginTools: Tool[] = [
         type: { type: 'string', description: 'Plugin type (for scaffold, create)', enum: ['tools', 'channel', 'middleware', 'mixed'] },
         description: { type: 'string', description: 'Plugin description (for create)' },
         code: { type: 'string', description: 'Full index.js content (for create)' },
+        dependencies: { type: 'array', items: { type: 'string' }, description: 'Plugin dependencies (for create) - names of plugins that must load first' },
+        configSchema: { type: 'object', description: 'Config schema (for create) - object with keys as config names and values as {type, description, default?, required?}' },
         key: { type: 'string', description: 'Config key (for config set)' },
         value: { type: 'string', description: 'Config value as JSON (for config set)' },
         subaction: { type: 'string', description: 'Config sub-action: get|set (for config)' },
@@ -536,12 +624,16 @@ export const pluginTools: Tool[] = [
           if (!name || !code) return { output: '', error: 'name and code are required for create' };
           const description = (params.description as string) || `AutoMate plugin: ${name}`;
           const type = (params.type as PluginManifest['type']) || 'tools';
+          const dependencies = (params.dependencies as string[]) || undefined;
+          const configSchema = params.configSchema as Record<string, { type: string; description: string; default?: unknown; required?: boolean }> | undefined;
 
           const pluginsDir = pluginManagerRef['pluginsDir'];
           const pluginDir = join(pluginsDir, name);
           mkdirSync(pluginDir, { recursive: true });
 
           const manifest: PluginManifest = { name, version: '0.1.0', description, type, entry: 'index.js' };
+          if (dependencies && dependencies.length > 0) manifest.dependencies = dependencies;
+          if (configSchema && Object.keys(configSchema).length > 0) manifest.config = configSchema;
           writeFileSync(join(pluginDir, 'plugin.json'), JSON.stringify(manifest, null, 2));
           writeFileSync(join(pluginDir, 'index.js'), code);
 
@@ -550,7 +642,7 @@ export const pluginTools: Tool[] = [
             if (!loaded) return { output: '', error: 'Plugin created but failed to load.' };
             if (pluginReloadCallback) pluginReloadCallback();
             const toolNames = loaded.tools.map(t => t.name).join(', ');
-            return { output: `Plugin "${name}" created and loaded!\n  Type: ${type}\n  Tools: ${toolNames || 'none'}\n  Channel: ${loaded.channel?.name || 'none'}\n  Path: ${pluginDir}` };
+            return { output: `Plugin "${name}" created and loaded!\n  Type: ${type}\n  Tools: ${toolNames || 'none'}\n  Channel: ${loaded.channel?.name || 'none'}\n  Dependencies: ${dependencies?.join(', ') || 'none'}\n  Config schema: ${configSchema ? Object.keys(configSchema).join(', ') : 'none'}\n  Path: ${pluginDir}` };
           } catch (err) {
             return { output: '', error: `Plugin created at ${pluginDir} but failed to load: ${(err as Error).message}` };
           }
