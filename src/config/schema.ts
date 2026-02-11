@@ -30,6 +30,10 @@ export const AgentProfileSchema = z.object({
     allow: z.array(z.string()).default([]),
     deny: z.array(z.string()).default([]),
   }).optional(),
+  heartbeat: z.object({
+    enabled: z.boolean().default(false),
+    intervalMinutes: z.number().default(30),
+  }).optional(),
 });
 
 export type AgentProfile = z.infer<typeof AgentProfileSchema>;

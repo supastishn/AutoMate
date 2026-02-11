@@ -8,6 +8,7 @@ import { SessionManager } from '../gateway/session-manager.js';
 import { MemoryManager } from '../memory/manager.js';
 import { SkillsLoader } from '../skills/loader.js';
 import { Scheduler } from '../cron/scheduler.js';
+import { HeartbeatManager, wireHeartbeat, isHeartbeatJob, heartbeatAgentName } from '../heartbeat/manager.js';
 import type { Config } from '../config/schema.js';
 import type { AgentResponse, StreamCallback } from '../agent/agent.js';
 import { homedir } from 'node:os';
@@ -31,6 +32,10 @@ export interface AgentProfile {
     allow?: string[];
     deny?: string[];
   };
+  heartbeat?: {
+    enabled?: boolean;
+    intervalMinutes?: number;
+  };
 }
 
 export interface ManagedAgent {
@@ -40,6 +45,7 @@ export interface ManagedAgent {
   memoryManager: MemoryManager;
   skillsLoader: SkillsLoader;
   scheduler?: Scheduler;
+  heartbeatManager?: HeartbeatManager;
   channels: string[];           // channel patterns
   allowFrom: string[];
 }
@@ -111,15 +117,49 @@ export class AgentRouter {
     agent.setMemoryManager(memoryManager);
     agent.setSkillsLoader(skillsLoader);
 
+    // Per-agent heartbeat manager reference (set after scheduler)
+    let heartbeatMgr: HeartbeatManager | undefined;
+
     let scheduler: Scheduler | undefined;
     if (agentConfig.cron.enabled) {
       scheduler = new Scheduler(agentConfig.cron.directory, (job) => {
+        // Route heartbeat jobs to the per-agent heartbeat manager
+        if (isHeartbeatJob(job.prompt) && heartbeatMgr) {
+          heartbeatMgr.trigger().catch(err => {
+            console.error(`[heartbeat:${profile.name}] Trigger failed: ${err}`);
+          });
+          return;
+        }
         const sessionId = job.sessionId || `cron:${job.id}:${Date.now()}`;
         agent.processMessage(sessionId, job.prompt).catch(err => {
           console.error(`[agent:${profile.name}] Cron job "${job.name}" failed: ${err}`);
         });
       });
       agent.setScheduler(scheduler);
+    }
+
+    // Wire per-agent heartbeat if configured
+    if (scheduler && profile.heartbeat?.enabled) {
+      const intervalMs = (profile.heartbeat.intervalMinutes || 30) * 60 * 1000;
+      heartbeatMgr = wireHeartbeat(
+        memoryManager,
+        agent,
+        scheduler,
+        true, // auto-start
+        profile.name,
+        intervalMs,
+      );
+      agent.setHeartbeatManager(heartbeatMgr);
+    } else if (scheduler) {
+      // Create but don't auto-start — user can /heartbeat on <agent>
+      heartbeatMgr = wireHeartbeat(
+        memoryManager,
+        agent,
+        scheduler,
+        false,
+        profile.name,
+      );
+      agent.setHeartbeatManager(heartbeatMgr);
     }
 
     return {
@@ -129,6 +169,7 @@ export class AgentRouter {
       memoryManager,
       skillsLoader,
       scheduler,
+      heartbeatManager: heartbeatMgr,
       channels: profile.channels || ['*'],
       allowFrom: profile.allowFrom || ['*'],
     };
@@ -183,16 +224,89 @@ export class AgentRouter {
       return this.handleAgentsCommand(parts.slice(1));
     }
 
+    // Router-level /heartbeat <agent> commands
+    if (parts[0] === '/heartbeat' && parts.length >= 2) {
+      // Check if second arg is an agent name
+      const maybeAgent = parts[1];
+      if (this.agents.has(maybeAgent)) {
+        return this.handleAgentHeartbeatCommand(maybeAgent, parts[2]);
+      }
+      // "all" targets every agent
+      if (maybeAgent === 'all') {
+        return this.handleAllHeartbeatsCommand(parts[2]);
+      }
+    }
+
     const managed = this.route(sessionId, userId);
     if (!managed) return 'No agent available for this channel.';
     return await managed.agent.handleCommand(sessionId, command);
+  }
+
+  /** Handle /heartbeat <agentName> [on|off|status|now|force] */
+  private handleAgentHeartbeatCommand(agentName: string, arg?: string): string {
+    const managed = this.agents.get(agentName);
+    if (!managed) return `Agent "${agentName}" not found.`;
+
+    const hb = managed.heartbeatManager;
+    if (!hb) return `Agent "${agentName}" has no heartbeat manager (cron disabled?).`;
+
+    if (!arg || arg === 'status') {
+      const active = hb.isActive();
+      return `Heartbeat [${agentName}]: ${active ? 'ON' : 'OFF'}`;
+    }
+    if (arg === 'on') {
+      hb.start();
+      return `Heartbeat [${agentName}]: ENABLED`;
+    }
+    if (arg === 'off') {
+      hb.stop();
+      return `Heartbeat [${agentName}]: DISABLED`;
+    }
+    if (arg === 'force') {
+      hb.start(undefined, true);
+      return `Heartbeat [${agentName}]: FORCE-STARTED`;
+    }
+    if (arg === 'now') {
+      hb.trigger().catch(() => {});
+      return `Heartbeat [${agentName}]: triggered manually.`;
+    }
+    return `Usage: /heartbeat ${agentName} [on|off|force|status|now]`;
+  }
+
+  /** Handle /heartbeat all [on|off|status|now] */
+  private handleAllHeartbeatsCommand(arg?: string): string {
+    const lines: string[] = [];
+    for (const [name, managed] of this.agents) {
+      const hb = managed.heartbeatManager;
+      if (!hb) {
+        lines.push(`  ${name}: no heartbeat manager`);
+        continue;
+      }
+      if (!arg || arg === 'status') {
+        lines.push(`  ${name}: ${hb.isActive() ? 'ON' : 'OFF'}`);
+      } else if (arg === 'on') {
+        hb.start();
+        lines.push(`  ${name}: ENABLED`);
+      } else if (arg === 'off') {
+        hb.stop();
+        lines.push(`  ${name}: DISABLED`);
+      } else if (arg === 'now') {
+        hb.trigger().catch(() => {});
+        lines.push(`  ${name}: triggered`);
+      }
+    }
+    const header = !arg || arg === 'status' ? 'Heartbeat Status (all agents):' : `Heartbeat ${arg} (all agents):`;
+    return `${header}\n${lines.join('\n')}`;
   }
 
   private handleAgentsCommand(args: string[]): string {
     if (args.length === 0 || args[0] === 'list') {
       const lines = Array.from(this.agents.values()).map(m => {
         const isDefault = m.name === this.defaultAgentName;
-        return `  ${isDefault ? '>' : ' '} ${m.name} — channels: ${m.channels.join(', ')}`;
+        const hbStatus = m.heartbeatManager
+          ? (m.heartbeatManager.isActive() ? ' [hb:ON]' : ' [hb:OFF]')
+          : '';
+        return `  ${isDefault ? '>' : ' '} ${m.name} — channels: ${m.channels.join(', ')}${hbStatus}`;
       });
       return `Agents:\n${lines.join('\n')}`;
     }
@@ -237,9 +351,19 @@ export class AgentRouter {
   /** Shutdown all agents */
   shutdown(): void {
     for (const [, managed] of this.agents) {
+      if (managed.heartbeatManager) managed.heartbeatManager.stop();
       if (managed.scheduler) managed.scheduler.stop();
       managed.skillsLoader.stopWatching();
       managed.sessionManager.saveAll();
+    }
+  }
+
+  /** Set broadcaster for all per-agent heartbeat managers. */
+  setHeartbeatBroadcaster(fn: (msg: Record<string, unknown>) => void): void {
+    for (const [, managed] of this.agents) {
+      if (managed.heartbeatManager) {
+        managed.heartbeatManager.setBroadcaster(fn);
+      }
     }
   }
 }

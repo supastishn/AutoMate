@@ -16,10 +16,26 @@ import type { MemoryManager } from '../memory/manager.js';
 import type { Agent } from '../agent/agent.js';
 import type { Scheduler } from '../cron/scheduler.js';
 
-const HEARTBEAT_JOB_NAME = '__heartbeat__';
+const HEARTBEAT_JOB_PREFIX = '__heartbeat__';
 const DEFAULT_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 const HEARTBEAT_OK_TOKEN = 'HEARTBEAT_OK';
 const ACK_MAX_CHARS = 200; // responses under this length containing HEARTBEAT_OK are treated as acks
+
+/** Build a unique cron job name for an agent's heartbeat. */
+export function heartbeatJobName(agentName?: string): string {
+  return agentName ? `${HEARTBEAT_JOB_PREFIX}:${agentName}` : HEARTBEAT_JOB_PREFIX;
+}
+
+/** Check if a cron job prompt is a heartbeat trigger. */
+export function isHeartbeatJob(prompt: string): boolean {
+  return prompt === HEARTBEAT_JOB_PREFIX || prompt.startsWith(`${HEARTBEAT_JOB_PREFIX}:`);
+}
+
+/** Extract the agent name from a heartbeat job prompt (undefined = primary agent). */
+export function heartbeatAgentName(prompt: string): string | undefined {
+  if (!prompt.startsWith(`${HEARTBEAT_JOB_PREFIX}:`)) return undefined;
+  return prompt.slice(HEARTBEAT_JOB_PREFIX.length + 1) || undefined;
+}
 
 /** Status of a heartbeat execution. */
 export type HeartbeatStatus = 'ok-empty' | 'ok-token' | 'sent' | 'skipped' | 'failed';
@@ -29,6 +45,7 @@ export interface HeartbeatLogEntry {
   timestamp: number;
   status: HeartbeatStatus;
   sessionId: string;
+  agentName?: string;        // which agent this heartbeat belongs to
   content?: string;       // actual alert content (only for 'sent' status)
   responseLength?: number;
   error?: string;         // error message (only for 'failed' status)
@@ -69,18 +86,28 @@ export class HeartbeatManager {
   private broadcaster: HeartbeatBroadcaster | null = null;
   private logFile: string;
   private targetSession: string; // session to run heartbeats in
+  private agentName: string | undefined; // per-agent name (undefined = primary)
+  private jobName: string; // unique cron job name for this agent
 
   constructor(
     memoryManager: MemoryManager,
     agent: Agent,
     scheduler: Scheduler,
     targetSession: string = 'webchat:heartbeat',
+    agentName?: string,
   ) {
     this.memoryManager = memoryManager;
     this.agent = agent;
     this.scheduler = scheduler;
     this.targetSession = targetSession;
+    this.agentName = agentName;
+    this.jobName = heartbeatJobName(agentName);
     this.logFile = join(memoryManager.getDirectory(), 'heartbeat-log.json');
+  }
+
+  /** Get the agent name this heartbeat belongs to. */
+  getAgentName(): string | undefined {
+    return this.agentName;
   }
 
   /** Set the broadcaster function for live heartbeat events. */
@@ -138,7 +165,7 @@ export class HeartbeatManager {
   start(intervalMs?: number, force?: boolean): void {
     const interval = intervalMs || DEFAULT_INTERVAL_MS;
 
-    const existing = this.scheduler.listJobs().find(j => j.name === HEARTBEAT_JOB_NAME);
+    const existing = this.scheduler.listJobs().find(j => j.name === this.jobName);
     if (existing) {
       if (force) {
         this.scheduler.removeJob(existing.id);
@@ -152,8 +179,8 @@ export class HeartbeatManager {
     }
 
     this.scheduler.addJob(
-      HEARTBEAT_JOB_NAME,
-      '__heartbeat__',
+      this.jobName,
+      this.jobName, // prompt = job name so we can route it back
       { type: 'interval', every: interval },
     );
 
@@ -162,7 +189,7 @@ export class HeartbeatManager {
 
   /** Stop heartbeats (disable the cron job, don't delete it). */
   stop(): void {
-    const job = this.scheduler.listJobs().find(j => j.name === HEARTBEAT_JOB_NAME);
+    const job = this.scheduler.listJobs().find(j => j.name === this.jobName);
     if (job) {
       this.scheduler.disableJob(job.id);
     }
@@ -188,16 +215,19 @@ export class HeartbeatManager {
 
     // Skip if no HEARTBEAT.md or effectively empty
     if (!heartbeatContent || isHeartbeatContentEffectivelyEmpty(heartbeatContent)) {
-      console.log('[heartbeat] HEARTBEAT.md empty or effectively empty, skipping.');
+      const tag = this.agentName ? `heartbeat:${this.agentName}` : 'heartbeat';
+      console.log(`[${tag}] HEARTBEAT.md empty or effectively empty, skipping.`);
       this.appendLog({
         timestamp: Date.now(),
         status: 'skipped',
         sessionId: this.targetSession,
+        agentName: this.agentName,
       });
       this.broadcast({
         type: 'heartbeat_activity',
         event: 'skipped',
         reason: 'empty',
+        agentName: this.agentName,
         timestamp: Date.now(),
       });
       return null;
@@ -223,12 +253,14 @@ export class HeartbeatManager {
       '---',
     ].join('\n');
 
-    console.log(`[heartbeat] Triggering in session ${sessionId}`);
+    const tag = this.agentName ? `heartbeat:${this.agentName}` : 'heartbeat';
+    console.log(`[${tag}] Triggering in session ${sessionId}`);
 
     this.broadcast({
       type: 'heartbeat_activity',
       event: 'start',
       sessionId,
+      agentName: this.agentName,
       timestamp: Date.now(),
     });
 
@@ -249,17 +281,19 @@ export class HeartbeatManager {
       // Determine status based on response
       if (!responseText || responseText.length === 0) {
         // Empty response
-        console.log('[heartbeat] Empty response (ok-empty).');
+        console.log(`[${tag}] Empty response (ok-empty).`);
         this.appendLog({
           timestamp: Date.now(),
           status: 'ok-empty',
           sessionId,
+          agentName: this.agentName,
           responseLength: 0,
         });
         this.broadcast({
           type: 'heartbeat_activity',
           event: 'end',
           sessionId,
+          agentName: this.agentName,
           status: 'ok-empty',
           timestamp: Date.now(),
         });
@@ -276,17 +310,19 @@ export class HeartbeatManager {
         const stripped = responseText
           .replace(HEARTBEAT_OK_TOKEN, '')
           .trim();
-        console.log(`[heartbeat] OK (token ack).${stripped ? ` Note: ${stripped}` : ''}`);
+        console.log(`[${tag}] OK (token ack).${stripped ? ` Note: ${stripped}` : ''}`);
         this.appendLog({
           timestamp: Date.now(),
           status: 'ok-token',
           sessionId,
+          agentName: this.agentName,
           responseLength: responseText.length,
         });
         this.broadcast({
           type: 'heartbeat_activity',
           event: 'end',
           sessionId,
+          agentName: this.agentName,
           status: 'ok-token',
           timestamp: Date.now(),
         });
@@ -294,11 +330,12 @@ export class HeartbeatManager {
       }
 
       // Actual alert content — broadcast to clients
-      console.log(`[heartbeat] Alert: ${responseText.slice(0, 200)}`);
+      console.log(`[${tag}] Alert: ${responseText.slice(0, 200)}`);
       this.appendLog({
         timestamp: Date.now(),
         status: 'sent',
         sessionId,
+        agentName: this.agentName,
         content: responseText,
         responseLength: responseText.length,
       });
@@ -306,23 +343,26 @@ export class HeartbeatManager {
         type: 'heartbeat_activity',
         event: 'end',
         sessionId,
+        agentName: this.agentName,
         status: 'sent',
         content: responseText.slice(0, 2000),
         timestamp: Date.now(),
       });
       return responseText;
     } catch (err) {
-      console.error(`[heartbeat] Trigger failed: ${(err as Error).message}`);
+      console.error(`[${tag}] Trigger failed: ${(err as Error).message}`);
       this.appendLog({
         timestamp: Date.now(),
         status: 'failed',
         sessionId,
+        agentName: this.agentName,
         error: (err as Error).message,
       });
       this.broadcast({
         type: 'heartbeat_activity',
         event: 'end',
         sessionId,
+        agentName: this.agentName,
         status: 'failed',
         error: (err as Error).message,
         timestamp: Date.now(),
@@ -341,16 +381,22 @@ export function wireHeartbeat(
   agent: Agent,
   scheduler: Scheduler,
   autoStart: boolean = true,
+  agentName?: string,
+  intervalMs?: number,
 ): HeartbeatManager {
-  const hb = new HeartbeatManager(memoryManager, agent, scheduler);
+  const sessionTarget = agentName
+    ? `webchat:heartbeat:${agentName}`
+    : 'webchat:heartbeat';
+  const hb = new HeartbeatManager(memoryManager, agent, scheduler, sessionTarget, agentName);
 
   if (autoStart) {
-    hb.start();
+    hb.start(intervalMs);
   } else {
     // Check if job was already enabled from a previous run
-    const existing = scheduler.listJobs().find(j => j.name === HEARTBEAT_JOB_NAME);
+    const jobName = heartbeatJobName(agentName);
+    const existing = scheduler.listJobs().find(j => j.name === jobName);
     if (existing?.enabled) {
-      hb.start();
+      hb.start(intervalMs);
     }
   }
 
