@@ -209,9 +209,31 @@ export class Agent {
     this._wireSubAgentSpawner();
   }
 
-  /** Rebuild full system prompt content (base + catalog + skills + memory). */
-  private _rebuildSystemContent(sessionView?: SessionToolView): string {
+  /** Rebuild full system prompt content (base + environment + catalog + skills + memory). */
+  private _rebuildSystemContent(sessionView?: SessionToolView, sessionId?: string): string {
     let systemContent = this.config.agent.systemPrompt;
+
+    // Inject environment context
+    const now = new Date();
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    const dateStr = `${days[now.getDay()]}, ${months[now.getMonth()]} ${now.getDate()}, ${now.getFullYear()}`;
+    const timeStr = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+
+    systemContent += '\n\n# Environment';
+    systemContent += `\n- Date: ${dateStr}`;
+    systemContent += `\n- Time: ${timeStr}`;
+    systemContent += `\n- Platform: ${process.platform}`;
+    systemContent += `\n- Working Directory: ${process.cwd()}`;
+    systemContent += `\n- Node: ${process.version}`;
+
+    // Session context
+    if (sessionId) {
+      const isElevated = this.elevatedSessions.has(sessionId);
+      systemContent += '\n\n# Session Context';
+      systemContent += `\n- Session: ${sessionId}`;
+      systemContent += `\n- Elevated: ${isElevated ? 'yes' : 'no'}`;
+    }
 
     // Inject tool catalog (deferred tools the agent can load on demand)
     const toolCatalog = this._buildToolCatalog(sessionView);
@@ -584,7 +606,7 @@ export class Agent {
     // Build system prompt dynamically
     const systemMessage: LLMMessage = {
       role: 'system',
-      content: this._rebuildSystemContent(sessionView),
+      content: this._rebuildSystemContent(sessionView, sessionId),
     };
 
     const toolCallResults: { name: string; result: string }[] = [];
@@ -600,7 +622,7 @@ export class Agent {
       // Rebuild tool defs each iteration using session view (load/unload may change set)
       const toolDefs = sessionView.getToolDefs();
       // Rebuild system prompt too (catalog shrinks/grows as tools are loaded/unloaded)
-      systemMessage.content = this._rebuildSystemContent(sessionView);
+      systemMessage.content = this._rebuildSystemContent(sessionView, sessionId);
       const messages: LLMMessage[] = [systemMessage, ...this.sessionManager.getMessages(sessionId)];
 
       if (onStream) {
