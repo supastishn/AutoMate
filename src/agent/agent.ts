@@ -161,7 +161,7 @@ export class Agent {
       this.tools.registerDeferred({
         tool,
         summary: 'Browse and install community skills from ClawHub marketplace',
-        actions: ['search', 'preview', 'install', 'uninstall', 'update', 'list'],
+        actions: ['browse', 'search', 'preview', 'install', 'uninstall', 'update', 'list'],
       });
     }
 

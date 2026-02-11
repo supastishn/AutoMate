@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, statSync, cpSync } from 'node:fs';
+import { join, basename } from 'node:path';
 import chalk from 'chalk';
 import type { Tool } from '../agent/tool-registry.js';
 import type { SkillsLoader } from '../skills/loader.js';
@@ -120,10 +120,96 @@ export function formatVetResult(result: VetResult, content: string): string {
 
 export interface ClawHubSkill {
   name: string; description: string; repo: string; author: string; version: string; tags: string[]; downloads?: number;
+  source?: 'clawhub' | 'github' | 'bundled';
 }
 
 export interface InstalledMeta {
-  name: string; repo: string; version: string; installedAt: string; source: 'clawhub' | 'github';
+  name: string; repo: string; version: string; installedAt: string; source: 'clawhub' | 'github' | 'bundled';
+}
+
+// ── OpenClaw bundled skill scanner ──────────────────────────────────────────
+
+let _bundledSkillsCache: ClawHubSkill[] | null = null;
+let _bundledDirCache: string | null = null;
+
+function findOpenClawBundledDir(): string | null {
+  if (_bundledDirCache !== null) return _bundledDirCache || null;
+  const envDir = process.env.OPENCLAW_BUNDLED_SKILLS_DIR;
+  if (envDir && existsSync(envDir)) { _bundledDirCache = envDir; return envDir; }
+  const candidates = [
+    join(process.env.HOME || '~', '.openclaw', 'skills'),
+    join(process.cwd(), '..', 'openclaw', 'skills'),
+    '/data/data/com.termux/files/home/prog/aitools/openclaw/skills',
+  ];
+  for (const c of candidates) {
+    try {
+      if (existsSync(c) && statSync(c).isDirectory()) {
+        const entries = readdirSync(c);
+        if (entries.some(e => { try { return statSync(join(c, e)).isDirectory() && existsSync(join(c, e, 'SKILL.md')); } catch { return false; } })) {
+          _bundledDirCache = c; return c;
+        }
+      }
+    } catch {}
+  }
+  _bundledDirCache = ''; return null;
+}
+
+function extractFirstLine(body: string): string {
+  for (const line of body.split('\n')) {
+    const t = line.trim();
+    if (t && !t.startsWith('#') && !t.startsWith('---') && !t.startsWith('```')) return t.slice(0, 200);
+  }
+  return '';
+}
+
+export function scanOpenClawBundledSkills(): ClawHubSkill[] {
+  if (_bundledSkillsCache) return _bundledSkillsCache;
+  const dir = findOpenClawBundledDir();
+  if (!dir) { _bundledSkillsCache = []; return []; }
+
+  const skills: ClawHubSkill[] = [];
+  let entries: string[];
+  try { entries = readdirSync(dir); } catch { _bundledSkillsCache = []; return []; }
+
+  for (const entry of entries) {
+    const skillDir = join(dir, entry);
+    try { if (!statSync(skillDir).isDirectory()) continue; } catch { continue; }
+    const skillFile = join(skillDir, 'SKILL.md');
+    if (!existsSync(skillFile)) continue;
+
+    try {
+      const raw = readFileSync(skillFile, 'utf-8');
+      // Quick frontmatter parse for name/description
+      let name = entry;
+      let description = '';
+      if (raw.startsWith('---')) {
+        const endIdx = raw.indexOf('\n---', 3);
+        if (endIdx !== -1) {
+          const block = raw.slice(4, endIdx);
+          for (const line of block.split('\n')) {
+            const ci = line.indexOf(':');
+            if (ci === -1) continue;
+            const k = line.slice(0, ci).trim();
+            const v = line.slice(ci + 1).trim().replace(/^["']|["']$/g, '');
+            if (k === 'name' && v) name = v;
+            if (k === 'description' && v) description = v;
+          }
+          if (!description) description = extractFirstLine(raw.slice(endIdx + 4));
+        }
+      } else {
+        description = extractFirstLine(raw);
+      }
+
+      skills.push({
+        name, description: description || `OpenClaw bundled skill: ${entry}`,
+        repo: `openclaw-bundled/${entry}`, author: 'openclaw', version: 'bundled',
+        tags: ['bundled', 'openclaw'], source: 'bundled',
+      });
+    } catch {}
+  }
+
+  _bundledSkillsCache = skills;
+  return skills;
 }
 
 // ── Internal helpers ────────────────────────────────────────────────────────
@@ -184,8 +270,12 @@ export async function fetchRegistry(): Promise<ClawHubSkill[]> {
     } catch {}
   }
 
-  // Merge: built-in seeds + remote (dedupe by repo)
+  // Merge: built-in seeds + bundled + remote (dedupe by repo)
   const merged = [...BUILTIN_REGISTRY];
+  // Add OpenClaw bundled skills
+  for (const skill of scanOpenClawBundledSkills()) {
+    if (!merged.some(s => s.repo === skill.repo || s.name === skill.name)) merged.push(skill);
+  }
   for (const skill of remote) {
     if (!merged.some(s => s.repo === skill.repo)) {
       merged.push(skill);
@@ -225,6 +315,36 @@ export async function installSkill(repoOrUrl: string, skillsDir: string): Promis
   const name = repo.split('/').pop() || repo;
   const skillDir = join(skillsDir, name);
   if (existsSync(skillDir)) return { success: false, name, error: 'Skill already installed. Use update to refresh.' };
+
+  // Handle OpenClaw bundled skills — copy from local directory
+  if (repo.startsWith('openclaw-bundled/')) {
+    const bundledDir = findOpenClawBundledDir();
+    if (!bundledDir) return { success: false, name, error: 'OpenClaw bundled skills directory not found' };
+    const srcDir = join(bundledDir, name);
+    if (!existsSync(srcDir)) return { success: false, name, error: `Bundled skill "${name}" not found` };
+    const skillFile = join(srcDir, 'SKILL.md');
+    if (!existsSync(skillFile)) return { success: false, name, error: `No SKILL.md in bundled skill "${name}"` };
+
+    const content = readFileSync(skillFile, 'utf-8');
+    const vetResult = vetSkillContent(content);
+    if (!vetResult.safe) return { success: false, name, error: 'BLOCKED by security scan:\n' + formatVetResult(vetResult, content) };
+
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(join(skillDir, 'SKILL.md'), content);
+
+    // Copy references/ dir if exists
+    const refsDir = join(srcDir, 'references');
+    if (existsSync(refsDir)) {
+      const destRefs = join(skillDir, 'references');
+      mkdirSync(destRefs, { recursive: true });
+      try { cpSync(refsDir, destRefs, { recursive: true }); } catch {}
+    }
+
+    const meta = loadInstalledMeta(skillsDir);
+    meta.push({ name, repo, version: 'bundled', installedAt: new Date().toISOString(), source: 'bundled' });
+    saveInstalledMeta(skillsDir, meta);
+    return { success: true, name };
+  }
 
   const fetched = await fetchSkillContent(repo);
   if ('error' in fetched) return { success: false, name, error: fetched.error };
@@ -317,10 +437,11 @@ export const clawHubTools: Tool[] = [
     name: 'clawhub',
     description: [
       'ClawHub community skill registry — browse, preview, install, update, and uninstall skills.',
-      'Actions: search, preview, install, uninstall, update, list.',
+      'Actions: browse, search, preview, install, uninstall, update, list.',
+      'browse — list ALL available skills (bundled + remote) with install status.',
       'search — search skills by name/keyword/tag.',
       'preview — fetch and security-scan a skill before installing.',
-      'install — install a skill from a GitHub repo (auto security-scanned).',
+      'install — install a skill from a GitHub repo or bundled source (auto security-scanned).',
       'uninstall — remove an installed skill.',
       'update — update a specific skill or all skills.',
       'list — list installed ClawHub skills.',
@@ -330,7 +451,7 @@ export const clawHubTools: Tool[] = [
       properties: {
         action: {
           type: 'string',
-          description: 'Action: search|preview|install|uninstall|update|list',
+          description: 'Action: browse|search|preview|install|uninstall|update|list',
         },
         query: { type: 'string', description: 'Search query (for search)' },
         repo: { type: 'string', description: 'GitHub repo e.g. "user/skill-name" (for preview, install)' },
@@ -343,6 +464,18 @@ export const clawHubTools: Tool[] = [
       const action = params.action as string;
 
       switch (action) {
+        case 'browse': {
+          const all = await fetchRegistry();
+          const installed = _skillsDir ? new Set(loadInstalledMeta(_skillsDir).map(m => m.name)) : new Set<string>();
+          if (all.length === 0) return { output: 'No skills available.' };
+          const lines = all.map(s => {
+            const status = installed.has(s.name) || installed.has(s.repo.split('/').pop() || '') ? '[installed]' : '[available]';
+            const src = s.source === 'bundled' ? ' (bundled)' : '';
+            return `  ${status} ${s.name}${src} — ${s.description.slice(0, 100)}`;
+          });
+          return { output: `ClawHub Skills (${all.length}):\n\n${lines.join('\n')}` };
+        }
+
         case 'search': {
           const query = params.query as string;
           if (!query) return { output: '', error: 'query is required for search' };

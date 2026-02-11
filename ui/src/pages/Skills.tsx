@@ -69,10 +69,20 @@ export default function Skills() {
                 </div>
                 <button onClick={() => {
                   if (!confirm(`Uninstall skill "${s.name}"?`)) return
-                  fetch('/api/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command: `/index off` }) }).catch(() => {})
-                  // Use the skill builder tool via chat command to delete
-                  fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: `Use the skill tool to delete the skill named "${s.name}"` }) })
-                    .then(() => { setSkills(prev => prev.filter(sk => sk.name !== s.name)) }).catch(() => {})
+                  fetch('/api/skills/uninstall', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: s.name }),
+                  })
+                    .then(r => r.json())
+                    .then((res: any) => {
+                      if (res.success) {
+                        setSkills(prev => prev.filter(sk => sk.name !== s.name))
+                      } else {
+                        alert(res.error || 'Failed to uninstall')
+                      }
+                    })
+                    .catch(() => alert('Failed to uninstall'))
                 }} style={{
                   padding: '2px 8px', background: '#2e1a1a', color: '#f44336',
                   border: '1px solid #4a2a2a', borderRadius: 4, cursor: 'pointer', fontSize: 11,
