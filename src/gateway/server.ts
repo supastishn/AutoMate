@@ -392,6 +392,21 @@ export class GatewayServer {
       return { skills };
     });
 
+    // Direct skill uninstall (no AI chat round-trip)
+    this.app.post<{ Body: { name: string } }>('/api/skills/uninstall', async (req) => {
+      const name = req.body.name;
+      if (!name) return { success: false, error: 'name is required' };
+      const skillsDir = this.config.skills.directory;
+      const result = uninstallSkill(name, skillsDir);
+      if (result.success) {
+        // Reload skills so the agent picks up the change
+        const loader = (this.agent as any).skillsLoader;
+        if (loader) loader.loadAll();
+        this.broadcastDataUpdate('skills');
+      }
+      return result;
+    });
+
     // Dashboard API (aggregated stats for the dashboard page)
     this.app.get('/api/dashboard', async () => {
       const toolStats = this.agent.getToolStats();

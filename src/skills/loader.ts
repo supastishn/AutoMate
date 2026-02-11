@@ -313,11 +313,7 @@ export class SkillsLoader {
   private getSkillDirs(): string[] {
     const dirs: string[] = [];
 
-    // 1. OpenClaw bundled skills (if available)
-    const openclawBundled = this.resolveOpenClawBundledDir();
-    if (openclawBundled) dirs.push(openclawBundled);
-
-    // 2. Extra dirs from config
+    // 1. Extra dirs from config
     if (this.config.skills.extraDirs) {
       for (const d of this.config.skills.extraDirs) {
         const resolved = d.replace(/^~/, process.env.HOME || '~');
@@ -325,44 +321,11 @@ export class SkillsLoader {
       }
     }
 
-    // 3. Main skills directory (highest precedence, can override bundled)
+    // 2. Main skills directory (highest precedence, can override extras)
     const mainDir = this.config.skills.directory.replace(/^~/, process.env.HOME || '~');
     dirs.push(mainDir);
 
     return dirs;
-  }
-
-  private resolveOpenClawBundledDir(): string | null {
-    // Check env override
-    const envDir = process.env.OPENCLAW_BUNDLED_SKILLS_DIR;
-    if (envDir && existsSync(envDir)) return envDir;
-
-    // Common install locations
-    const candidates = [
-      // npm global
-      join(process.env.HOME || '~', '.openclaw', 'skills'),
-      // Sibling project (development)
-      join(process.cwd(), '..', 'openclaw', 'skills'),
-      // Termux specific
-      '/data/data/com.termux/files/home/prog/aitools/openclaw/skills',
-    ];
-
-    for (const candidate of candidates) {
-      try {
-        if (existsSync(candidate) && statSync(candidate).isDirectory()) {
-          // Verify it looks like a skills dir (has subdirs with SKILL.md)
-          const entries = readdirSync(candidate);
-          const hasSkills = entries.some(e => {
-            try {
-              return statSync(join(candidate, e)).isDirectory() && existsSync(join(candidate, e, 'SKILL.md'));
-            } catch { return false; }
-          });
-          if (hasSkills) return candidate;
-        }
-      } catch { /* ignore */ }
-    }
-
-    return null;
   }
 
   /* ── Load ──────────────────────────────────────────────────────── */
