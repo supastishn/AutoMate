@@ -103,6 +103,7 @@ program
     let pluginManager: PluginManager | undefined;
     if (config.plugins?.enabled !== false) {
       pluginManager = new PluginManager(config, config.plugins?.directory);
+      pluginManager.setCoreServices(memoryManager, sessionManager, scheduler);
       try {
         const loaded = await pluginManager.loadAll();
         if (loaded.length > 0) {
@@ -115,6 +116,7 @@ program
             }
           }
         }
+        pluginManager.startWatching();
       } catch (err) {
         console.error(`[plugins] Failed to load: ${err}`);
       }
