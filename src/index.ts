@@ -10,7 +10,7 @@ import { SkillsLoader } from './skills/loader.js';
 import { MemoryManager } from './memory/manager.js';
 import { Scheduler } from './cron/scheduler.js';
 import { runOnboardWizard } from './onboard/wizard.js';
-import { wireHeartbeat } from './heartbeat/manager.js';
+import { wireHeartbeat, isHeartbeatJob } from './heartbeat/manager.js';
 import { PluginManager } from './plugins/manager.js';
 import { AgentRouter } from './agents/router.js';
 import {
@@ -75,7 +75,7 @@ program
     if (config.cron.enabled) {
       scheduler = new Scheduler(config.cron.directory, (job) => {
         // Heartbeat jobs trigger the heartbeat manager
-        if (job.prompt === '__heartbeat__' && heartbeatManager) {
+        if (isHeartbeatJob(job.prompt) && heartbeatManager) {
           heartbeatManager.trigger().catch((err: Error) => {
             console.error(`[heartbeat] Trigger failed: ${err.message}`);
           });
@@ -149,7 +149,14 @@ program
       agentRouter = new AgentRouter(config);
       await agentRouter.initAgents(config.agents);
       gateway.setRouter(agentRouter);
-      console.log(`  Agents: ${config.agents.map(a => a.name).join(', ')}`);
+      // Wire heartbeat broadcaster to push live events from per-agent heartbeats
+      agentRouter.setHeartbeatBroadcaster((msg: Record<string, unknown>) => gateway.broadcastToAll(msg));
+      const agentNames = config.agents.map(a => a.name);
+      const hbAgents = config.agents.filter(a => a.heartbeat?.enabled).map(a => a.name);
+      console.log(`  Agents: ${agentNames.join(', ')}`);
+      if (hbAgents.length > 0) {
+        console.log(`  Per-agent heartbeats: ${hbAgents.join(', ')}`);
+      }
     }
 
     await gateway.start();
