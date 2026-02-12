@@ -13,6 +13,7 @@ export default function Canvas() {
   const [canvases, setCanvases] = useState<CanvasData[]>([])
   const [activeIdx, setActiveIdx] = useState(0)
   const [connected, setConnected] = useState(false)
+  const [htmlPreview, setHtmlPreview] = useState<string | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
 
   useEffect(() => {
@@ -76,16 +77,14 @@ export default function Canvas() {
     }
 
     if (canvas.contentType === 'html') {
-      const blob = new Blob([canvas.content], { type: 'text/html' })
-      const url = URL.createObjectURL(blob)
       return (
         <iframe
-          src={url}
+          srcDoc={canvas.content}
           style={{
             width: '100%', height: '100%', border: 'none',
             background: '#fff', borderRadius: 4,
           }}
-          sandbox="allow-scripts allow-same-origin"
+          sandbox="allow-scripts"
           title={canvas.title}
         />
       )
@@ -237,6 +236,23 @@ export default function Canvas() {
               Open in tab
             </button>
           )}
+          {canvas && canvas.contentType !== 'html' && /```html\n([\s\S]*?)```/.test(canvas.content) && (
+            <button
+              onClick={() => {
+                if (canvas) {
+                  const match = canvas.content.match(/```html\n([\s\S]*?)```/)
+                  if (match) setHtmlPreview(match[1])
+                }
+              }}
+              style={{
+                padding: '4px 12px', background: '#2a1a3e', color: '#ce93d8',
+                border: '1px solid #4a2a6a', borderRadius: 4, cursor: 'pointer', fontSize: 12,
+                fontWeight: 600,
+              }}
+            >
+              ▶ Preview HTML
+            </button>
+          )}
           {canvas && (
             <button
               onClick={() => { if (canvas) navigator.clipboard.writeText(canvas.content) }}
@@ -255,6 +271,65 @@ export default function Canvas() {
       <div style={{ flex: 1, overflow: 'hidden', background: '#0d0d0d' }}>
         {renderContent()}
       </div>
+
+      {/* HTML Preview Modal */}
+      {htmlPreview && (
+        <div
+          onClick={() => setHtmlPreview(null)}
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,0.8)', zIndex: 1000,
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              width: '90%', maxWidth: 1000, height: '80%',
+              background: '#fff', borderRadius: 12, overflow: 'hidden',
+              display: 'flex', flexDirection: 'column',
+              boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+            }}
+          >
+            <div style={{
+              padding: '8px 16px', background: '#1a1a2e',
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              borderBottom: '1px solid #333',
+            }}>
+              <span style={{ fontSize: 13, color: '#4fc3f7', fontWeight: 600 }}>HTML Preview</span>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  onClick={() => {
+                    const w = window.open('', '_blank')
+                    if (w) { w.document.write(htmlPreview); w.document.close() }
+                  }}
+                  style={{
+                    padding: '3px 10px', background: '#2a2a4a', color: '#4fc3f7',
+                    border: '1px solid #4fc3f7', borderRadius: 4, cursor: 'pointer', fontSize: 11,
+                  }}
+                >
+                  Open in tab
+                </button>
+                <button
+                  onClick={() => setHtmlPreview(null)}
+                  style={{
+                    padding: '3px 10px', background: '#2a1a1a', color: '#f44',
+                    border: '1px solid #f44', borderRadius: 4, cursor: 'pointer', fontSize: 11,
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            <iframe
+              srcDoc={htmlPreview}
+              style={{ flex: 1, border: 'none', background: '#fff' }}
+              sandbox="allow-scripts"
+              title="HTML Preview"
+            />
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -8,9 +8,21 @@ export const ProviderSchema = z.object({
   maxTokens: z.number().optional(),
   temperature: z.number().optional(),
   priority: z.number().default(0),  // lower = tried first
+  cooldownMs: z.number().optional(), // cooldown after error before retry
+  lastError: z.number().optional(),  // timestamp of last error (runtime only)
 });
 
 export type Provider = z.infer<typeof ProviderSchema>;
+
+// Model alias: shorthand names for full model specs
+export const ModelAliasSchema = z.object({
+  name: z.string(),              // alias name (e.g. "fast", "smart", "cheap")
+  model: z.string(),             // full model name
+  apiBase: z.string().optional(), // override apiBase
+  apiKey: z.string().optional(),  // override apiKey
+});
+
+export type ModelAlias = z.infer<typeof ModelAliasSchema>;
 
 export const AgentProfileSchema = z.object({
   name: z.string(),
@@ -38,6 +50,16 @@ export const AgentProfileSchema = z.object({
 
 export type AgentProfile = z.infer<typeof AgentProfileSchema>;
 
+// TTS configuration
+export const TTSConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  provider: z.enum(['elevenlabs', 'openai']).default('elevenlabs'),
+  apiKey: z.string().optional(),
+  voice: z.string().optional(),
+  model: z.string().optional(),
+  outputDir: z.string().optional(),
+}).default({});
+
 export const ConfigSchema = z.object({
   agent: z.object({
     model: z.string().default('claude-opus-4.6'),
@@ -46,8 +68,12 @@ export const ConfigSchema = z.object({
     systemPrompt: z.string().default('You are AutoMate, a fast and capable personal AI assistant. You have access to tools for running shell commands, reading/writing files, browsing the web, and more. Be concise and effective.'),
     maxTokens: z.number().default(8192),
     temperature: z.number().default(0.3),
+    // Thinking/reasoning level: off, minimal, low, medium, high
+    thinkingLevel: z.enum(['off', 'minimal', 'low', 'medium', 'high']).default('off'),
     // Failover providers: if the primary fails, try these in order
     providers: z.array(ProviderSchema).default([]),
+    // Model aliases for quick switching
+    aliases: z.array(ModelAliasSchema).default([]),
   }).default({}),
   // Multi-agent: define named agents with isolated memory/sessions/skills
   agents: z.array(AgentProfileSchema).default([]),
@@ -106,8 +132,10 @@ export const ConfigSchema = z.object({
   memory: z.object({
     directory: z.string().default('~/.automate/memory'),
     sharedDirectory: z.string().default('~/.automate/shared'),  // shared memory across agents
+    indexTranscripts: z.boolean().default(true),  // index chat transcripts for search
     embedding: z.object({
       enabled: z.boolean().default(true),
+      provider: z.enum(['openai', 'gemini', 'voyage', 'local']).default('openai'),
       model: z.string().default('text-embedding-3-small'),
       apiBase: z.string().default('http://localhost:4141/v1'),
       apiKey: z.string().optional(),
@@ -117,6 +145,8 @@ export const ConfigSchema = z.object({
       bm25Weight: z.number().default(0.4),      // weight for BM25 in hybrid
       topK: z.number().default(10),             // default results to return
     }).default({}),
+    // Citation mode: how to cite sources in search results
+    citations: z.enum(['full', 'file-only', 'none']).default('full'),
   }).default({}),
   cron: z.object({
     enabled: z.boolean().default(true),
@@ -125,6 +155,8 @@ export const ConfigSchema = z.object({
   tools: z.object({
     allow: z.array(z.string()).default([]),  // empty = allow all
     deny: z.array(z.string()).default([]),   // deny always wins
+    // Tool approval: require user approval for dangerous tools
+    requireApproval: z.array(z.string()).default([]), // tools that need approval
   }).default({}),
   webhooks: z.object({
     enabled: z.boolean().default(false),
@@ -147,6 +179,7 @@ export const ConfigSchema = z.object({
     enabled: z.boolean().default(false),
     intervalMinutes: z.number().default(30),   // how often to check in
   }).default({}),
+  tts: TTSConfigSchema,
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

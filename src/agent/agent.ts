@@ -2,7 +2,7 @@ import type { Config } from '../config/schema.js';
 import { LLMClient, type LLMMessage, type StreamChunk } from './llm-client.js';
 import { ToolRegistry, type ToolContext, type Tool, type SessionToolView, type ToolRegistryStats } from './tool-registry.js';
 import { bashTool } from './tools/bash.js';
-import { readFileTool, writeFileTool, editFileTool, applyPatchTool } from './tools/files.js';
+import { readFileTool, writeFileTool, editFileTool, applyPatchTool, hashlineEditTool } from './tools/files.js';
 import { browserTools } from './tools/browser.js';
 import { sessionTools, setSessionManager, setAgent } from './tools/sessions.js';
 import { memoryTools, setMemoryManager } from './tools/memory.js';
@@ -30,11 +30,12 @@ import type { AgentRouter } from '../agents/router.js';
 
 export interface AgentResponse {
   content: string;
-  toolCalls: { name: string; result: string }[];
+  toolCalls: { name: string; result: string; arguments?: string }[];
   usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
 }
 
 export type StreamCallback = (chunk: string) => void;
+export type ToolCallCallback = (toolCall: { name: string; arguments?: string; result: string }) => void;
 
 export class Agent {
   private llm: LLMClient;
@@ -68,6 +69,7 @@ export class Agent {
     this.tools.register(readFileTool);
     this.tools.register(writeFileTool);
     this.tools.register(editFileTool);
+    this.tools.register(hashlineEditTool);
     this.tools.register(applyPatchTool);
 
     // Memory & identity — always available
@@ -584,6 +586,7 @@ export class Agent {
     sessionId: string,
     userMessage: string,
     onStream?: StreamCallback,
+    onToolCall?: ToolCallCallback,
   ): Promise<AgentResponse> {
     // If session is busy, queue the message
     if (this.processing.has(sessionId)) {
@@ -614,7 +617,7 @@ export class Agent {
         processedMessage = filtered;
       }
 
-      const result = await this._processMessage(sessionId, processedMessage, onStream, ac.signal);
+      const result = await this._processMessage(sessionId, processedMessage, onStream, ac.signal, onToolCall);
 
       // Plugin middleware: afterResponse
       if (this.pluginManager && result.content) {
@@ -649,6 +652,11 @@ export class Agent {
     }
   }
 
+  /** Check if a session is currently being processed. */
+  isProcessing(sessionId: string): boolean {
+    return this.processing.has(sessionId);
+  }
+
   /** Interrupt/abort a currently processing session. Returns true if a request was aborted. */
   interruptSession(sessionId: string): boolean {
     const ac = this.abortControllers.get(sessionId);
@@ -667,6 +675,7 @@ export class Agent {
     userMessage: string,
     onStream?: StreamCallback,
     signal?: AbortSignal,
+    onToolCall?: ToolCallCallback,
   ): Promise<AgentResponse> {
     const session = this.sessionManager.getOrCreate(
       sessionId.split(':')[0] || 'direct',
@@ -685,7 +694,7 @@ export class Agent {
       content: this._rebuildSystemContent(sessionView, sessionId),
     };
 
-    const toolCallResults: { name: string; result: string }[] = [];
+    const toolCallResults: { name: string; result: string; arguments?: string }[] = [];
     const isElevated = this.elevatedSessions.has(sessionId);
     const ctx: ToolContext = { sessionId, workdir: process.cwd(), elevated: isElevated };
 
@@ -729,7 +738,9 @@ export class Agent {
               if (this.pluginManager) this.pluginManager.fireToolCall(tc.function.name, args);
               const result = await sessionView.execute(tc.function.name, args, ctx);
               if (this.pluginManager) this.pluginManager.fireToolResult(tc.function.name, result.output || result.error || '');
-              toolCallResults.push({ name: tc.function.name, result: result.output || result.error || '' });
+              const toolResult = { name: tc.function.name, result: result.output || result.error || '', arguments: tc.function.arguments };
+              toolCallResults.push(toolResult);
+              if (onToolCall) onToolCall(toolResult);
               return { id: tc.id, result };
             })
           );
@@ -778,7 +789,9 @@ export class Agent {
               if (this.pluginManager) this.pluginManager.fireToolCall(tc.function.name, args);
               const result = await sessionView.execute(tc.function.name, args, ctx);
               if (this.pluginManager) this.pluginManager.fireToolResult(tc.function.name, result.output || result.error || '');
-              toolCallResults.push({ name: tc.function.name, result: result.output || result.error || '' });
+              const toolResult = { name: tc.function.name, result: result.output || result.error || '', arguments: tc.function.arguments };
+              toolCallResults.push(toolResult);
+              if (onToolCall) onToolCall(toolResult);
               return { id: tc.id, result };
             })
           );
@@ -1398,7 +1411,7 @@ export class Agent {
     const sessionView = this.tools.getSessionView(sessionId);
     const toolDefs = sessionView.getToolDefsFiltered(allowedTools);
     const ctx: ToolContext = { sessionId, workdir: process.cwd(), elevated: false };
-    const toolCallResults: { name: string; result: string }[] = [];
+    const toolCallResults: { name: string; result: string; arguments?: string }[] = [];
 
     let iterations = 0;
     const maxIterations = 20; // Lower limit for public users
@@ -1432,7 +1445,7 @@ export class Agent {
                 onStream(`\n[used tool: ${tc.function.name}]\n`);
               }
               const result = await sessionView.execute(tc.function.name, args, ctx);
-              toolCallResults.push({ name: tc.function.name, result: result.output || result.error || '' });
+              toolCallResults.push({ name: tc.function.name, result: result.output || result.error || '', arguments: tc.function.arguments });
               return { id: tc.id, result };
             })
           );
@@ -1474,7 +1487,7 @@ export class Agent {
               let args: Record<string, unknown>;
               try { args = JSON.parse(tc.function.arguments); } catch { args = {}; }
               const result = await sessionView.execute(tc.function.name, args, ctx);
-              toolCallResults.push({ name: tc.function.name, result: result.output || result.error || '' });
+              toolCallResults.push({ name: tc.function.name, result: result.output || result.error || '', arguments: tc.function.arguments });
               return { id: tc.id, result };
             })
           );

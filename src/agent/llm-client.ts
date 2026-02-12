@@ -214,7 +214,7 @@ export class LLMClient {
       }
     }
 
-    throw new Error(`All providers failed:\n${errors.join('\n')}`);
+    throw new Error(errors.length === 1 ? errors[0] : `All ${errors.length} providers failed:\n${errors.join('\n')}`);
   }
 
   private async _chatWithProvider(provider: ProviderEntry, messages: LLMMessage[], tools?: ToolDef[], toolChoice?: 'auto' | 'required' | 'none', signal?: AbortSignal): Promise<LLMResponse> {
@@ -286,7 +286,7 @@ export class LLMClient {
       }
     }
 
-    throw new Error(`All providers failed:\n${errors.join('\n')}`);
+    throw new Error(errors.length === 1 ? errors[0] : `All ${errors.length} providers failed:\n${errors.join('\n')}`);
   }
 
   private async *_chatStreamWithProvider(provider: ProviderEntry, messages: LLMMessage[], tools?: ToolDef[], signal?: AbortSignal): AsyncGenerator<StreamChunk> {

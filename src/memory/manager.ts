@@ -266,24 +266,34 @@ export class MemoryManager {
     let filesSkipped = 0;
 
     try {
-      const files = readdirSync(this.dir).filter(f =>
+      // Collect top-level .md files
+      const topFiles = readdirSync(this.dir).filter(f =>
         f.endsWith('.md') && !SKIP_INDEX_FILES.includes(f)
-      );
+      ).map(f => ({ key: f, path: join(this.dir, f) }));
 
-      for (const file of files) {
-        const content = readFileSync(join(this.dir, file), 'utf-8');
+      // Also collect .md files from transcripts/ subdirectory
+      const transcriptsDir = join(this.dir, 'transcripts');
+      if (existsSync(transcriptsDir)) {
+        const transcriptFiles = readdirSync(transcriptsDir).filter(f => f.endsWith('.md'));
+        for (const f of transcriptFiles) {
+          topFiles.push({ key: `transcripts/${f}`, path: join(transcriptsDir, f) });
+        }
+      }
 
-        if (!this.vectorIndex.needsReindex(file, content)) {
+      for (const { key, path } of topFiles) {
+        const content = readFileSync(path, 'utf-8');
+
+        if (!this.vectorIndex.needsReindex(key, content)) {
           filesSkipped++;
           continue;
         }
 
         try {
-          const chunks = await this.vectorIndex.indexFile(file, content);
+          const chunks = await this.vectorIndex.indexFile(key, content);
           totalChunks += chunks;
           filesIndexed++;
         } catch (err) {
-          console.error(`[memory] Failed to index ${file}:`, (err as Error).message);
+          console.error(`[memory] Failed to index ${key}:`, (err as Error).message);
         }
       }
 

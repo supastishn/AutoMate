@@ -100,6 +100,17 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
     window.open('/api/sessions/' + encodeURIComponent(id) + '/export')
   }
 
+  const duplicateSession = async (id: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation()
+    try {
+      const r = await fetch(`/api/sessions/${encodeURIComponent(id)}/duplicate`, { method: 'POST' })
+      const data = await r.json() as any
+      if (data.ok) {
+        fetchSessions()
+      }
+    } catch { /* ignore */ }
+  }
+
   const exportAll = async () => {
     try {
       const allSessions: any[] = []
@@ -254,6 +265,11 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
                     title="Export session"
                     style={{ padding: '2px 8px', background: '#1a2a1a', color: '#81c784', border: '1px solid #2a4a2a', borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
                     Export
+                  </button>
+                  <button onClick={(e) => duplicateSession(s.id, e)}
+                    title="Duplicate session"
+                    style={{ padding: '2px 8px', background: '#1a1a2a', color: '#b39ddb', border: '1px solid #2a2a4a', borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
+                    Dup
                   </button>
                   <button onClick={(e) => deleteSession(s.id, e)}
                     title="Delete session"
