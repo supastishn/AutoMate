@@ -277,6 +277,14 @@ export class GatewayServer {
       return { ok: true };
     });
 
+    // Duplicate session
+    this.app.post<{ Params: { id: string } }>('/api/sessions/:id/duplicate', async (req, reply) => {
+      const dup = this.sessionManager.duplicateSession(req.params.id);
+      if (!dup) return reply.code(404).send({ error: 'Session not found' });
+      this.broadcastDataUpdate('sessions');
+      return { ok: true, session: { id: dup.id, channel: dup.channel, messageCount: dup.messageCount } };
+    });
+
     // Main session: get/set
     this.app.get('/api/sessions/main', async () => {
       return { mainSessionId: this.sessionManager.getMainSessionId() };
@@ -920,13 +928,15 @@ export class GatewayServer {
         connectedAt: new Date().toISOString(),
       });
 
-      // Send welcome with presence state
+      // Send welcome with presence state + processing flag
+      const isProcessing = this.agent.isProcessing(sessionId);
       socket.send(JSON.stringify({
         type: 'connected',
         session_id: sessionId,
         client_id: clientId,
         presence: this.presenceManager.getState(),
         context: this.getContextInfo(sessionId),
+        processing: isProcessing,
       }));
 
       // If connecting to an existing session with messages, send history immediately
@@ -935,18 +945,7 @@ export class GatewayServer {
         socket.send(JSON.stringify({
           type: 'session_loaded',
           session_id: sessionId,
-          messages: existingSession.messages
-            .filter(m => m.role === 'user' || m.role === 'assistant' || m.role === 'system')
-            .map(m => {
-              const mapped: any = { role: m.role, content: m.content || '' };
-              if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
-                mapped.tool_calls = m.tool_calls.map(tc => ({
-                  name: tc.function?.name || tc.function,
-                  arguments: tc.function?.arguments || '',
-                }));
-              }
-              return mapped;
-            }),
+          messages: this.mapSessionMessages(existingSession.messages),
           context: this.getContextInfo(sessionId),
         }));
       }
@@ -970,13 +969,15 @@ export class GatewayServer {
             }
 
             // Stream response — route through router if available
+            const onStream = (chunk: string) => {
+              socket.send(JSON.stringify({ type: 'stream', content: chunk }));
+            };
+            const onToolCall = (tc: { name: string; arguments?: string; result: string }) => {
+              socket.send(JSON.stringify({ type: 'tool_call', name: tc.name, arguments: tc.arguments, result: tc.result }));
+            };
             const result = this.router
-              ? await this.router.processMessage(sessionId, content, (chunk) => {
-                  socket.send(JSON.stringify({ type: 'stream', content: chunk }));
-                })
-              : await this.agent.processMessage(sessionId, content, (chunk) => {
-                  socket.send(JSON.stringify({ type: 'stream', content: chunk }));
-                });
+              ? await this.router.processMessage(sessionId, content, onStream)
+              : await this.agent.processMessage(sessionId, content, onStream, onToolCall);
 
             // Send completion
             socket.send(JSON.stringify({
@@ -1035,23 +1036,110 @@ export class GatewayServer {
             sessionId = targetId;
             // Send session history back to client
             // Include tool_calls metadata for assistant messages so UI can render them
-            // Filter out raw 'tool' role messages (results) but show info in the assistant message
+            // Pair tool-role results with their parent assistant tool_calls
             socket.send(JSON.stringify({
               type: 'session_loaded',
               session_id: targetId,
-              messages: session.messages
-                .filter(m => m.role === 'user' || m.role === 'assistant' || m.role === 'system')
-                .map(m => {
-                  const msg: any = { role: m.role, content: m.content || '' };
-                  if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
-                    msg.tool_calls = m.tool_calls.map(tc => ({
-                      name: tc.function?.name || tc.function,
-                      arguments: tc.function?.arguments || '',
-                    }));
-                  }
-                  return msg;
-                }),
+              messages: this.mapSessionMessages(session.messages),
               context: this.getContextInfo(targetId),
+            }));
+          }
+
+          // Delete a message and its associated responses
+          if (msg.type === 'delete_message') {
+            const index = msg.index as number;
+            const deleted = this.sessionManager.deleteMessageAt(sessionId, index);
+            const session = this.sessionManager.getSession(sessionId);
+            socket.send(JSON.stringify({
+              type: 'messages_updated',
+              session_id: sessionId,
+              messages: session ? this.mapSessionMessages(session.messages) : [],
+              context: this.getContextInfo(sessionId),
+              deleted_count: deleted.length,
+            }));
+          }
+
+          // Edit a message's content
+          if (msg.type === 'edit_message') {
+            const index = msg.index as number;
+            const content = msg.content as string;
+            const success = this.sessionManager.editMessageAt(sessionId, index, content);
+            const session = this.sessionManager.getSession(sessionId);
+            socket.send(JSON.stringify({
+              type: 'messages_updated',
+              session_id: sessionId,
+              messages: session ? this.mapSessionMessages(session.messages) : [],
+              context: this.getContextInfo(sessionId),
+              success,
+            }));
+          }
+
+          // Retry a message - regenerate response using context up to that point
+          if (msg.type === 'retry_message') {
+            const index = msg.index as number;
+            const session = this.sessionManager.getSession(sessionId);
+            if (!session || index < 0 || index >= session.messages.length) {
+              socket.send(JSON.stringify({ type: 'error', message: 'Invalid message index' }));
+              return;
+            }
+
+            const targetMsg = session.messages[index];
+            
+            // For user messages: re-send the user message
+            // For assistant messages: re-send the previous user message
+            let userMsgIndex = index;
+            let userContent = targetMsg.content;
+            
+            if (targetMsg.role === 'assistant') {
+              // Find the user message before this assistant message
+              userMsgIndex = index - 1;
+              while (userMsgIndex >= 0 && session.messages[userMsgIndex].role !== 'user') {
+                userMsgIndex--;
+              }
+              if (userMsgIndex < 0) {
+                socket.send(JSON.stringify({ type: 'error', message: 'No user message found before this response' }));
+                return;
+              }
+              userContent = session.messages[userMsgIndex].content || '';
+            }
+
+            // Find where the response ends (next user message or end)
+            let endIndex = userMsgIndex + 1;
+            while (endIndex < session.messages.length && session.messages[endIndex].role !== 'user') {
+              endIndex++;
+            }
+
+            // Store messages after the response we're regenerating (to preserve them)
+            const messagesAfter = session.messages.slice(endIndex);
+
+            // Delete from userMsgIndex+1 to endIndex (the old response)
+            session.messages.splice(userMsgIndex + 1, endIndex - userMsgIndex - 1);
+            this.sessionManager.saveSession(sessionId);
+
+            // Now regenerate the response
+            const result = this.router
+              ? await this.router.processMessage(sessionId, userContent, (chunk) => {
+                  socket.send(JSON.stringify({ type: 'stream', content: chunk }));
+                })
+              : await this.agent.processMessage(sessionId, userContent, (chunk) => {
+                  socket.send(JSON.stringify({ type: 'stream', content: chunk }));
+                });
+
+            // Re-add the messages that were after the regenerated response
+            for (const msg of messagesAfter) {
+              this.sessionManager.addMessage(sessionId, msg);
+            }
+
+            // Send completion with updated messages
+            const updatedSession = this.sessionManager.getSession(sessionId);
+            socket.send(JSON.stringify({
+              type: 'retry_complete',
+              session_id: sessionId,
+              content: result.content,
+              tool_calls: result.toolCalls,
+              usage: result.usage,
+              messages: updatedSession ? this.mapSessionMessages(updatedSession.messages) : [],
+              context: this.getContextInfo(sessionId),
             }));
           }
         } catch (err) {
@@ -1100,6 +1188,32 @@ export class GatewayServer {
         this.canvasClients.delete(clientId);
       });
     });
+  }
+
+  /** Map raw session messages to a client-friendly format, pairing tool results with assistant tool_calls. */
+  private mapSessionMessages(messages: any[]): any[] {
+    // Build a map of tool_call_id → result content from tool-role messages
+    const toolResults = new Map<string, string>();
+    for (const m of messages) {
+      if (m.role === 'tool' && m.tool_call_id) {
+        toolResults.set(m.tool_call_id, m.content || '');
+      }
+    }
+
+    return messages
+      .map((m, idx) => ({ m, idx }))
+      .filter(({ m }) => m.role === 'user' || m.role === 'assistant' || m.role === 'system')
+      .map(({ m, idx }) => {
+        const mapped: any = { role: m.role, content: m.content || '', serverIndex: idx };
+        if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
+          mapped.tool_calls = m.tool_calls.map((tc: any) => ({
+            name: tc.function?.name || tc.function,
+            arguments: tc.function?.arguments || '',
+            result: toolResults.get(tc.id) || '',
+          }));
+        }
+        return mapped;
+      });
   }
 
   private broadcastDataUpdate(resource: string, data?: any): void {

@@ -15,7 +15,7 @@ import type { ToolContext } from '../src/agent/tool-registry.js';
 
 // Import tools directly
 import { bashTool } from '../src/agent/tools/bash.js';
-import { readFileTool, writeFileTool, editFileTool, applyPatchTool } from '../src/agent/tools/files.js';
+import { readFileTool, writeFileTool, editFileTool, applyPatchTool, hashlineEditTool } from '../src/agent/tools/files.js';
 import { setSharedMemoryDir, sharedMemoryTools } from '../src/agent/tools/shared-memory.js';
 import { processTools } from '../src/agent/tools/process.js';
 
@@ -126,12 +126,16 @@ describe('File Tools', () => {
     assert.equal(readFileSync(nestedPath, 'utf-8'), 'Hello nested');
   });
 
-  test('read_file returns content with line numbers', async () => {
+  test('read_file returns content with hashline format', async () => {
     writeFileSync(testFile, 'Line 1\nLine 2\nLine 3');
     const result = await readFileTool.execute({ path: testFile }, makeCtx());
-    assert.ok(result.output.includes('1\tLine 1'));
-    assert.ok(result.output.includes('2\tLine 2'));
-    assert.ok(result.output.includes('3\tLine 3'));
+    // Format should be "lineNum:hash|content"
+    assert.ok(result.output.includes('1:'));
+    assert.ok(result.output.includes('|Line 1'));
+    assert.ok(result.output.includes('2:'));
+    assert.ok(result.output.includes('|Line 2'));
+    assert.ok(result.output.includes('3:'));
+    assert.ok(result.output.includes('|Line 3'));
   });
 
   test('read_file with offset and limit', async () => {
@@ -140,10 +144,10 @@ describe('File Tools', () => {
       { path: testFile, offset: 1, limit: 2 },
       makeCtx()
     );
-    assert.ok(result.output.includes('Line 1'));
-    assert.ok(result.output.includes('Line 2'));
-    assert.ok(!result.output.includes('Line 0'));
-    assert.ok(!result.output.includes('Line 3'));
+    assert.ok(result.output.includes('|Line 1'));
+    assert.ok(result.output.includes('|Line 2'));
+    assert.ok(!result.output.includes('|Line 0'));
+    assert.ok(!result.output.includes('|Line 3'));
   });
 
   test('read_file returns error for missing file', async () => {
@@ -207,6 +211,100 @@ describe('File Tools', () => {
     const content = readFileSync(testFile, 'utf-8');
     assert.ok(content.includes('line TWO'));
     assert.ok(!content.includes('line 2'));
+  });
+
+  test('hashline_edit replaces single line with valid hash', async () => {
+    writeFileSync(testFile, 'line 1\nline 2\nline 3');
+    // First read to get the hash
+    const readResult = await readFileTool.execute({ path: testFile }, makeCtx());
+    // Extract hash for line 2 (format: "2:XX|line 2")
+    const line2Match = readResult.output.match(/2:([a-z0-9]{2})\|line 2/);
+    assert.ok(line2Match, 'Should find line 2 with hash');
+    const hash = line2Match[1];
+    
+    const result = await hashlineEditTool.execute(
+      { path: testFile, operation: 'replace', start_ref: `2:${hash}`, new_content: 'REPLACED LINE' },
+      makeCtx()
+    );
+    assert.ok(result.output.includes('Replaced'));
+    const content = readFileSync(testFile, 'utf-8');
+    assert.equal(content, 'line 1\nREPLACED LINE\nline 3');
+  });
+
+  test('hashline_edit rejects edit with wrong hash', async () => {
+    writeFileSync(testFile, 'line 1\nline 2\nline 3');
+    const result = await hashlineEditTool.execute(
+      { path: testFile, operation: 'replace', start_ref: '2:zz', new_content: 'REPLACED' },
+      makeCtx()
+    );
+    assert.ok(result.error);
+    assert.ok(result.error!.includes('Hash mismatch'));
+    // File should be unchanged
+    const content = readFileSync(testFile, 'utf-8');
+    assert.equal(content, 'line 1\nline 2\nline 3');
+  });
+
+  test('hashline_edit replaces range of lines', async () => {
+    writeFileSync(testFile, 'line 1\nline 2\nline 3\nline 4\nline 5');
+    const readResult = await readFileTool.execute({ path: testFile }, makeCtx());
+    const line2Match = readResult.output.match(/2:([a-z0-9]{2})\|line 2/);
+    const line4Match = readResult.output.match(/4:([a-z0-9]{2})\|line 4/);
+    assert.ok(line2Match && line4Match);
+    
+    const result = await hashlineEditTool.execute(
+      { 
+        path: testFile, 
+        operation: 'replace', 
+        start_ref: `2:${line2Match[1]}`,
+        end_ref: `4:${line4Match[1]}`,
+        new_content: 'MERGED LINE'
+      },
+      makeCtx()
+    );
+    assert.ok(result.output.includes('Replaced'));
+    const content = readFileSync(testFile, 'utf-8');
+    assert.equal(content, 'line 1\nMERGED LINE\nline 5');
+  });
+
+  test('hashline_edit inserts after line', async () => {
+    writeFileSync(testFile, 'line 1\nline 2\nline 3');
+    const readResult = await readFileTool.execute({ path: testFile }, makeCtx());
+    const line2Match = readResult.output.match(/2:([a-z0-9]{2})\|line 2/);
+    assert.ok(line2Match);
+    
+    const result = await hashlineEditTool.execute(
+      { 
+        path: testFile, 
+        operation: 'insert_after', 
+        start_ref: `2:${line2Match[1]}`,
+        new_content: 'NEW LINE A\nNEW LINE B'
+      },
+      makeCtx()
+    );
+    assert.ok(result.output.includes('Inserted'));
+    const content = readFileSync(testFile, 'utf-8');
+    assert.equal(content, 'line 1\nline 2\nNEW LINE A\nNEW LINE B\nline 3');
+  });
+
+  test('hashline_edit deletes lines', async () => {
+    writeFileSync(testFile, 'line 1\nline 2\nline 3\nline 4');
+    const readResult = await readFileTool.execute({ path: testFile }, makeCtx());
+    const line2Match = readResult.output.match(/2:([a-z0-9]{2})\|line 2/);
+    const line3Match = readResult.output.match(/3:([a-z0-9]{2})\|line 3/);
+    assert.ok(line2Match && line3Match);
+    
+    const result = await hashlineEditTool.execute(
+      { 
+        path: testFile, 
+        operation: 'delete', 
+        start_ref: `2:${line2Match[1]}`,
+        end_ref: `3:${line3Match[1]}`
+      },
+      makeCtx()
+    );
+    assert.ok(result.output.includes('Deleted'));
+    const content = readFileSync(testFile, 'utf-8');
+    assert.equal(content, 'line 1\nline 4');
   });
 });
 

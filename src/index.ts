@@ -52,6 +52,11 @@ program
     // Init session manager
     const sessionManager = new SessionManager(config);
 
+    // Wire memory manager into session manager for transcript indexing
+    if (config.memory.indexTranscripts !== false) {
+      sessionManager.setMemoryManager(memoryManager);
+    }
+
     // Init agent
     const agent = new Agent(config, sessionManager);
 

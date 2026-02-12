@@ -22,6 +22,7 @@ interface ChatMessage {
   images?: { url?: string; base64?: string; mimeType: string; alt?: string; filename?: string }[]
   reactions?: string[]
   timestamp: number
+  serverIndex?: number  // Index in server-side messages array
 }
 
 // Simple markdown renderer (no external dep runtime - we parse ourselves)
@@ -335,6 +336,7 @@ interface HeartbeatActivity {
   content: string
   status: 'running' | 'ok-empty' | 'ok-token' | 'sent' | 'skipped' | 'failed'
   timestamp: number
+  serverIndex?: number  // Index in server-side messages array
 }
 
 export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId?: string | null; onSessionLoaded?: () => void }) {
@@ -524,6 +526,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
               if (content) {
                 last.content = last.content ? last.content + '\n\n' + content : content
               }
+              // Keep the first serverIndex when merging
             } else {
               // New assistant message
               merged.push({
@@ -532,6 +535,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
                 content,
                 toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
                 timestamp: Date.now(),
+                serverIndex: m.serverIndex,
               })
             }
           } else {
@@ -540,6 +544,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
               role: m.role as 'user',
               content: m.content || '',
               timestamp: Date.now(),
+              serverIndex: m.serverIndex,
             })
           }
         }
@@ -705,6 +710,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
             content: m.content || '',
             toolCalls: m.tool_calls?.map((tc: any) => ({ name: tc.name, arguments: tc.arguments, result: tc.result || '' })),
             timestamp: Date.now(),
+            serverIndex: m.serverIndex,
           }))
         setMessages(loaded)
         setEditingMessageId(null)
@@ -725,6 +731,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
             content: m.content || '',
             toolCalls: m.tool_calls?.map((tc: any) => ({ name: tc.name, arguments: tc.arguments, result: tc.result || '' })),
             timestamp: Date.now(),
+            serverIndex: m.serverIndex,
           }))
         setMessages(loaded)
         setStreaming('')
@@ -749,10 +756,10 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
 
   // Find the server-side index for a message by its local id
   const findServerIndex = (msgId: string): number => {
-    // Filter out system messages (they're not sent to server in mapSessionMessages)
-    const nonSystemMessages = messages.filter(m => m.role !== 'system')
-    const localIdx = nonSystemMessages.findIndex(m => m.id === msgId)
-    return localIdx
+    // Find the message and return its serverIndex property
+    const msg = messages.find(m => m.id === msgId)
+    if (!msg || msg.serverIndex === undefined) return -1
+    return msg.serverIndex
   }
 
   const deleteMessage = (msgId: string) => {

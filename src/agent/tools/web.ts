@@ -1,4 +1,99 @@
 import type { Tool } from '../tool-registry.js';
+import { URL } from 'node:url';
+
+// ── SSRF Protection ─────────────────────────────────────────────────────────
+
+/** Check if a hostname resolves to a private/internal IP range */
+function isPrivateIP(ip: string): boolean {
+  // IPv4 private ranges
+  const ipv4Private = [
+    /^10\./,                          // 10.0.0.0/8
+    /^172\.(1[6-9]|2[0-9]|3[0-1])\./, // 172.16.0.0/12
+    /^192\.168\./,                     // 192.168.0.0/16
+    /^127\./,                          // 127.0.0.0/8 (loopback)
+    /^0\./,                            // 0.0.0.0/8
+    /^169\.254\./,                     // 169.254.0.0/16 (link-local)
+    /^100\.(6[4-9]|[7-9][0-9]|1[0-2][0-7])\./, // 100.64.0.0/10 (CGNAT)
+  ];
+
+  // IPv6 private ranges
+  const ipv6Private = [
+    /^::1$/,                           // loopback
+    /^fe80:/i,                         // link-local
+    /^fc[0-9a-f]{2}:/i,               // unique local
+    /^fd[0-9a-f]{2}:/i,               // unique local
+    /^::ffff:127\./i,                 // IPv4-mapped loopback
+    /^::ffff:10\./i,                  // IPv4-mapped private
+    /^::ffff:172\.(1[6-9]|2[0-9]|3[0-1])\./i,
+    /^::ffff:192\.168\./i,
+  ];
+
+  for (const pattern of ipv4Private) {
+    if (pattern.test(ip)) return true;
+  }
+  for (const pattern of ipv6Private) {
+    if (pattern.test(ip)) return true;
+  }
+
+  return false;
+}
+
+/** Validate URL against SSRF attacks */
+async function validateUrlForSSRF(urlStr: string): Promise<{ valid: boolean; error?: string }> {
+  let parsed: URL;
+  try {
+    parsed = new URL(urlStr);
+  } catch {
+    return { valid: false, error: 'Invalid URL format' };
+  }
+
+  // Only allow http/https
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { valid: false, error: `Protocol not allowed: ${parsed.protocol}` };
+  }
+
+  // Block localhost and common internal hostnames
+  const blockedHostnames = [
+    'localhost',
+    '127.0.0.1',
+    '0.0.0.0',
+    '::1',
+    'metadata.google.internal',
+    '169.254.169.254', // AWS/GCP metadata
+    'metadata.google.com',
+    'kubernetes.default',
+    'kubernetes.default.svc',
+  ];
+
+  const hostname = parsed.hostname.toLowerCase();
+  if (blockedHostnames.includes(hostname)) {
+    return { valid: false, error: `Blocked hostname: ${hostname}` };
+  }
+
+  // Block internal TLDs
+  const blockedTLDs = ['.local', '.internal', '.localhost', '.corp', '.lan'];
+  for (const tld of blockedTLDs) {
+    if (hostname.endsWith(tld)) {
+      return { valid: false, error: `Internal TLD not allowed: ${tld}` };
+    }
+  }
+
+  // Resolve hostname and check if it's a private IP
+  // Note: This is a best-effort check; some DNS rebinding attacks can bypass this
+  try {
+    const { lookup } = await import('node:dns/promises');
+    const addresses = await lookup(hostname, { all: true });
+    for (const addr of addresses) {
+      if (isPrivateIP(addr.address)) {
+        return { valid: false, error: `Hostname resolves to private IP: ${addr.address}` };
+      }
+    }
+  } catch {
+    // DNS lookup failed - allow the request (might be valid, let fetch handle it)
+  }
+
+  return { valid: true };
+}
 
 // ── DuckDuckGo fallback search ─────────────────────────────────────────────
 
@@ -160,6 +255,12 @@ export const webTools: Tool[] = [
           const url = params.url as string;
           if (!url) return { output: '', error: 'url is required for fetch' };
           const maxLength = (params.max_length as number) || 15000;
+
+          // SSRF protection: validate URL before fetching
+          const ssrfCheck = await validateUrlForSSRF(url);
+          if (!ssrfCheck.valid) {
+            return { output: '', error: `SSRF protection: ${ssrfCheck.error}` };
+          }
 
           try {
             const controller = new AbortController();

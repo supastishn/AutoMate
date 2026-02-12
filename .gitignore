@@ -10,3 +10,4 @@ __pycache__/
 selenium_mcp/.ruff_cache/
 selenium_mcp/__pycache__/
 selenium_mcp/mcps/discord/__pycache__/
+.cecli*

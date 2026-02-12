@@ -240,13 +240,12 @@ export class HeartbeatManager {
     const sessionBefore = sm.getSession(sessionId);
     const updatedAtBefore = sessionBefore?.updatedAt;
 
-    // Build heartbeat prompt — single turn, no forced tool usage
+    // Build heartbeat prompt — openclaw-style: follow strictly, don't hallucinate
     const prompt = [
       '[HEARTBEAT CHECK]',
       '',
-      'Review the following checklist. If everything is normal and no action is needed,',
-      `respond with just "${HEARTBEAT_OK_TOKEN}". If something requires attention or action,`,
-      'respond with a brief alert describing what needs attention.',
+      'Read the following checklist. Follow it strictly. Do not infer or repeat old tasks from prior chats.',
+      `If nothing needs attention, reply ${HEARTBEAT_OK_TOKEN}.`,
       '',
       '---',
       heartbeatContent,
@@ -265,8 +264,19 @@ export class HeartbeatManager {
     });
 
     try {
-      // Single-turn: send message and get response
-      const result = await this.agent.processMessage(sessionId, prompt);
+      // Single-turn: send message and get response, streaming chunks to clients
+      let streamedContent = '';
+      const result = await this.agent.processMessage(sessionId, prompt, (chunk) => {
+        streamedContent += chunk;
+        // Stream each chunk to connected clients
+        this.broadcast({
+          type: 'heartbeat_stream',
+          sessionId,
+          agentName: this.agentName,
+          chunk,
+          timestamp: Date.now(),
+        });
+      });
       const responseText = (result.content || '').trim();
 
       // Restore session updatedAt so heartbeat doesn't affect idle expiry
