@@ -171,8 +171,9 @@ export class LLMClient {
   }
 
   /** Try each provider in order until one succeeds */
-  async chat(messages: LLMMessage[], tools?: ToolDef[], toolChoice?: 'auto' | 'required' | 'none'): Promise<LLMResponse> {
+  async chat(messages: LLMMessage[], tools?: ToolDef[], toolChoice?: 'auto' | 'required' | 'none', signal?: AbortSignal): Promise<LLMResponse> {
     const errors: string[] = [];
+    let tried = 0;
 
     for (let i = 0; i < this.providers.length; i++) {
       const idx = (this.currentIndex + i) % this.providers.length;
@@ -184,8 +185,9 @@ export class LLMClient {
         continue;
       }
 
+      tried++;
       try {
-        const result = await this._chatWithProvider(provider, messages, tools, toolChoice);
+        const result = await this._chatWithProvider(provider, messages, tools, toolChoice, signal);
         // Success - reset fail count and set as current
         provider.failCount = 0;
         this.currentIndex = idx;
@@ -198,10 +200,24 @@ export class LLMClient {
       }
     }
 
+    // If all providers were skipped due to backoff, force-retry the current one
+    if (tried === 0) {
+      const provider = this.providers[this.currentIndex];
+      try {
+        const result = await this._chatWithProvider(provider, messages, tools, toolChoice, signal);
+        provider.failCount = 0;
+        return result;
+      } catch (err) {
+        provider.failCount++;
+        provider.lastFail = Date.now();
+        throw new Error(`Provider ${provider.name} failed: ${err}`);
+      }
+    }
+
     throw new Error(`All providers failed:\n${errors.join('\n')}`);
   }
 
-  private async _chatWithProvider(provider: ProviderEntry, messages: LLMMessage[], tools?: ToolDef[], toolChoice?: 'auto' | 'required' | 'none'): Promise<LLMResponse> {
+  private async _chatWithProvider(provider: ProviderEntry, messages: LLMMessage[], tools?: ToolDef[], toolChoice?: 'auto' | 'required' | 'none', signal?: AbortSignal): Promise<LLMResponse> {
     const body: Record<string, unknown> = {
       model: provider.model,
       messages,
@@ -218,7 +234,7 @@ export class LLMClient {
       method: 'POST',
       headers: this.getHeaders(provider),
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120000),
+      signal: signal || AbortSignal.timeout(120000),
     });
 
     if (!res.ok) {
@@ -230,8 +246,9 @@ export class LLMClient {
   }
 
   /** Stream with failover */
-  async *chatStream(messages: LLMMessage[], tools?: ToolDef[]): AsyncGenerator<StreamChunk> {
+  async *chatStream(messages: LLMMessage[], tools?: ToolDef[], signal?: AbortSignal): AsyncGenerator<StreamChunk> {
     const errors: string[] = [];
+    let tried = 0;
 
     for (let i = 0; i < this.providers.length; i++) {
       const idx = (this.currentIndex + i) % this.providers.length;
@@ -242,8 +259,9 @@ export class LLMClient {
         continue;
       }
 
+      tried++;
       try {
-        yield* this._chatStreamWithProvider(provider, messages, tools);
+        yield* this._chatStreamWithProvider(provider, messages, tools, signal);
         provider.failCount = 0;
         this.currentIndex = idx;
         return;
@@ -254,10 +272,24 @@ export class LLMClient {
       }
     }
 
+    // If all providers were skipped due to backoff, force-retry the current one
+    if (tried === 0) {
+      const provider = this.providers[this.currentIndex];
+      try {
+        yield* this._chatStreamWithProvider(provider, messages, tools, signal);
+        provider.failCount = 0;
+        return;
+      } catch (err) {
+        provider.failCount++;
+        provider.lastFail = Date.now();
+        throw new Error(`Provider ${provider.name} failed: ${err}`);
+      }
+    }
+
     throw new Error(`All providers failed:\n${errors.join('\n')}`);
   }
 
-  private async *_chatStreamWithProvider(provider: ProviderEntry, messages: LLMMessage[], tools?: ToolDef[]): AsyncGenerator<StreamChunk> {
+  private async *_chatStreamWithProvider(provider: ProviderEntry, messages: LLMMessage[], tools?: ToolDef[], signal?: AbortSignal): AsyncGenerator<StreamChunk> {
     const body: Record<string, unknown> = {
       model: provider.model,
       messages,
@@ -274,7 +306,7 @@ export class LLMClient {
       method: 'POST',
       headers: this.getHeaders(provider),
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120000),
+      signal: signal || AbortSignal.timeout(120000),
     });
 
     if (!res.ok) {

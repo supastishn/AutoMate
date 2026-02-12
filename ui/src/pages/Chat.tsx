@@ -443,6 +443,23 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           timestamp: Date.now(),
         }])
       }
+      if (msg.type === 'interrupted') {
+        setTyping(false)
+        setAwaitingResponse(false)
+        awaitingResponseRef.current = false
+        // Flush any accumulated streaming content as a partial message
+        setStreaming(prev => {
+          if (prev) {
+            setMessages(msgs => [...msgs, {
+              id: makeId(),
+              role: 'assistant',
+              content: prev + '\n\n*(interrupted)*',
+              timestamp: Date.now(),
+            }])
+          }
+          return ''
+        })
+      }
       // Forward data_update events to the shared event bus
       if (msg.type === 'data_update') {
         emitDataUpdate(msg.resource, msg.data)
@@ -1042,17 +1059,34 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
               borderRadius: 6, color: '#e0e0e0', fontSize: 14, outline: 'none', fontFamily: 'inherit',
             }}
           />
-          <button
-            onClick={send}
-            disabled={!input.trim()}
-            style={{
-              padding: '10px 20px', background: input.trim() ? '#4fc3f7' : '#333', color: input.trim() ? '#000' : '#666',
-              border: 'none', borderRadius: 6, cursor: input.trim() ? 'pointer' : 'default',
-              fontWeight: 600, fontSize: 14, transition: 'all 0.15s',
-            }}
-          >
-            Send
-          </button>
+          {(awaitingResponse || streaming) ? (
+            <button
+              onClick={() => {
+                if (wsRef.current) {
+                  wsRef.current.send(JSON.stringify({ type: 'interrupt' }))
+                }
+              }}
+              style={{
+                padding: '10px 20px', background: '#f44336', color: '#fff',
+                border: 'none', borderRadius: 6, cursor: 'pointer',
+                fontWeight: 600, fontSize: 14, transition: 'all 0.15s',
+              }}
+            >
+              Stop
+            </button>
+          ) : (
+            <button
+              onClick={send}
+              disabled={!input.trim()}
+              style={{
+                padding: '10px 20px', background: input.trim() ? '#4fc3f7' : '#333', color: input.trim() ? '#000' : '#666',
+                border: 'none', borderRadius: 6, cursor: input.trim() ? 'pointer' : 'default',
+                fontWeight: 600, fontSize: 14, transition: 'all 0.15s',
+              }}
+            >
+              Send
+            </button>
+          )}
         </div>
       </div>
 
