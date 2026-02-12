@@ -19,7 +19,7 @@ let pendingReject: ((e: Error) => void) | null = null;
 
 function getEnginePath(): string {
   const __dirname = dirname(fileURLToPath(import.meta.url));
-  return join(__dirname, '..', 'browser', 'engine.py');
+  return join(__dirname, '..', '..', 'browser', 'engine.py');
 }
 
 async function ensureBrowser(): Promise<void> {
@@ -197,6 +197,8 @@ const ALL_ACTIONS = [
   'emulate_device',
   // Stealth
   'get_stealth_profile',
+  // Text-based (no selectors needed)
+  'click_text', 'find_text', 'get_interactive', 'get_aria_tree',
   // Session
   'close',
 ] as const;
@@ -239,6 +241,11 @@ export const browserTools: Tool[] = [
       'CANVAS: get_canvas_data — extract canvas element data',
       'DEVICE EMULATION: emulate_device — mobile/tablet emulation',
       'STEALTH INFO: get_stealth_profile — view current fingerprint profile',
+      'TEXT-BASED (no selectors needed — ideal for React/SPA with randomized classes):',
+      '  click_text — click element by visible text/aria-label (params: text, exact?, tag?)',
+      '  find_text — find elements by visible text/aria-label (params: text, exact?, tag?, limit?)',
+      '  get_interactive — list all clickable elements on page (buttons, links, inputs) with labels & positions',
+      '  get_aria_tree — get compact accessibility tree snapshot (params: max_depth?) — stable IDs for React apps',
       'SESSION: close — close the browser',
     ].join('\n'),
     parameters: {
@@ -251,7 +258,10 @@ export const browserTools: Tool[] = [
         url: { type: 'string', description: 'URL (for navigate, new_tab)' },
         selector: { type: 'string', description: 'CSS/XPath selector (for click, type, find, hover, etc.)' },
         by: { type: 'string', description: 'Selector strategy: css|xpath|id|class|tag|name (default: css)' },
-        text: { type: 'string', description: 'Text to type, or search query (for type, human_type, search_text, google_search, duckduckgo_search)' },
+        text: { type: 'string', description: 'Text to type, search query, or visible text to match (for type, human_type, search_text, click_text, find_text, google_search, duckduckgo_search)' },
+        exact: { type: 'boolean', description: 'Exact text match (for click_text, find_text; default false = substring match)' },
+        tag: { type: 'string', description: 'Filter by tag name (for click_text, find_text; e.g. "button", "a")' },
+        max_depth: { type: 'number', description: 'Max tree depth (for get_aria_tree; default 5)' },
         key: { type: 'string', description: 'Key to press (for press_key): enter, tab, escape, etc.' },
         keys: { type: 'string', description: 'Key combination (for key_combo): e.g. "ctrl+a", "ctrl+shift+i"' },
         direction: { type: 'string', description: 'Scroll direction: up|down|top|bottom' },
@@ -318,7 +328,7 @@ export const browserTools: Tool[] = [
 
       // Map all relevant params into the command
       const passthrough = [
-        'url', 'selector', 'by', 'text', 'key', 'keys', 'direction', 'amount',
+        'url', 'selector', 'by', 'text', 'exact', 'tag', 'max_depth', 'key', 'keys', 'direction', 'amount',
         'script', 'data', 'value', 'index', 'timeout', 'condition', 'clear_first',
         'save_path', 'file_path', 'limit', 'target_selector', 'target_by',
         'frame', 'alert_action', 'alert_text', 'name', 'cookie_name', 'cookie_value',

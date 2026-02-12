@@ -625,15 +625,11 @@ def start(config=None):
     tz_prof = _stealth_profile["timezone"]
 
     # Determine headless strategy
-    # Auto-detect Termux/Android — Xvfb is never available there
-    _is_termux = (
-        os.path.isdir("/data/data/com.termux")
-        or os.environ.get("TERMUX_VERSION")
-        or "android" in os.uname().sysname.lower()
-    )
+    # Prefer Xvfb when available (even on Termux/proot where --headless=new
+    # crashes due to GPU process failures). Only force headless=new if
+    # explicitly requested or Xvfb (pyvirtualdisplay) isn't installed.
     use_headless_new = (
         config.get("headless", os.environ.get("AUTOMATE_HEADLESS", "")) == "new"
-        or _is_termux
         or _Display is None
     )
 
@@ -1718,6 +1714,192 @@ def handle_command(cmd):
             el,
         )
         return {"success": True, "aria": aria}
+
+    # ==== Text-based interaction (no selectors needed) ====
+    elif action == "click_text":
+        # Click the first visible element whose text matches (case-insensitive substring by default)
+        target_text = cmd["text"]
+        exact = cmd.get("exact", False)
+        tag_filter = cmd.get("tag", "")  # optional: button, a, div, etc.
+        el = browser.execute_script("""
+            var text = arguments[0];
+            var exact = arguments[1];
+            var tagFilter = arguments[2];
+            var selector = tagFilter || '*';
+            var all = document.querySelectorAll(selector);
+            for (var el of all) {
+                if (el.offsetParent === null && el.tagName !== 'BODY') continue;  // skip hidden
+                var elText = (el.textContent || '').trim();
+                var ariaLabel = el.getAttribute('aria-label') || '';
+                var title = el.getAttribute('title') || '';
+                var candidate = elText || ariaLabel || title;
+                if (exact) {
+                    if (candidate === text || ariaLabel === text) return el;
+                } else {
+                    var lower = text.toLowerCase();
+                    if (candidate.toLowerCase().includes(lower) ||
+                        ariaLabel.toLowerCase().includes(lower)) return el;
+                }
+            }
+            return null;
+        """, target_text, exact, tag_filter)
+        if not el:
+            return {"success": False, "error": f'No visible element found with text "{target_text}"'}
+        _human_move_to(el)
+        time.sleep(random.uniform(0.05, 0.15))
+        el.click()
+        time.sleep(random.uniform(0.1, 0.3))
+        return {"success": True, "url": browser.current_url, "title": browser.title,
+                "clicked": el_dict(el)}
+
+    elif action == "find_text":
+        # Find all visible elements matching text — returns info for each, no selectors needed
+        target_text = cmd["text"]
+        exact = cmd.get("exact", False)
+        tag_filter = cmd.get("tag", "")
+        limit = cmd.get("limit", 10)
+        elements = browser.execute_script("""
+            var text = arguments[0];
+            var exact = arguments[1];
+            var tagFilter = arguments[2];
+            var limit = arguments[3];
+            var selector = tagFilter || '*';
+            var all = document.querySelectorAll(selector);
+            var results = [];
+            for (var el of all) {
+                if (results.length >= limit) break;
+                if (el.offsetParent === null && el.tagName !== 'BODY') continue;
+                var elText = (el.textContent || '').trim();
+                var ariaLabel = el.getAttribute('aria-label') || '';
+                var title = el.getAttribute('title') || '';
+                var candidate = elText || ariaLabel || title;
+                if (!candidate) continue;
+                var match = false;
+                if (exact) {
+                    match = (candidate === text || ariaLabel === text);
+                } else {
+                    var lower = text.toLowerCase();
+                    match = candidate.toLowerCase().includes(lower) ||
+                            ariaLabel.toLowerCase().includes(lower);
+                }
+                if (match) results.push(el);
+            }
+            return results;
+        """, target_text, exact, tag_filter, limit)
+        return {
+            "success": True,
+            "count": len(elements),
+            "elements": [el_dict(e) for e in elements],
+        }
+
+    elif action == "get_interactive":
+        # Get all interactive elements on page — buttons, links, inputs, etc.
+        # Much faster than screenshot+vision for understanding what's clickable
+        limit = cmd.get("limit", 30)
+        elements = browser.execute_script("""
+            var limit = arguments[0];
+            var selectors = 'a, button, input, textarea, select, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [tabindex], [onclick]';
+            var all = document.querySelectorAll(selectors);
+            var results = [];
+            for (var el of all) {
+                if (results.length >= limit) break;
+                if (el.offsetParent === null && el.tagName !== 'BODY') continue;
+                var text = (el.textContent || '').trim().substring(0, 100);
+                var ariaLabel = el.getAttribute('aria-label') || '';
+                var role = el.getAttribute('role') || '';
+                var tag = el.tagName.toLowerCase();
+                var type = el.getAttribute('type') || '';
+                var placeholder = el.getAttribute('placeholder') || '';
+                var href = el.getAttribute('href') || '';
+                var name = el.getAttribute('name') || '';
+                var id = el.id || '';
+                var label = text || ariaLabel || placeholder || name || id || '[unnamed]';
+                results.push({
+                    tag: tag, type: type, role: role,
+                    label: label,
+                    ariaLabel: ariaLabel,
+                    id: id, name: name,
+                    href: href ? href.substring(0, 150) : '',
+                    placeholder: placeholder,
+                    enabled: !el.disabled,
+                    rect: (function() {
+                        var r = el.getBoundingClientRect();
+                        return {x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height)};
+                    })()
+                });
+            }
+            return results;
+        """, limit)
+        return {"success": True, "count": len(elements), "elements": elements}
+
+    elif action == "get_aria_tree":
+        # Compact accessibility tree — great for React/SPA apps with randomized class names
+        max_depth = cmd.get("max_depth", 5)
+        tree = browser.execute_script("""
+            function buildTree(el, depth, maxDepth) {
+                if (depth > maxDepth) return null;
+                var role = el.getAttribute('role') || '';
+                var ariaLabel = el.getAttribute('aria-label') || '';
+                var ariaExpanded = el.getAttribute('aria-expanded');
+                var ariaSelected = el.getAttribute('aria-selected');
+                var ariaChecked = el.getAttribute('aria-checked');
+                var ariaDisabled = el.getAttribute('aria-disabled');
+                var tag = el.tagName ? el.tagName.toLowerCase() : '';
+                var text = '';
+                // Get direct text content (not children's text)
+                for (var node of el.childNodes) {
+                    if (node.nodeType === 3) text += node.textContent.trim() + ' ';
+                }
+                text = text.trim().substring(0, 80);
+
+                // Implicit roles
+                var implicitRole = '';
+                if (tag === 'button') implicitRole = 'button';
+                else if (tag === 'a' && el.href) implicitRole = 'link';
+                else if (tag === 'input') implicitRole = 'input-' + (el.type || 'text');
+                else if (tag === 'select') implicitRole = 'combobox';
+                else if (tag === 'textarea') implicitRole = 'textbox';
+                else if (tag === 'nav') implicitRole = 'navigation';
+                else if (tag === 'main') implicitRole = 'main';
+                else if (tag === 'header') implicitRole = 'banner';
+                else if (tag === 'footer') implicitRole = 'contentinfo';
+                else if (tag.match(/^h[1-6]$/)) implicitRole = 'heading';
+
+                var effectiveRole = role || implicitRole;
+                var isInteresting = effectiveRole || ariaLabel || text ||
+                    el.id || tag === 'img' || el.getAttribute('tabindex');
+
+                if (!isInteresting && el.children.length === 0) return null;
+
+                var node = {};
+                if (effectiveRole) node.role = effectiveRole;
+                if (tag) node.tag = tag;
+                if (text) node.text = text;
+                if (ariaLabel) node.label = ariaLabel;
+                if (el.id) node.id = el.id;
+                if (ariaExpanded !== null) node.expanded = ariaExpanded;
+                if (ariaSelected !== null) node.selected = ariaSelected;
+                if (ariaChecked !== null) node.checked = ariaChecked;
+                if (ariaDisabled !== null) node.disabled = ariaDisabled;
+
+                var children = [];
+                for (var child of el.children) {
+                    if (child.offsetParent === null && child.tagName !== 'BODY' &&
+                        child.tagName !== 'HEAD') continue;
+                    var c = buildTree(child, depth + 1, maxDepth);
+                    if (c) children.push(c);
+                }
+                if (children.length > 0) node.children = children;
+
+                // Skip wrapper nodes with no semantic value
+                if (!effectiveRole && !ariaLabel && !text && !el.id &&
+                    children.length === 1) return children[0];
+
+                return node;
+            }
+            return buildTree(document.body, 0, arguments[0]);
+        """, max_depth)
+        return {"success": True, "tree": tree}
 
     # ==== PDF ====
     elif action == "print_to_pdf":
