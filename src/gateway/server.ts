@@ -144,6 +144,123 @@ export class GatewayServer {
       version: '0.1.0',
     }));
 
+    // ── OpenAI-compatible API ─────────────────────────────────────────────
+    // POST /v1/chat/completions — standard OpenAI chat completions endpoint
+    this.app.post<{ Body: { messages?: any[]; stream?: boolean; model?: string } }>('/v1/chat/completions', async (req, reply) => {
+      const body = req.body;
+      const messages = body.messages || [];
+      const stream = body.stream || false;
+      const model = body.model || this.config.agent.model;
+      
+      // Extract user message from messages array
+      const userMessages = messages.filter((m: any) => m.role === 'user');
+      const lastUserMessage = userMessages[userMessages.length - 1]?.content || '';
+      
+      // Create or reuse session
+      const sessionId = `openai-api:${Date.now()}`;
+      
+      // Inject any system messages into context
+      const systemMessage = messages.find((m: any) => m.role === 'system');
+      if (systemMessage) {
+        this.sessionManager.getOrCreate('openai-api', sessionId);
+        // System message will be handled by agent's system prompt
+      }
+
+      if (stream) {
+        // SSE streaming response
+        reply.raw.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+        });
+
+        const id = `chatcmpl-${Date.now()}`;
+        let fullContent = '';
+
+        try {
+          await this.agent.processMessage(sessionId, lastUserMessage, (chunk) => {
+            fullContent += chunk;
+            const data = {
+              id,
+              object: 'chat.completion.chunk',
+              created: Math.floor(Date.now() / 1000),
+              model,
+              choices: [{
+                index: 0,
+                delta: { content: chunk },
+                finish_reason: null,
+              }],
+            };
+            reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+          });
+
+          // Send final chunk
+          const finalData = {
+            id,
+            object: 'chat.completion.chunk',
+            created: Math.floor(Date.now() / 1000),
+            model,
+            choices: [{
+              index: 0,
+              delta: {},
+              finish_reason: 'stop',
+            }],
+          };
+          reply.raw.write(`data: ${JSON.stringify(finalData)}\n\n`);
+          reply.raw.write('data: [DONE]\n\n');
+          reply.raw.end();
+        } catch (err) {
+          const errorData = { error: { message: (err as Error).message, type: 'server_error' } };
+          reply.raw.write(`data: ${JSON.stringify(errorData)}\n\n`);
+          reply.raw.end();
+        }
+        return;
+      }
+
+      // Non-streaming response
+      try {
+        const result = await this.agent.processMessage(sessionId, lastUserMessage);
+        return {
+          id: `chatcmpl-${Date.now()}`,
+          object: 'chat.completion',
+          created: Math.floor(Date.now() / 1000),
+          model,
+          choices: [{
+            index: 0,
+            message: {
+              role: 'assistant',
+              content: result.content,
+            },
+            finish_reason: 'stop',
+          }],
+          usage: result.usage ? {
+            prompt_tokens: result.usage.promptTokens,
+            completion_tokens: result.usage.completionTokens,
+            total_tokens: result.usage.totalTokens,
+          } : undefined,
+        };
+      } catch (err) {
+        return reply.code(500).send({
+          error: { message: (err as Error).message, type: 'server_error' },
+        });
+      }
+    });
+
+    // GET /v1/models — list available models
+    this.app.get('/v1/models', async () => {
+      const llm = this.agent.getLLM();
+      const providers = llm.listProviders();
+      return {
+        object: 'list',
+        data: providers.map(p => ({
+          id: p.model,
+          object: 'model',
+          created: Math.floor(Date.now() / 1000),
+          owned_by: 'automate',
+        })),
+      };
+    });
+
     // Sessions
     this.app.get('/api/sessions', async () => ({
       sessions: this.sessionManager.listSessions(),
@@ -812,6 +929,28 @@ export class GatewayServer {
         context: this.getContextInfo(sessionId),
       }));
 
+      // If connecting to an existing session with messages, send history immediately
+      const existingSession = this.sessionManager.getSession(sessionId);
+      if (existingSession && existingSession.messages.length > 0) {
+        socket.send(JSON.stringify({
+          type: 'session_loaded',
+          session_id: sessionId,
+          messages: existingSession.messages
+            .filter(m => m.role === 'user' || m.role === 'assistant' || m.role === 'system')
+            .map(m => {
+              const mapped: any = { role: m.role, content: m.content || '' };
+              if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
+                mapped.tool_calls = m.tool_calls.map(tc => ({
+                  name: tc.function?.name || tc.function,
+                  arguments: tc.function?.arguments || '',
+                }));
+              }
+              return mapped;
+            }),
+          context: this.getContextInfo(sessionId),
+        }));
+      }
+
       socket.on('message', async (data: Buffer) => {
         try {
           const msg = JSON.parse(data.toString());
@@ -868,6 +1007,18 @@ export class GatewayServer {
 
           if (msg.type === 'ping') {
             socket.send(JSON.stringify({ type: 'pong' }));
+          }
+
+          // Interrupt/abort a currently streaming response
+          if (msg.type === 'interrupt') {
+            const aborted = this.router
+              ? this.router.interruptSession(sessionId)
+              : this.agent.interruptSession(sessionId);
+            socket.send(JSON.stringify({
+              type: 'interrupted',
+              session_id: sessionId,
+              aborted,
+            }));
           }
 
           // Load/resume an existing session

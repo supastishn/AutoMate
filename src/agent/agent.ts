@@ -16,12 +16,17 @@ import { skillBuilderTools, setSkillBuilderConfig } from './tools/skill-builder.
 import { subAgentTools, setSubAgentSpawner } from './tools/subagent.js';
 import { sharedMemoryTools, setSharedMemoryDir } from './tools/shared-memory.js';
 import { pluginTools, setPluginManager, setPluginReloadCallback } from '../plugins/manager.js';
+import { ttsTools, setTTSConfig } from './tools/tts.js';
+import { gatewayTools, setGatewayControls } from './tools/gateway.js';
+import { messageTools, setMessageAgent } from './tools/message.js';
+import { agentsListTools, setAgentsRouter } from './tools/agents-list.js';
 import type { PluginManager } from '../plugins/manager.js';
 import type { PresenceManager } from '../gateway/presence.js';
 import type { SessionManager } from '../gateway/session-manager.js';
 import type { MemoryManager } from '../memory/manager.js';
 import type { Scheduler } from '../cron/scheduler.js';
 import type { SkillsLoader } from '../skills/loader.js';
+import type { AgentRouter } from '../agents/router.js';
 
 export interface AgentResponse {
   content: string;
@@ -45,6 +50,8 @@ export class Agent {
   private messageQueue: Map<string, { message: string; onStream?: StreamCallback; resolve: Function; reject: Function }[]> = new Map();
   // Per-session elevated permissions: sessionId -> elevated state
   private elevatedSessions: Set<string> = new Set();
+  // Per-session abort controllers for interrupt support
+  private abortControllers: Map<string, AbortController> = new Map();
 
   constructor(config: Config, sessionManager: SessionManager) {
     this.config = config;
@@ -202,11 +209,61 @@ export class Agent {
       }
     }
 
+    // TTS (Text-to-Speech)
+    if (config.tts?.enabled) {
+      setTTSConfig({
+        apiKey: config.tts.apiKey,
+        voice: config.tts.voice,
+        model: config.tts.model,
+        outputDir: config.tts.outputDir,
+      });
+      for (const tool of ttsTools) {
+        this.tools.registerDeferred({
+          tool,
+          summary: 'Convert text to speech audio using ElevenLabs',
+          actions: ['speak', 'voices'],
+        });
+      }
+    }
+
+    // Gateway control
+    setGatewayControls(config);
+    for (const tool of gatewayTools) {
+      this.tools.registerDeferred({
+        tool,
+        summary: 'Control gateway: view status, config, apply patches, reload',
+        actions: ['status', 'config', 'patch', 'reload'],
+      });
+    }
+
+    // Message tool (cross-session)
+    setMessageAgent(this);
+    for (const tool of messageTools) {
+      this.tools.registerDeferred({
+        tool,
+        summary: 'Send messages to other sessions or agents',
+        actions: ['send', 'broadcast'],
+      });
+    }
+
+    // Agents list
+    for (const tool of agentsListTools) {
+      this.tools.registerDeferred({
+        tool,
+        summary: 'List all configured agents in multi-agent mode',
+      });
+    }
+
     // Apply tool policy (allow/deny lists)
     this.tools.setPolicy(config.tools.allow, config.tools.deny);
 
     // Wire sub-agent spawner
     this._wireSubAgentSpawner();
+  }
+
+  /** Set agent router reference for agents_list tool */
+  setAgentRouter(router: AgentRouter | null): void {
+    setAgentsRouter(router);
   }
 
   /** Rebuild full system prompt content (base + environment + catalog + skills + memory). */
@@ -538,6 +595,10 @@ export class Agent {
       });
     }
 
+    // Create an AbortController for this session so it can be interrupted
+    const ac = new AbortController();
+    this.abortControllers.set(sessionId, ac);
+
     this.processing.add(sessionId);
     try {
       // Presence: mark as busy/typing
@@ -553,7 +614,7 @@ export class Agent {
         processedMessage = filtered;
       }
 
-      const result = await this._processMessage(sessionId, processedMessage, onStream);
+      const result = await this._processMessage(sessionId, processedMessage, onStream, ac.signal);
 
       // Plugin middleware: afterResponse
       if (this.pluginManager && result.content) {
@@ -582,15 +643,30 @@ export class Agent {
       return result;
     } finally {
       this.processing.delete(sessionId);
+      this.abortControllers.delete(sessionId);
       // Ensure presence is cleared even on error
       if (this.presenceManager) this.presenceManager.stopProcessing(sessionId);
     }
+  }
+
+  /** Interrupt/abort a currently processing session. Returns true if a request was aborted. */
+  interruptSession(sessionId: string): boolean {
+    const ac = this.abortControllers.get(sessionId);
+    if (ac) {
+      ac.abort();
+      this.abortControllers.delete(sessionId);
+      // Clear the message queue so queued messages don't fire
+      this.messageQueue.delete(sessionId);
+      return true;
+    }
+    return false;
   }
 
   private async _processMessage(
     sessionId: string,
     userMessage: string,
     onStream?: StreamCallback,
+    signal?: AbortSignal,
   ): Promise<AgentResponse> {
     const session = this.sessionManager.getOrCreate(
       sessionId.split(':')[0] || 'direct',
@@ -627,7 +703,7 @@ export class Agent {
 
       if (onStream) {
         // Streaming mode
-        const { content, toolCalls, usage } = await this.streamCompletion(messages, toolDefs, onStream);
+        const { content, toolCalls, usage } = await this.streamCompletion(messages, toolDefs, onStream, signal);
 
         if (toolCalls.length > 0) {
           // Process tool calls
@@ -680,7 +756,7 @@ export class Agent {
         return { content: content || '', toolCalls: toolCallResults, usage };
       } else {
         // Non-streaming mode
-        const response = await this.llm.chat(messages, toolDefs);
+        const response = await this.llm.chat(messages, toolDefs, undefined, signal);
         const choice = response.choices[0];
         const msg = choice.message;
 
@@ -743,11 +819,12 @@ export class Agent {
     messages: LLMMessage[],
     toolDefs: any[],
     onStream: StreamCallback,
+    signal?: AbortSignal,
   ): Promise<{ content: string; toolCalls: any[]; usage?: any }> {
     let content = '';
     const toolCalls: Map<number, { id: string; type: string; function: { name: string; arguments: string } }> = new Map();
 
-    for await (const chunk of this.llm.chatStream(messages, toolDefs)) {
+    for await (const chunk of this.llm.chatStream(messages, toolDefs, signal)) {
       const delta = chunk.choices[0]?.delta;
       if (!delta) continue;
 
@@ -892,7 +969,117 @@ export class Agent {
       return this._handleHeartbeatCommand(parts[1]);
     }
 
+    // /think [level] — set thinking/reasoning level
+    if (parts[0] === '/think') {
+      return this._handleThinkCommand(parts[1]);
+    }
+
+    // /verbose on|off — toggle verbose output
+    if (parts[0] === '/verbose') {
+      return this._handleVerboseCommand(sessionId, parts[1]);
+    }
+
+    // /usage [off|tokens|full] — toggle usage footer display
+    if (parts[0] === '/usage') {
+      return this._handleUsageCommand(sessionId, parts[1]);
+    }
+
+    // /repair — repair broken tool pairs in current session
+    if (cmd === '/repair') {
+      const removed = this.sessionManager.repairToolPairs(sessionId);
+      if (removed > 0) {
+        return `Repaired session: removed ${removed} orphaned tool messages.`;
+      }
+      return 'No orphaned tool messages found.';
+    }
+
+    // /help — list all available commands
+    if (cmd === '/help') {
+      return [
+        'Available commands:',
+        '  /new, /reset — reset session',
+        '  /status — show session status',
+        '  /compact [instructions] — compact session with AI summary',
+        '  /session main — toggle this as main session',
+        '  /elevated on|off — toggle elevated permissions',
+        '  /model [name|index] — list/switch models',
+        '  /context — show context diagnostics',
+        '  /index on|off|status|rebuild — manage semantic indexing',
+        '  /heartbeat on|off|status|now|force — manage heartbeat',
+        '  /think off|minimal|low|medium|high — set thinking level',
+        '  /verbose on|off — toggle verbose output',
+        '  /usage off|tokens|full — toggle usage display',
+        '  /repair — repair broken tool pairs',
+        '  /factory-reset — wipe all data',
+        '  /help — show this help',
+      ].join('\n');
+    }
+
     return null; // not a command
+  }
+
+  // Per-session settings
+  private sessionSettings: Map<string, { verbose?: boolean; usage?: 'off' | 'tokens' | 'full' }> = new Map();
+
+  /** Handle /think command */
+  private _handleThinkCommand(arg?: string): string {
+    const levels = ['off', 'minimal', 'low', 'medium', 'high'] as const;
+    const current = this.config.agent.thinkingLevel || 'off';
+
+    if (!arg || arg === 'status') {
+      return `Thinking level: ${current}\nValid levels: ${levels.join(', ')}`;
+    }
+
+    if (!levels.includes(arg as any)) {
+      return `Invalid thinking level "${arg}". Valid: ${levels.join(', ')}`;
+    }
+
+    // Update config (runtime only, doesn't persist)
+    (this.config.agent as any).thinkingLevel = arg;
+    return `Thinking level set to: ${arg}`;
+  }
+
+  /** Handle /verbose command */
+  private _handleVerboseCommand(sessionId: string, arg?: string): string {
+    const settings = this.sessionSettings.get(sessionId) || {};
+
+    if (!arg || arg === 'status') {
+      return `Verbose: ${settings.verbose ? 'ON' : 'OFF'}\nUsage: /verbose on|off`;
+    }
+
+    if (arg === 'on') {
+      settings.verbose = true;
+      this.sessionSettings.set(sessionId, settings);
+      return 'Verbose mode ENABLED. Tool calls will show detailed output.';
+    } else if (arg === 'off') {
+      settings.verbose = false;
+      this.sessionSettings.set(sessionId, settings);
+      return 'Verbose mode DISABLED.';
+    }
+
+    return 'Usage: /verbose on|off';
+  }
+
+  /** Handle /usage command */
+  private _handleUsageCommand(sessionId: string, arg?: string): string {
+    const settings = this.sessionSettings.get(sessionId) || {};
+
+    if (!arg || arg === 'status') {
+      return `Usage display: ${settings.usage || 'off'}\nOptions: off, tokens, full`;
+    }
+
+    if (arg === 'off' || arg === 'tokens' || arg === 'full') {
+      settings.usage = arg;
+      this.sessionSettings.set(sessionId, settings);
+      return `Usage display set to: ${arg}`;
+    }
+
+    return 'Usage: /usage off|tokens|full';
+  }
+
+  /** Get session settings for a session */
+  getSessionSettings(sessionId: string): { verbose?: boolean; usage?: 'off' | 'tokens' | 'full' } {
+    return this.sessionSettings.get(sessionId) || {};
   }
 
   /** Build context diagnostics showing token usage */

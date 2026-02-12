@@ -105,6 +105,7 @@ export class AgentRouter {
       tools: profile.tools ? {
         allow: profile.tools.allow || [],
         deny: profile.tools.deny || [],
+        requireApproval: [],
       } : this.baseConfig.tools,
     };
 
@@ -214,6 +215,15 @@ export class AgentRouter {
 
     const result = await managed.agent.processMessage(sessionId, message, onStream);
     return { ...result, agentName: managed.name };
+  }
+
+  /** Interrupt/abort a currently processing session across all agents. */
+  interruptSession(sessionId: string): boolean {
+    // Try every agent (the session could be on any of them)
+    for (const [, managed] of this.agents) {
+      if (managed.agent.interruptSession(sessionId)) return true;
+    }
+    return false;
   }
 
   /** Handle a slash command, routing to correct agent */
