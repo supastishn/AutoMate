@@ -18,7 +18,7 @@ interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
   content: string
-  toolCalls?: { name: string; result: string }[]
+  toolCalls?: { name: string; result: string; arguments?: string }[]
   images?: { url?: string; base64?: string; mimeType: string; alt?: string; filename?: string }[]
   reactions?: string[]
   timestamp: number
@@ -45,11 +45,40 @@ function renderMarkdown(text: string): React.ReactNode[] {
       }
       i++ // skip closing ```
       const code = codeLines.join('\n')
+      const isHtml = lang.toLowerCase() === 'html'
+      const codeKey = key++
       nodes.push(
-        <div key={key++} style={{ margin: '8px 0' }}>
-          {lang && <div style={{ fontSize: 10, color: '#888', padding: '2px 10px', background: '#1a1a2e', borderRadius: '4px 4px 0 0', borderBottom: '1px solid #333' }}>{lang}</div>}
+        <div key={codeKey} style={{ margin: '8px 0' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 10, color: '#888', padding: '2px 10px', background: '#1a1a2e', borderRadius: '4px 4px 0 0', borderBottom: '1px solid #333' }}>
+            <span>{lang || 'code'}</span>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {isHtml && (
+                <button
+                  data-html-preview={code}
+                  style={{
+                    background: '#2a1a3e', color: '#ce93d8', border: '1px solid #4a2a6a',
+                    borderRadius: 3, padding: '1px 8px', cursor: 'pointer', fontSize: 10,
+                    fontWeight: 600, transition: 'all 0.15s',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = '#3a2a5e'; e.currentTarget.style.color = '#e0b0ff' }}
+                  onMouseLeave={e => { e.currentTarget.style.background = '#2a1a3e'; e.currentTarget.style.color = '#ce93d8' }}
+                >
+                  ▶ Preview HTML
+                </button>
+              )}
+              <button
+                onClick={() => navigator.clipboard.writeText(code)}
+                style={{
+                  background: 'none', color: '#666', border: '1px solid #333',
+                  borderRadius: 3, padding: '1px 6px', cursor: 'pointer', fontSize: 10,
+                }}
+              >
+                Copy
+              </button>
+            </div>
+          </div>
           <pre style={{
-            margin: 0, padding: 12, background: '#0d0d0d', borderRadius: lang ? '0 0 4px 4px' : 4,
+            margin: 0, padding: 12, background: '#0d0d0d', borderRadius: '0 0 4px 4px',
             fontSize: 12, lineHeight: 1.6, overflow: 'auto', border: '1px solid #2a2a2a',
             fontFamily: '"Fira Code", "JetBrains Mono", monospace',
           }}>
@@ -128,20 +157,11 @@ function renderMarkdown(text: string): React.ReactNode[] {
       i++; continue
     }
 
-    // Tool usage marker: [used tool: toolName]
+    // Tool usage marker: [used tool: toolName] — render a placeholder that gets
+    // replaced with the accordion by renderContentWithTools()
     if (line.match(/^\[used tool: .+\]$/)) {
       const toolName = line.replace(/^\[used tool: /, '').replace(/\]$/, '')
-      nodes.push(
-        <div key={key++} style={{
-          display: 'inline-flex', alignItems: 'center', gap: 6,
-          margin: '6px 0', padding: '4px 10px', background: '#1a1a2e',
-          border: '1px solid #2a2a4a', borderRadius: 16, fontSize: 11,
-          color: '#8888cc', fontFamily: 'monospace',
-        }}>
-          <span style={{ color: '#6a6aaa' }}>&#9881;</span>
-          <span>used tool: <span style={{ color: '#4fc3f7', fontWeight: 600 }}>{toolName}</span></span>
-        </div>
-      )
+      nodes.push(<div key={key++} data-tool-placeholder={toolName} />)
       i++; continue
     }
 
@@ -253,6 +273,63 @@ function highlightCode(code: string, lang: string): React.ReactNode {
   return <>{parts}</>
 }
 
+/** Render a single tool call accordion button + expandable details */
+function ToolAccordion({ t, toolKey, isExpanded, onToggle }: {
+  t: { name: string; arguments?: string; result: string }
+  toolKey: string
+  isExpanded: boolean
+  onToggle: () => void
+}) {
+  return (
+    <div style={{ marginBottom: 4 }}>
+      <div
+        onClick={onToggle}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer',
+          padding: '3px 8px', background: '#1a1a2e', borderRadius: 4,
+          border: '1px solid #2a2a4a', userSelect: 'none',
+        }}
+      >
+        <span style={{
+          display: 'inline-block', fontSize: 9, color: '#888',
+          transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+          transition: 'transform 0.15s',
+        }}>▶</span>
+        <span style={{ color: '#6a6aaa' }}>⚙</span>
+        <span style={{ color: '#4fc3f7', fontWeight: 600, fontFamily: 'monospace' }}>{t.name}</span>
+      </div>
+      {isExpanded && (
+        <div style={{
+          marginTop: 4, marginLeft: 12, padding: '6px 10px',
+          background: '#0d0d0d', borderRadius: 4, border: '1px solid #1a1a2e',
+          fontFamily: '"Fira Code", "JetBrains Mono", monospace', fontSize: 11,
+          maxHeight: 200, overflow: 'auto',
+        }}>
+          {t.arguments && (
+            <div style={{ marginBottom: t.result ? 6 : 0 }}>
+              <div style={{ color: '#888', marginBottom: 2, fontSize: 10 }}>Arguments:</div>
+              <pre style={{ margin: 0, color: '#d19a66', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                {(() => { try { return JSON.stringify(JSON.parse(t.arguments!), null, 2) } catch { return t.arguments } })()}
+              </pre>
+            </div>
+          )}
+          {t.result && (
+            <div>
+              <div style={{ color: '#888', marginBottom: 2, fontSize: 10 }}>Result:</div>
+              <pre style={{ margin: 0, color: '#98c379', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                {t.result.length > 2000 ? t.result.slice(0, 2000) + '…' : t.result}
+              </pre>
+            </div>
+          )}
+          {!t.arguments && !t.result && (
+            <div style={{ color: '#555', fontStyle: 'italic' }}>No details available</div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 interface HeartbeatActivity {
   sessionId: string
   content: string
@@ -280,15 +357,56 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
   const [showSlashMenu, setShowSlashMenu] = useState(false)
   const [slashFilter, setSlashFilter] = useState('')
   const [heartbeat, setHeartbeat] = useState<HeartbeatActivity | null>(null)
+  const [hideHeartbeats, setHideHeartbeats] = useState(() => localStorage.getItem('automate_hide_heartbeats') === 'true')
   const [awaitingResponse, setAwaitingResponse] = useState(false)
+  const [htmlPreview, setHtmlPreview] = useState<string | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const msgIdRef = useRef(0)
   const awaitingResponseRef = useRef(false)
-
+  const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({})
+  const pendingToolCallsRef = useRef<{ name: string; arguments?: string; result: string }[]>([])
+  const [streamingToolCalls, setStreamingToolCalls] = useState<{ name: string; arguments?: string; result: string }[]>([])
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
+  const [editingContent, setEditingContent] = useState('')
   const makeId = () => `msg_${++msgIdRef.current}_${Date.now()}`
+
+  /** Render markdown content with tool accordions inline where [used tool: X] markers appear */
+  const renderContentWithTools = (
+    text: string,
+    toolCalls: { name: string; arguments?: string; result: string }[] | undefined,
+    keyPrefix: string,
+  ) => {
+    const nodes = renderMarkdown(text)
+    if (!toolCalls || toolCalls.length === 0) return nodes
+    // Map tool names to their data (use first match, consume in order)
+    const toolQueue = [...toolCalls]
+    return nodes.map((node, i) => {
+      // Check if this node is a tool placeholder <div data-tool-placeholder="toolName" />
+      if (React.isValidElement(node) && (node.props as any)?.['data-tool-placeholder']) {
+        const name = (node.props as any)['data-tool-placeholder'] as string
+        const idx = toolQueue.findIndex(t => t.name === name)
+        const tc = idx >= 0 ? toolQueue.splice(idx, 1)[0] : null
+        if (tc) {
+          const toolKey = `${keyPrefix}:${i}`
+          return (
+            <ToolAccordion
+              key={toolKey}
+              t={tc}
+              toolKey={toolKey}
+              isExpanded={expandedTools[toolKey] || false}
+              onToggle={() => setExpandedTools(prev => ({ ...prev, [toolKey]: !prev[toolKey] }))}
+            />
+          )
+        }
+        // No matching tool data — show placeholder text
+        return <div key={i} style={{ color: '#888', fontSize: 11, fontFamily: 'monospace', margin: '4px 0' }}>⚙ {name}</div>
+      }
+      return node
+    })
+  }
 
   useEffect(() => {
     connect()
@@ -357,6 +475,13 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
       if (msg.type === 'connected') {
         setCurrentSessionId(msg.session_id)
         if (msg.context) setContextInfo(msg.context)
+        // If the server is still processing this session (e.g. page refresh mid-stream),
+        // show the thinking indicator immediately
+        if (msg.processing) {
+          setAwaitingResponse(true)
+          awaitingResponseRef.current = true
+          setTyping(true)
+        }
         setMessages(prev => [...prev, {
           id: makeId(),
           role: 'system',
@@ -367,37 +492,61 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
       if (msg.type === 'session_loaded') {
         setCurrentSessionId(msg.session_id)
         if (msg.context) setContextInfo(msg.context)
-        // Replace messages with loaded session history
-        // Skip assistant messages that are just tool call containers with no text content
-        const loaded: ChatMessage[] = (msg.messages || [])
-          .filter((m: any) => {
-            // Skip system messages from loaded history
-            if (m.role === 'system') return false
-            // Skip blank assistant messages that only had tool_calls and no content
-            if (m.role === 'assistant' && !m.content && (!m.tool_calls || m.tool_calls.length === 0)) return false
-            return true
-          })
-          .map((m: any) => {
-            // For assistant messages with tool_calls, show tool usage info
-            let content = m.content || ''
+        // Merge consecutive assistant messages into one: tool-call-only messages
+        // get folded into the previous assistant message (tools belong to that turn).
+        const rawMsgs = (msg.messages || []).filter((m: any) => m.role !== 'system')
+        const merged: ChatMessage[] = []
+
+        for (const m of rawMsgs) {
+          if (m.role === 'assistant') {
             const toolCalls = m.tool_calls
-              ? m.tool_calls.map((tc: any) => ({ name: tc.name, result: '' }))
-              : undefined
-            // If assistant message has no text but has tool calls, synthesize a description
-            if (!content && toolCalls && toolCalls.length > 0) {
-              content = toolCalls.map((tc: any) => `[used tool: ${tc.name}]`).join('\n')
+              ? m.tool_calls.map((tc: any) => ({ name: tc.name, result: tc.result || '', arguments: tc.arguments || '' }))
+              : []
+            // Inject [used tool: X] markers if toolCalls exist but markers don't
+            // (markers are streamed to UI but not stored in session)
+            let content = (m.content || '').trim()
+            if (toolCalls.length > 0) {
+              const markers = toolCalls
+                .filter(tc => !content.includes(`[used tool: ${tc.name}]`))
+                .map(tc => `[used tool: ${tc.name}]`)
+                .join('\n')
+              if (markers) {
+                content = markers + (content ? '\n\n' + content : '')
+              }
             }
-            return {
+
+            // If the last merged message is also assistant, merge into it
+            const last = merged[merged.length - 1]
+            if (last && last.role === 'assistant') {
+              if (toolCalls.length > 0) {
+                last.toolCalls = [...(last.toolCalls || []), ...toolCalls]
+              }
+              if (content) {
+                last.content = last.content ? last.content + '\n\n' + content : content
+              }
+            } else {
+              // New assistant message
+              merged.push({
+                id: makeId(),
+                role: 'assistant',
+                content,
+                toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+                timestamp: Date.now(),
+              })
+            }
+          } else {
+            merged.push({
               id: makeId(),
-              role: m.role as 'user' | 'assistant',
-              content,
-              toolCalls,
+              role: m.role as 'user',
+              content: m.content || '',
               timestamp: Date.now(),
-            }
-          })
+            })
+          }
+        }
+
         setMessages([
           { id: makeId(), role: 'system', content: `Loaded session: ${msg.session_id}`, timestamp: Date.now() },
-          ...loaded,
+          ...merged,
         ])
         setStreaming('')
       }
@@ -413,20 +562,34 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         setStreaming(prev => prev + msg.content)
         setTyping(false)
       }
+      // Tool call completed during streaming — accumulate for the final message
+      // Also update state so tool calls render live in the streaming bubble
+      if (msg.type === 'tool_call') {
+        const tc = { name: msg.name, arguments: msg.arguments, result: msg.result || '' }
+        pendingToolCallsRef.current.push(tc)
+        setStreamingToolCalls(prev => [...prev, tc])
+      }
       if (msg.type === 'response') {
         setTyping(false)
         setAwaitingResponse(false)
         awaitingResponseRef.current = false
         if (msg.context) setContextInfo(msg.context)
+        // Merge tool calls: prefer real-time events (have results) over final summary
+        const toolCalls = pendingToolCallsRef.current.length > 0
+          ? pendingToolCallsRef.current
+          : msg.tool_calls
+        pendingToolCallsRef.current = []
+        setStreamingToolCalls([])
         // Use accumulated streaming content if available — msg.content only has the
         // final LLM response (after tool calls), so it would wipe earlier streamed text.
         setStreaming(prev => {
-          const finalContent = prev || msg.content || ''
+          // Keep [used tool: X] markers — renderContentWithTools replaces them with accordions
+          const finalContent = (prev || msg.content || '').trim()
           setMessages(msgs => [...msgs, {
             id: makeId(),
             role: 'assistant',
             content: finalContent,
-            toolCalls: msg.tool_calls,
+            toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined,
             timestamp: Date.now(),
           }])
           return ''
@@ -491,6 +654,18 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           setTimeout(() => setHeartbeat(null), 8000)
         }
       }
+      // Handle heartbeat streaming chunks
+      if (msg.type === 'heartbeat_stream') {
+        setHeartbeat(prev => prev ? {
+          ...prev,
+          content: (prev.content || '') + (msg.chunk || ''),
+        } : {
+          sessionId: msg.sessionId || '',
+          content: msg.chunk || '',
+          status: 'running',
+          timestamp: msg.timestamp || Date.now(),
+        })
+      }
       // Handle image events
       if (msg.type === 'image') {
         const imgData = {
@@ -518,6 +693,42 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           }]
         })
       }
+      // Handle messages_updated (after delete/edit)
+      if (msg.type === 'messages_updated') {
+        setCurrentSessionId(msg.session_id)
+        if (msg.context) setContextInfo(msg.context)
+        const loaded: ChatMessage[] = (msg.messages || [])
+          .filter((m: any) => m.role !== 'system')
+          .map((m: any) => ({
+            id: makeId(),
+            role: m.role as 'user' | 'assistant',
+            content: m.content || '',
+            toolCalls: m.tool_calls?.map((tc: any) => ({ name: tc.name, arguments: tc.arguments, result: tc.result || '' })),
+            timestamp: Date.now(),
+          }))
+        setMessages(loaded)
+        setEditingMessageId(null)
+        setEditingContent('')
+      }
+      // Handle retry_complete (after retry)
+      if (msg.type === 'retry_complete') {
+        setTyping(false)
+        setAwaitingResponse(false)
+        awaitingResponseRef.current = false
+        if (msg.context) setContextInfo(msg.context)
+        // Reload all messages from server
+        const loaded: ChatMessage[] = (msg.messages || [])
+          .filter((m: any) => m.role !== 'system')
+          .map((m: any) => ({
+            id: makeId(),
+            role: m.role as 'user' | 'assistant',
+            content: m.content || '',
+            toolCalls: m.tool_calls?.map((tc: any) => ({ name: tc.name, arguments: tc.arguments, result: tc.result || '' })),
+            timestamp: Date.now(),
+          }))
+        setMessages(loaded)
+        setStreaming('')
+      }
     }
 
     wsRef.current = ws
@@ -529,9 +740,53 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
     wsRef.current.send(JSON.stringify({ type: 'message', content: input }))
     setInput('')
     setStreaming('')
+    pendingToolCallsRef.current = []
+    setStreamingToolCalls([])
     setAwaitingResponse(true)
     awaitingResponseRef.current = true
     inputRef.current?.focus()
+  }
+
+  // Find the server-side index for a message by its local id
+  const findServerIndex = (msgId: string): number => {
+    // Filter out system messages (they're not sent to server in mapSessionMessages)
+    const nonSystemMessages = messages.filter(m => m.role !== 'system')
+    const localIdx = nonSystemMessages.findIndex(m => m.id === msgId)
+    return localIdx
+  }
+
+  const deleteMessage = (msgId: string) => {
+    const idx = findServerIndex(msgId)
+    if (idx < 0 || !wsRef.current) return
+    wsRef.current.send(JSON.stringify({ type: 'delete_message', index: idx }))
+  }
+
+  const startEditMessage = (msgId: string, content: string) => {
+    setEditingMessageId(msgId)
+    setEditingContent(content)
+  }
+
+  const saveEditMessage = () => {
+    if (!editingMessageId || !wsRef.current) return
+    const idx = findServerIndex(editingMessageId)
+    if (idx < 0) return
+    wsRef.current.send(JSON.stringify({ type: 'edit_message', index: idx, content: editingContent }))
+  }
+
+  const cancelEdit = () => {
+    setEditingMessageId(null)
+    setEditingContent('')
+  }
+
+  const retryMessage = (msgId: string) => {
+    const idx = findServerIndex(msgId)
+    if (idx < 0 || !wsRef.current) return
+    setStreaming('')
+    pendingToolCallsRef.current = []
+    setStreamingToolCalls([])
+    setAwaitingResponse(true)
+    awaitingResponseRef.current = true
+    wsRef.current.send(JSON.stringify({ type: 'retry_message', index: idx }))
   }
 
   const handleFileUpload = async (files: FileList | null) => {
@@ -702,6 +957,18 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           }}>
             {elevated ? '\u{1F6E1}\uFE0F' : '\u{1F512}'}
           </button>
+          {/* Heartbeat visibility toggle */}
+          <button onClick={() => {
+            const next = !hideHeartbeats
+            setHideHeartbeats(next)
+            localStorage.setItem('automate_hide_heartbeats', String(next))
+          }} title={hideHeartbeats ? 'Heartbeats: Hidden' : 'Heartbeats: Visible'} style={{
+            padding: '4px 10px', background: hideHeartbeats ? '#2e1a1a' : '#1a1a2e',
+            color: hideHeartbeats ? '#f48' : '#ce93d8', border: `1px solid ${hideHeartbeats ? '#4a2a2a' : '#333'}`,
+            borderRadius: 4, cursor: 'pointer', fontSize: 13,
+          }}>
+            {hideHeartbeats ? '💔' : '💜'}
+          </button>
           {/* Model picker */}
           <div style={{ position: 'relative' }}>
             <button onClick={() => setShowModelPicker(!showModelPicker)} style={{
@@ -813,8 +1080,14 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
             animation: heartbeat.status === 'running' ? 'pulse 1.5s infinite' : 'none',
           }} />
           <span style={{ color: '#ce93d8', fontWeight: 600, fontFamily: 'monospace' }}>Heartbeat</span>
-          {heartbeat.status === 'running' && (
+          {heartbeat.status === 'running' && !heartbeat.content && (
             <span style={{ color: '#888' }}>Checking...</span>
+          )}
+          {heartbeat.status === 'running' && heartbeat.content && (
+            <span style={{ color: '#ce93d8', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {heartbeat.content.slice(0, 200)}{heartbeat.content.length > 200 ? '...' : ''}
+              <span style={{ animation: 'blink 1s infinite', color: '#ce93d8' }}>|</span>
+            </span>
           )}
           {heartbeat.status === 'ok-empty' && (
             <span style={{ color: '#81c784' }}>All clear (empty response)</span>
@@ -839,9 +1112,83 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         </div>
       )}
 
+      {/* HTML Preview Modal */}
+      {htmlPreview && (
+        <div
+          onClick={() => setHtmlPreview(null)}
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,0.8)', zIndex: 1000,
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              width: '90%', maxWidth: 1000, height: '80%',
+              background: '#fff', borderRadius: 12, overflow: 'hidden',
+              display: 'flex', flexDirection: 'column',
+              boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+            }}
+          >
+            <div style={{
+              padding: '8px 16px', background: '#1a1a2e',
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              borderBottom: '1px solid #333',
+            }}>
+              <span style={{ fontSize: 13, color: '#4fc3f7', fontWeight: 600 }}>HTML Preview</span>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  onClick={() => {
+                    const w = window.open('', '_blank')
+                    if (w) { w.document.write(htmlPreview); w.document.close() }
+                  }}
+                  style={{
+                    padding: '3px 10px', background: '#2a2a4a', color: '#4fc3f7',
+                    border: '1px solid #4fc3f7', borderRadius: 4, cursor: 'pointer', fontSize: 11,
+                  }}
+                >
+                  Open in tab
+                </button>
+                <button
+                  onClick={() => setHtmlPreview(null)}
+                  style={{
+                    padding: '3px 10px', background: '#2a1a1a', color: '#f44',
+                    border: '1px solid #f44', borderRadius: 4, cursor: 'pointer', fontSize: 11,
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            <iframe
+              srcDoc={htmlPreview}
+              style={{ flex: 1, border: 'none', background: '#fff' }}
+              sandbox="allow-scripts"
+              title="HTML Preview"
+            />
+          </div>
+        </div>
+      )}
+
       {/* Messages */}
-      <div style={{ flex: 1, overflow: 'auto', padding: 20, display: 'flex', flexDirection: 'column', gap: 4 }}>
-        {messages.map((m) => (
+      <div
+        onClick={e => {
+          const btn = (e.target as HTMLElement).closest('[data-html-preview]') as HTMLElement | null
+          if (btn) {
+            setHtmlPreview(btn.getAttribute('data-html-preview') || '')
+          }
+        }}
+        style={{ flex: 1, overflow: 'auto', padding: 20, display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {messages.filter((m) => {
+          if (!hideHeartbeats) return true
+          // Hide heartbeat-related messages: HEARTBEAT_OK responses or [HEARTBEAT CHECK] prompts
+          const content = m.content.trim()
+          if (content === 'HEARTBEAT_OK' || content.includes('HEARTBEAT_OK')) return false
+          if (content.startsWith('[HEARTBEAT CHECK]') || content.endsWith('[HEARTBEAT CHECK]')) return false
+          if (content.startsWith('[HEARTBEAT]') || content.endsWith('[HEARTBEAT]')) return false
+          return true
+        }).map((m) => (
           <div key={m.id} style={msgStyle(m.role)}>
             {/* Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
@@ -851,19 +1198,56 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
                   {new Date(m.timestamp).toLocaleTimeString()}
                 </span>
               </span>
-              {m.role === 'assistant' && (
+              {/* Action buttons for user and assistant messages */}
+              {(m.role === 'user' || m.role === 'assistant') && m.id !== editingMessageId && (
                 <div style={{ display: 'flex', gap: 4 }}>
-                  <button onClick={() => copyMessage(m.content)} title="Copy" style={{
-                    background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 12, padding: '2px 4px',
-                  }}>Copy</button>
+                  {m.role === 'assistant' && (
+                    <button onClick={() => copyMessage(m.content)} title="Copy" style={{
+                      background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 11, padding: '2px 4px',
+                    }}>Copy</button>
+                  )}
+                  <button onClick={() => startEditMessage(m.id, m.content)} title="Edit" style={{
+                    background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 11, padding: '2px 4px',
+                  }}>Edit</button>
+                  <button onClick={() => retryMessage(m.id)} title="Retry" style={{
+                    background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 11, padding: '2px 4px',
+                  }}>Retry</button>
+                  <button onClick={() => deleteMessage(m.id)} title="Delete" style={{
+                    background: 'none', border: 'none', color: '#a55', cursor: 'pointer', fontSize: 11, padding: '2px 4px',
+                  }}>Del</button>
                 </div>
               )}
             </div>
 
-            {/* Content */}
-            <div style={{ fontFamily: m.role === 'user' ? 'inherit' : 'inherit' }}>
-              {m.role === 'assistant' ? renderMarkdown(m.content) : m.content}
-            </div>
+            {/* Content - show edit textarea if editing this message */}
+            {editingMessageId === m.id ? (
+              <div>
+                <textarea
+                  value={editingContent}
+                  onChange={e => setEditingContent(e.target.value)}
+                  style={{
+                    width: '100%', minHeight: 80, padding: 8,
+                    background: '#1a1a1a', border: '1px solid #4fc3f7', borderRadius: 4,
+                    color: '#e0e0e0', fontSize: 13, fontFamily: 'inherit', resize: 'vertical',
+                  }}
+                  autoFocus
+                />
+                <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  <button onClick={saveEditMessage} style={{
+                    padding: '4px 12px', background: '#4fc3f7', color: '#000',
+                    border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                  }}>Save</button>
+                  <button onClick={cancelEdit} style={{
+                    padding: '4px 12px', background: '#333', color: '#888',
+                    border: '1px solid #444', borderRadius: 4, cursor: 'pointer', fontSize: 12,
+                  }}>Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontFamily: m.role === 'user' ? 'inherit' : 'inherit' }}>
+                {m.role === 'assistant' ? renderContentWithTools(m.content, m.toolCalls, m.id) : m.content}
+              </div>
+            )}
 
             {/* Images */}
             {m.images && m.images.length > 0 && (
@@ -890,14 +1274,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
               </div>
             )}
 
-            {/* Tool calls */}
-            {m.toolCalls && m.toolCalls.length > 0 && (
-              <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #222', fontSize: 11, color: '#666' }}>
-                Tools: {m.toolCalls.map(t => (
-                  <span key={t.name} style={{ background: '#1a1a2e', padding: '1px 6px', borderRadius: 3, marginRight: 4, color: '#4fc3f7' }}>{t.name}</span>
-                ))}
-              </div>
-            )}
+
 
             {/* Quick actions */}
             {m.role === 'assistant' && m.content && (
@@ -947,17 +1324,17 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           </div>
         ))}
 
-        {/* Streaming message */}
-        {streaming && (
+        {/* Streaming message — tool accordions render inline where [used tool: X] markers appear */}
+        {(streaming || streamingToolCalls.length > 0) && (
           <div style={msgStyle('assistant')}>
             <div style={{ fontSize: 10, color: '#666', marginBottom: 6 }}>AutoMate</div>
-            <div>{renderMarkdown(streaming)}</div>
+            <div>{renderContentWithTools(streaming, streamingToolCalls, 'streaming')}</div>
             <span style={{ animation: 'blink 1s infinite', color: '#4fc3f7' }}>|</span>
           </div>
         )}
 
         {/* Typing indicator */}
-        {typing && !streaming && (
+        {typing && !streaming && streamingToolCalls.length === 0 && (
           <div style={{ ...msgStyle('assistant'), color: '#666' }}>
             <div style={{ fontSize: 10, color: '#666', marginBottom: 4 }}>AutoMate</div>
             <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
