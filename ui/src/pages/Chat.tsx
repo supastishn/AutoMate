@@ -928,12 +928,14 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
     position: 'relative',
   })
 
-  /** Detect heartbeat-related messages */
+  /** Detect heartbeat-related messages and pre-compaction memory flush messages */
   const isHeartbeatMsg = (m: ChatMessage): boolean => {
     const c = m.content.trim()
     if (c === 'HEARTBEAT_OK' || c.includes('HEARTBEAT_OK')) return true
     if (c.startsWith('[HEARTBEAT CHECK]') || c.endsWith('[HEARTBEAT CHECK]')) return true
     if (c.startsWith('[HEARTBEAT]') || c.endsWith('[HEARTBEAT]')) return true
+    // Pre-compaction memory flush messages
+    if (c.startsWith('[MEMORY FLUSH]') || c === 'MEMORY_FLUSH_OK' || c.includes('MEMORY_FLUSH_OK')) return true
     return false
   }
 
