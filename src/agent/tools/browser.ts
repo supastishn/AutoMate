@@ -17,6 +17,14 @@ let browserStarted = false;
 let pendingResolve: ((v: string) => void) | null = null;
 let pendingReject: ((e: Error) => void) | null = null;
 
+// Browser config (set from outside via setBrowserConfig)
+let browserProfileDir: string = '';
+
+/** Configure the browser profile directory for session persistence (cookies, logins, etc.) */
+export function setBrowserConfig(opts: { profileDir?: string }): void {
+  if (opts.profileDir) browserProfileDir = opts.profileDir;
+}
+
 function getEnginePath(): string {
   const __dirname = dirname(fileURLToPath(import.meta.url));
   return join(__dirname, '..', '..', 'browser', 'engine.py');
@@ -27,9 +35,12 @@ async function ensureBrowser(): Promise<void> {
 
   return new Promise((resolve, reject) => {
     const enginePath = getEnginePath();
+    const spawnEnv: Record<string, string> = { ...process.env } as Record<string, string>;
+    if (browserProfileDir) spawnEnv.AUTOMATE_PROFILE_DIR = browserProfileDir;
+
     pyProc = spawn('python3', [enginePath], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env },
+      env: spawnEnv,
     });
 
     responseBuffer = '';

@@ -3,7 +3,7 @@ import { LLMClient, type LLMMessage, type StreamChunk } from './llm-client.js';
 import { ToolRegistry, type ToolContext, type Tool, type SessionToolView, type ToolRegistryStats } from './tool-registry.js';
 import { bashTool } from './tools/bash.js';
 import { readFileTool, writeFileTool, editFileTool, applyPatchTool, hashlineEditTool } from './tools/files.js';
-import { browserTools } from './tools/browser.js';
+import { browserTools, setBrowserConfig } from './tools/browser.js';
 import { sessionTools, setSessionManager, setAgent } from './tools/sessions.js';
 import { memoryTools, setMemoryManager } from './tools/memory.js';
 import { webTools } from './tools/web.js';
@@ -123,6 +123,7 @@ export class Agent {
 
     // Browser automation
     if (config.browser.enabled) {
+      setBrowserConfig({ profileDir: config.browser.profileDir });
       for (const tool of browserTools) {
         this.tools.registerDeferred({
           tool,
