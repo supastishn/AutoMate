@@ -666,6 +666,12 @@ export class Agent {
       this.elevatedSessions.add(sessionId);
     }
 
+    // Auto-promote essential deferred tools for automated sessions so they're immediately usable
+    // (webchat users can call load_tool themselves; subagents inherit from parent)
+    if (this.isAutomatedSession(sessionId)) {
+      this.autoPromoteToolsForSession(sessionId);
+    }
+
     // If session is busy, queue the message
     if (this.processing.has(sessionId)) {
       return new Promise((resolve, reject) => {
@@ -1449,6 +1455,56 @@ export class Agent {
     // BUT we also need to allow webchat:heartbeat which is already covered above
     if (!sessionId.startsWith('webchat:')) return true;
     return false;
+  }
+
+  /** Auto-promote essential deferred tools for automated sessions.
+   *  This ensures heartbeat, cron, and plugin-triggered sessions have access
+   *  to commonly needed tools without requiring manual load_tool calls. */
+  private autoPromoteToolsForSession(sessionId: string): void {
+    const sessionView = this.tools.getSessionView(sessionId);
+
+    // Essential tools that automated sessions commonly need:
+    // - web: search and fetch for information gathering
+    // - process: background process management
+    // - subagent: spawning sub-agents for complex tasks
+    // - session: send messages to other sessions
+    // - cron: schedule tasks
+    // - image: image analysis/generation if needed
+    // - shared_memory: cross-session data sharing
+    // - message: cross-session messaging
+    const essentialTools = [
+      'web',
+      'process',
+      'subagent',
+      'subagent_poll',
+      'subagent_finish',
+      'session',
+      'cron',
+      'image',
+      'shared_memory',
+      'message',
+      'skill_builder',
+      'clawhub',
+      'canvas',
+      'tts',
+      'browser',
+      'gateway_control',
+    ];
+
+    for (const toolName of essentialTools) {
+      // Only promote if the tool exists in deferred pool
+      if (this.tools.isDeferredGlobal(toolName)) {
+        sessionView.promote(toolName);
+      }
+    }
+
+    // Also auto-promote ALL plugin-provided tools (they have "Plugin tool:" summary prefix)
+    // This ensures plugin tools are available without manual load_tool
+    for (const entry of this.tools.getGlobalDeferredCatalog()) {
+      if (entry.summary.startsWith('Plugin tool:')) {
+        sessionView.promote(entry.tool.name);
+      }
+    }
   }
 
   /** Elevate a session programmatically (e.g. for heartbeat/cron) */
