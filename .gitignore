@@ -1,13 +1,31 @@
+# Dependencies
 node_modules/
+ui/node_modules/
+
+# Build output
 dist/
 ui/dist/
-ui/node_modules/
-*.log
-.env
+
+# Config & data (user-specific)
 .automate/
+.env
+.env.*
+
+# Browser engine
 __pycache__/
 *.pyc
-selenium_mcp/.ruff_cache/
-selenium_mcp/__pycache__/
-selenium_mcp/mcps/discord/__pycache__/
+selenium_mcp/
+
+# Editor/IDE
 .cecli*
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

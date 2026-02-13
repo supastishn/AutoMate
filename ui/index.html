@@ -5,8 +5,55 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AutoMate</title>
   <style>
+    :root {
+      /* Dark theme defaults (will be overridden by JS) */
+      --bgPrimary: #0a0a0a;
+      --bgSecondary: #111;
+      --bgTertiary: #1a1a2e;
+      --bgCard: #141414;
+      --bgHover: #1a1a1a;
+      --bgActive: #1a1a2e;
+      --bgOverlay: rgba(0,0,0,0.5);
+      --textPrimary: #e0e0e0;
+      --textSecondary: #888;
+      --textMuted: #555;
+      --textAccent: #4fc3f7;
+      --border: #222;
+      --borderLight: #333;
+      --borderFocus: #4fc3f7;
+      --accent: #4fc3f7;
+      --accentHover: #81d4fa;
+      --accentMuted: rgba(79,195,247,0.1);
+      --success: #4caf50;
+      --error: #f44336;
+      --warning: #ff9800;
+      --info: #2196f3;
+      --inputBg: #181818;
+      --inputBorder: #333;
+      --inputText: #e0e0e0;
+      --inputPlaceholder: #666;
+      --scrollbarTrack: #1a1a1a;
+      --scrollbarThumb: #333;
+      --shadow: rgba(0,0,0,0.5);
+      --shadowLight: rgba(0,0,0,0.3);
+      --accentContrast: #000;
+      --successContrast: #000;
+      --bgSuccess: #0d1f0d;
+      --bgWarning: #1f1a0d;
+      --theme-mode: dark;
+    }
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #e0e0e0; }
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; 
+      background: var(--bgPrimary); 
+      color: var(--textPrimary);
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+    /* Global scrollbar styling */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: var(--scrollbarTrack); }
+    ::-webkit-scrollbar-thumb { background: var(--scrollbarThumb); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--textSecondary); }
   </style>
 </head>
 <body>

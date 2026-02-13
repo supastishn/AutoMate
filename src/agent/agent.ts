@@ -13,7 +13,7 @@ import { processTools } from './tools/process.js';
 import { canvasTools, setCanvasBroadcaster } from '../canvas/canvas-manager.js';
 import { clawHubTools, setClawHubConfig } from '../clawhub/registry.js';
 import { skillBuilderTools, setSkillBuilderConfig } from './tools/skill-builder.js';
-import { subAgentTools, setSubAgentSpawner } from './tools/subagent.js';
+import { subAgentTools, setSubAgentSpawner, isSubAgentFinished, consumeSubAgentFinish } from './tools/subagent.js';
 import { sharedMemoryTools, setSharedMemoryDir } from './tools/shared-memory.js';
 import { pluginTools, setPluginManager, setPluginReloadCallback } from '../plugins/manager.js';
 import { ttsTools, setTTSConfig } from './tools/tts.js';
@@ -231,12 +231,14 @@ export class Agent {
       });
     }
 
-    // Sub-agents
+    // Sub-agents (subagent + subagent_poll + subagent_finish)
     for (const tool of subAgentTools) {
-      this.tools.registerDeferred({
-        tool,
-        summary: 'Spawn autonomous sub-agents to handle tasks in parallel',
-      });
+      const summary = tool.name === 'subagent_poll'
+        ? 'Check status and results of parallel sub-agents (list, check by ID, clear)'
+        : tool.name === 'subagent_finish'
+        ? 'Signal that you (a sub-agent) have completed your task and return a final result'
+        : 'Spawn autonomous sub-agents — blocking (wait) or parallel (background, poll later)';
+      this.tools.registerDeferred({ tool, summary });
     }
 
     // Shared memory
@@ -578,50 +580,56 @@ export class Agent {
       const sessionId = `subagent:${opts.name}:${Date.now()}`;
       const startTime = Date.now();
 
-      // Build system prompt for the sub-agent
-      const subPrompt = opts.systemPrompt
-        ? `${opts.systemPrompt}\n\nYou are a sub-agent named "${opts.name}". Complete the task below and provide a clear, concise final answer.`
-        : `You are a sub-agent named "${opts.name}". Complete the task below and provide a clear, concise final answer.`;
-
-      // Temporarily inject system prompt
-      const originalPrompt = this.config.agent.systemPrompt;
-
-      if (!opts.reportBack) {
-        // Fire and forget
-        this.processMessage(sessionId, opts.task).catch(() => {});
-        return {
-          agentId: sessionId,
-          name: opts.name,
-          status: 'completed',
-          output: 'Running in background.',
-          toolCalls: [],
-          duration: 0,
-        };
+      // Inherit promoted tools from parent session (so subagents get plugin tools etc.)
+      if (opts.parentSessionId) {
+        const parentView = this.tools.getSessionView(opts.parentSessionId);
+        const subView = this.tools.getSessionView(sessionId);
+        for (const toolName of parentView.getPromotedNames()) {
+          subView.promote(toolName);
+        }
+        // Also promote subagent_finish so the subagent can signal completion
+        subView.promote('subagent_finish');
       }
 
-      // Wait for result with timeout
+      // Build system prompt for the sub-agent
+      const subPrompt = opts.systemPrompt
+        ? `${opts.systemPrompt}\n\nYou are a sub-agent named "${opts.name}". You have access to all tools (already loaded — no need to call load_tool). When you are DONE with your task, you MUST call the subagent_finish tool with your final result. Do NOT just respond with text — always finish by calling subagent_finish.`
+        : `You are a sub-agent named "${opts.name}". You have access to all tools (already loaded — no need to call load_tool). When you are DONE with your task, you MUST call the subagent_finish tool with your final result. Do NOT just respond with text — always finish by calling subagent_finish.`;
+
+      const taskWithPrompt = `[System: ${subPrompt}]\n\n${opts.task}`;
+
       try {
         const result = await Promise.race([
-          this.processMessage(sessionId, `[System: ${subPrompt}]\n\n${opts.task}`),
+          this.processMessage(sessionId, taskWithPrompt),
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error('timeout')), opts.timeout || 300000)
           ),
         ]);
 
+        // Check if subagent_finish was called — use its result as the output
+        const finishResult = consumeSubAgentFinish(sessionId);
+
+        // Clean up session view
+        this.tools.clearSessionView(sessionId);
+
         return {
           agentId: sessionId,
           name: opts.name,
-          status: 'completed',
-          output: result.content,
+          status: 'completed' as const,
+          output: finishResult || result.content,
           toolCalls: result.toolCalls,
           duration: Date.now() - startTime,
         };
       } catch (err) {
         const isTimeout = (err as Error).message === 'timeout';
+        // Clean up
+        consumeSubAgentFinish(sessionId);
+        this.tools.clearSessionView(sessionId);
+
         return {
           agentId: sessionId,
           name: opts.name,
-          status: isTimeout ? 'timeout' : 'error',
+          status: isTimeout ? 'timeout' as const : 'error' as const,
           output: isTimeout ? 'Sub-agent timed out.' : `Error: ${(err as Error).message}`,
           toolCalls: [],
           duration: Date.now() - startTime,
@@ -778,6 +786,9 @@ export class Agent {
         // Streaming mode
         const { content, toolCalls, usage } = await this.streamCompletion(messages, toolDefs, onStream, signal);
 
+        // Store actual API-reported token usage for accurate context tracking
+        if (usage) this.sessionManager.setSessionTokens(sessionId, usage);
+
         if (toolCalls.length > 0) {
           // Process tool calls
           this.sessionManager.addMessage(sessionId, {
@@ -823,6 +834,18 @@ export class Agent {
         }
 
         // Final response (no tool calls)
+        // For subagent sessions: if subagent_finish hasn't been called, nudge to continue
+        if (sessionId.startsWith('subagent:') && !isSubAgentFinished(sessionId)) {
+          if (content) {
+            this.sessionManager.addMessage(sessionId, { role: 'assistant', content });
+          }
+          this.sessionManager.addMessage(sessionId, {
+            role: 'user',
+            content: 'Continue working. When you are done, call the subagent_finish tool with your final result.',
+          });
+          continue;
+        }
+
         if (content) {
           this.sessionManager.addMessage(sessionId, { role: 'assistant', content });
           this.sessionManager.saveSession(sessionId);
@@ -834,6 +857,15 @@ export class Agent {
         const response = await this.llm.chat(messages, toolDefs, undefined, signal);
         const choice = response.choices[0];
         const msg = choice.message;
+
+        // Store actual API-reported token usage for accurate context tracking
+        if (response.usage) {
+          this.sessionManager.setSessionTokens(sessionId, {
+            promptTokens: response.usage.prompt_tokens,
+            completionTokens: response.usage.completion_tokens,
+            totalTokens: response.usage.total_tokens,
+          });
+        }
 
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           this.sessionManager.addMessage(sessionId, {
@@ -872,6 +904,19 @@ export class Agent {
         }
 
         const content = msg.content || '';
+
+        // For subagent sessions: if subagent_finish hasn't been called, nudge to continue
+        if (sessionId.startsWith('subagent:') && !isSubAgentFinished(sessionId)) {
+          if (content) {
+            this.sessionManager.addMessage(sessionId, { role: 'assistant', content });
+          }
+          this.sessionManager.addMessage(sessionId, {
+            role: 'user',
+            content: 'Continue working. When you are done, call the subagent_finish tool with your final result.',
+          });
+          continue;
+        }
+
         if (content) {
           this.sessionManager.addMessage(sessionId, { role: 'assistant', content });
           this.sessionManager.saveSession(sessionId);
@@ -897,11 +942,21 @@ export class Agent {
     toolDefs: any[],
     onStream: StreamCallback,
     signal?: AbortSignal,
-  ): Promise<{ content: string; toolCalls: any[]; usage?: any }> {
+  ): Promise<{ content: string; toolCalls: any[]; usage?: { promptTokens: number; completionTokens: number; totalTokens: number } }> {
     let content = '';
+    let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined;
     const toolCalls: Map<number, { id: string; type: string; function: { name: string; arguments: string } }> = new Map();
 
     for await (const chunk of this.llm.chatStream(messages, toolDefs, signal)) {
+      // Capture usage from the final chunk (sent when stream_options.include_usage is true)
+      if (chunk.usage) {
+        usage = {
+          promptTokens: chunk.usage.prompt_tokens,
+          completionTokens: chunk.usage.completion_tokens,
+          totalTokens: chunk.usage.total_tokens,
+        };
+      }
+
       const delta = chunk.choices[0]?.delta;
       if (!delta) continue;
 
@@ -930,6 +985,7 @@ export class Agent {
     return {
       content,
       toolCalls: Array.from(toolCalls.values()),
+      usage,
     };
   }
 

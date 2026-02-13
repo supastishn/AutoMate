@@ -1,6 +1,7 @@
 import React, { useState, useEffect, Suspense, lazy } from 'react'
 import Dashboard from './pages/Dashboard'
 import Chat from './pages/Chat'
+import { useTheme, useColors } from './ThemeContext'
 
 const Canvas = lazy(() => import('./pages/Canvas'))
 const Sessions = lazy(() => import('./pages/Sessions'))
@@ -14,8 +15,9 @@ const Settings = lazy(() => import('./pages/Settings'))
 const Doctor = lazy(() => import('./pages/Doctor'))
 
 function LoadingFallback() {
+  const colors = useColors()
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: colors.textSecondary }}>
       Loading...
     </div>
   )
@@ -44,6 +46,8 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [isMobile, setIsMobile] = useState(false)
   const [loadSessionId, setLoadSessionId] = useState<string | null>(null)
+  const { mode, toggleTheme } = useTheme()
+  const colors = useColors()
 
   useEffect(() => {
     const check = () => {
@@ -57,15 +61,15 @@ export default function App() {
   }, [])
 
   return (
-    <div style={{ display: 'flex', height: '100vh', background: '#0a0a0a', color: '#e0e0e0', overflow: 'hidden' }}>
+    <div style={{ display: 'flex', height: '100vh', background: colors.bgPrimary, color: colors.textPrimary, overflow: 'hidden' }}>
       {/* Mobile menu toggle */}
       {isMobile && (
         <button
           onClick={() => setSidebarOpen(!sidebarOpen)}
           style={{
             position: 'fixed', top: 10, left: 10, zIndex: 100,
-            background: '#1a1a2e', border: '1px solid #333', borderRadius: 6,
-            color: '#4fc3f7', padding: '6px 10px', cursor: 'pointer', fontSize: 18,
+            background: colors.bgTertiary, border: `1px solid ${colors.borderLight}`, borderRadius: 6,
+            color: colors.accent, padding: '6px 10px', cursor: 'pointer', fontSize: 18,
           }}
         >
           {sidebarOpen ? '\u2715' : '\u2630'}
@@ -75,8 +79,8 @@ export default function App() {
       {/* Sidebar */}
       <div style={{
         width: isMobile ? 200 : 220,
-        background: '#111',
-        borderRight: '1px solid #222',
+        background: colors.bgSecondary,
+        borderRight: `1px solid ${colors.border}`,
         display: 'flex',
         flexDirection: 'column',
         padding: '16px 0',
@@ -85,19 +89,37 @@ export default function App() {
         top: 0, bottom: 0,
         zIndex: 50,
         transition: 'left 0.2s ease',
-        boxShadow: isMobile && sidebarOpen ? '4px 0 20px rgba(0,0,0,0.5)' : 'none',
+        boxShadow: isMobile && sidebarOpen ? `4px 0 20px ${colors.shadow}` : 'none',
       }}>
-        <div style={{ padding: '0 20px 20px', fontSize: 20, fontWeight: 700, color: '#4fc3f7', letterSpacing: 1 }}>
-          AutoMate
+        <div style={{ padding: '0 20px 12px', fontSize: 20, fontWeight: 700, color: colors.accent, letterSpacing: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span>AutoMate</span>
+          <button
+            onClick={toggleTheme}
+            title={`Switch to ${mode === 'dark' ? 'light' : 'dark'} mode`}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              fontSize: 18,
+              cursor: 'pointer',
+              padding: '4px 8px',
+              borderRadius: 4,
+              color: colors.textSecondary,
+              transition: 'color 0.15s',
+            }}
+            onMouseOver={e => (e.currentTarget.style.color = colors.accent)}
+            onMouseOut={e => (e.currentTarget.style.color = colors.textSecondary)}
+          >
+            {mode === 'dark' ? '\u2600\uFE0F' : '\u{1F319}'}
+          </button>
         </div>
         {tabs.map(t => (
           <div
             key={t}
             style={{
               padding: '10px 20px', cursor: 'pointer',
-              background: tab === t ? '#1a1a2e' : 'transparent',
-              borderLeft: tab === t ? '3px solid #4fc3f7' : '3px solid transparent',
-              color: tab === t ? '#4fc3f7' : '#888', fontSize: 14,
+              background: tab === t ? colors.bgActive : 'transparent',
+              borderLeft: tab === t ? `3px solid ${colors.accent}` : '3px solid transparent',
+              color: tab === t ? colors.accent : colors.textSecondary, fontSize: 14,
               fontWeight: tab === t ? 600 : 400,
               transition: 'all 0.15s',
               display: 'flex', alignItems: 'center', gap: 10,
@@ -109,7 +131,7 @@ export default function App() {
           </div>
         ))}
         <div style={{ flex: 1 }} />
-        <div style={{ padding: '10px 20px', fontSize: 11, color: '#555' }}>v0.1.0</div>
+        <div style={{ padding: '10px 20px', fontSize: 11, color: colors.textMuted }}>v0.1.0</div>
       </div>
 
       {/* Overlay for mobile sidebar */}
@@ -117,7 +139,7 @@ export default function App() {
         <div
           onClick={() => setSidebarOpen(false)}
           style={{
-            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+            position: 'fixed', inset: 0, background: colors.bgOverlay,
             zIndex: 40,
           }}
         />

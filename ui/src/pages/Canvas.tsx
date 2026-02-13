@@ -1,5 +1,6 @@
-import React, { useEffect, useRef, useState, useMemo } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { marked } from 'marked'
+import { useColors } from '../ThemeContext'
 
 interface CanvasData {
   id: string
@@ -10,6 +11,7 @@ interface CanvasData {
 }
 
 export default function Canvas() {
+  const colors = useColors()
   const [canvases, setCanvases] = useState<CanvasData[]>([])
   const [activeIdx, setActiveIdx] = useState(0)
   const [connected, setConnected] = useState(false)
@@ -64,11 +66,11 @@ export default function Canvas() {
   const renderContent = () => {
     if (!canvas || !canvas.content) {
       return (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#555' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: colors.textMuted }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontSize: 48, marginBottom: 16, opacity: 0.3 }}>&#9634;</div>
             <div style={{ fontSize: 16 }}>Canvas is empty</div>
-            <div style={{ fontSize: 13, marginTop: 8, color: '#444' }}>
+            <div style={{ fontSize: 13, marginTop: 8, color: colors.textMuted }}>
               The agent can push content here using canvas_push
             </div>
           </div>
@@ -93,12 +95,12 @@ export default function Canvas() {
     if (canvas.contentType === 'code') {
       return (
         <div style={{ height: '100%', overflow: 'auto' }}>
-          <div style={{ padding: '4px 12px', background: '#1a1a2e', borderBottom: '1px solid #333', fontSize: 11, color: '#888' }}>
+          <div style={{ padding: '4px 12px', background: colors.bgTertiary, borderBottom: `1px solid ${colors.borderLight}`, fontSize: 11, color: colors.textSecondary }}>
             {canvas.language || 'code'}
           </div>
           <pre style={{
             margin: 0, padding: 16, fontSize: 13, lineHeight: 1.6,
-            fontFamily: '"Fira Code", monospace', color: '#e0e0e0', whiteSpace: 'pre-wrap',
+            fontFamily: '"Fira Code", monospace', color: colors.textPrimary, whiteSpace: 'pre-wrap',
             wordBreak: 'break-word',
           }}>
             {canvas.content}
@@ -113,7 +115,7 @@ export default function Canvas() {
       return (
         <pre style={{
           margin: 0, padding: 16, fontSize: 13, lineHeight: 1.6,
-          fontFamily: 'monospace', color: '#a5d6a7', whiteSpace: 'pre-wrap',
+          fontFamily: 'monospace', color: colors.syntaxString, whiteSpace: 'pre-wrap',
           overflow: 'auto', height: '100%',
         }}>
           {formatted}
@@ -128,7 +130,7 @@ export default function Canvas() {
           className="canvas-markdown"
           style={{
             padding: 24, fontSize: 14, lineHeight: 1.8,
-            color: '#e0e0e0', overflow: 'auto', height: '100%',
+            color: colors.textPrimary, overflow: 'auto', height: '100%',
             wordBreak: 'break-word',
           }}
           dangerouslySetInnerHTML={{ __html: html }}
@@ -140,7 +142,7 @@ export default function Canvas() {
       <div style={{
         padding: 24, fontSize: 14, lineHeight: 1.8,
         fontFamily: canvas.contentType === 'text' ? 'monospace' : 'inherit',
-        color: '#e0e0e0', overflow: 'auto', height: '100%',
+        color: colors.textPrimary, overflow: 'auto', height: '100%',
         whiteSpace: 'pre-wrap', wordBreak: 'break-word',
       }}>
         {canvas.content}
@@ -153,51 +155,51 @@ export default function Canvas() {
       <style>{`
         .canvas-markdown h1, .canvas-markdown h2, .canvas-markdown h3,
         .canvas-markdown h4, .canvas-markdown h5, .canvas-markdown h6 {
-          color: #4fc3f7; margin: 0.8em 0 0.4em; line-height: 1.3;
+          color: var(--accent); margin: 0.8em 0 0.4em; line-height: 1.3;
         }
-        .canvas-markdown h1 { font-size: 1.8em; border-bottom: 1px solid #333; padding-bottom: 0.3em; }
-        .canvas-markdown h2 { font-size: 1.4em; border-bottom: 1px solid #222; padding-bottom: 0.2em; }
+        .canvas-markdown h1 { font-size: 1.8em; border-bottom: 1px solid var(--borderLight); padding-bottom: 0.3em; }
+        .canvas-markdown h2 { font-size: 1.4em; border-bottom: 1px solid var(--border); padding-bottom: 0.2em; }
         .canvas-markdown h3 { font-size: 1.15em; }
         .canvas-markdown p { margin: 0.6em 0; }
-        .canvas-markdown a { color: #4fc3f7; text-decoration: none; }
+        .canvas-markdown a { color: var(--accent); text-decoration: none; }
         .canvas-markdown a:hover { text-decoration: underline; }
         .canvas-markdown code {
-          background: #1a1a2e; padding: 2px 6px; border-radius: 3px;
-          font-family: "Fira Code", monospace; font-size: 0.9em; color: #ce93d8;
+          background: var(--bgTertiary); padding: 2px 6px; border-radius: 3px;
+          font-family: "Fira Code", monospace; font-size: 0.9em; color: var(--heartbeat);
         }
         .canvas-markdown pre {
-          background: #111; border: 1px solid #222; border-radius: 6px;
+          background: var(--bgSecondary); border: 1px solid var(--border); border-radius: 6px;
           padding: 14px; overflow-x: auto; margin: 0.8em 0;
         }
         .canvas-markdown pre code {
-          background: none; padding: 0; color: #e0e0e0; font-size: 13px;
+          background: none; padding: 0; color: var(--textPrimary); font-size: 13px;
         }
         .canvas-markdown blockquote {
-          border-left: 3px solid #4fc3f7; margin: 0.8em 0; padding: 0.4em 1em;
-          color: #aaa; background: #0d0d1a;
+          border-left: 3px solid var(--accent); margin: 0.8em 0; padding: 0.4em 1em;
+          color: var(--textSecondary); background: var(--bgTertiary);
         }
         .canvas-markdown ul, .canvas-markdown ol { padding-left: 1.5em; margin: 0.5em 0; }
         .canvas-markdown li { margin: 0.3em 0; }
         .canvas-markdown table { border-collapse: collapse; width: 100%; margin: 0.8em 0; }
         .canvas-markdown th, .canvas-markdown td {
-          border: 1px solid #333; padding: 8px 12px; text-align: left;
+          border: 1px solid var(--borderLight); padding: 8px 12px; text-align: left;
         }
-        .canvas-markdown th { background: #1a1a2e; color: #4fc3f7; }
-        .canvas-markdown hr { border: none; border-top: 1px solid #333; margin: 1.2em 0; }
+        .canvas-markdown th { background: var(--bgTertiary); color: var(--accent); }
+        .canvas-markdown hr { border: none; border-top: 1px solid var(--borderLight); margin: 1.2em 0; }
         .canvas-markdown img { max-width: 100%; border-radius: 4px; }
       `}</style>
       {/* Header */}
       <div style={{
-        padding: '12px 20px', borderBottom: '1px solid #222',
+        padding: '12px 20px', borderBottom: `1px solid ${colors.border}`,
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ width: 8, height: 8, borderRadius: '50%', background: connected ? '#4caf50' : '#f44' }} />
-          <span style={{ fontSize: 14, fontWeight: 600 }}>
+          <div style={{ width: 8, height: 8, borderRadius: '50%', background: connected ? colors.success : colors.error }} />
+          <span style={{ fontSize: 14, fontWeight: 600, color: colors.textPrimary }}>
             {canvas?.title || 'Canvas'}
           </span>
           {canvas && (
-            <span style={{ fontSize: 11, color: '#666', marginLeft: 8 }}>
+            <span style={{ fontSize: 11, color: colors.inputPlaceholder, marginLeft: 8 }}>
               {canvas.contentType}{canvas.language ? ` (${canvas.language})` : ''}
               {' \u00B7 '}
               {canvas.content.length} chars
@@ -211,9 +213,9 @@ export default function Canvas() {
               key={c.id}
               onClick={() => setActiveIdx(i)}
               style={{
-                padding: '2px 10px', background: i === activeIdx ? '#1a1a2e' : 'transparent',
-                color: i === activeIdx ? '#4fc3f7' : '#666',
-                border: i === activeIdx ? '1px solid #4fc3f7' : '1px solid #333',
+                padding: '2px 10px', background: i === activeIdx ? colors.bgTertiary : 'transparent',
+                color: i === activeIdx ? colors.accent : colors.inputPlaceholder,
+                border: i === activeIdx ? `1px solid ${colors.accent}` : `1px solid ${colors.borderLight}`,
                 borderRadius: 4, cursor: 'pointer', fontSize: 11,
               }}
             >
@@ -229,8 +231,8 @@ export default function Canvas() {
                 }
               }}
               style={{
-                padding: '4px 12px', background: '#1a1a2e', color: '#4fc3f7',
-                border: '1px solid #333', borderRadius: 4, cursor: 'pointer', fontSize: 12,
+                padding: '4px 12px', background: colors.bgTertiary, color: colors.accent,
+                border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12,
               }}
             >
               Open in tab
@@ -245,20 +247,20 @@ export default function Canvas() {
                 }
               }}
               style={{
-                padding: '4px 12px', background: '#2a1a3e', color: '#ce93d8',
-                border: '1px solid #4a2a6a', borderRadius: 4, cursor: 'pointer', fontSize: 12,
+                padding: '4px 12px', background: colors.bgTertiary, color: colors.heartbeat,
+                border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12,
                 fontWeight: 600,
               }}
             >
-              ▶ Preview HTML
+              Preview HTML
             </button>
           )}
           {canvas && (
             <button
               onClick={() => { if (canvas) navigator.clipboard.writeText(canvas.content) }}
               style={{
-                padding: '4px 12px', background: '#1a1a2e', color: '#888',
-                border: '1px solid #333', borderRadius: 4, cursor: 'pointer', fontSize: 12,
+                padding: '4px 12px', background: colors.bgTertiary, color: colors.textSecondary,
+                border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12,
               }}
             >
               Copy
@@ -268,7 +270,7 @@ export default function Canvas() {
       </div>
 
       {/* Canvas content area */}
-      <div style={{ flex: 1, overflow: 'hidden', background: '#0d0d0d' }}>
+      <div style={{ flex: 1, overflow: 'hidden', background: colors.bgSecondary }}>
         {renderContent()}
       </div>
 
@@ -278,7 +280,7 @@ export default function Canvas() {
           onClick={() => setHtmlPreview(null)}
           style={{
             position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-            background: 'rgba(0,0,0,0.8)', zIndex: 1000,
+            background: colors.bgOverlay, zIndex: 1000,
             display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
           }}
         >
@@ -288,15 +290,15 @@ export default function Canvas() {
               width: '90%', maxWidth: 1000, height: '80%',
               background: '#fff', borderRadius: 12, overflow: 'hidden',
               display: 'flex', flexDirection: 'column',
-              boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+              boxShadow: `0 20px 60px ${colors.shadow}`,
             }}
           >
             <div style={{
-              padding: '8px 16px', background: '#1a1a2e',
+              padding: '8px 16px', background: colors.bgTertiary,
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              borderBottom: '1px solid #333',
+              borderBottom: `1px solid ${colors.borderLight}`,
             }}>
-              <span style={{ fontSize: 13, color: '#4fc3f7', fontWeight: 600 }}>HTML Preview</span>
+              <span style={{ fontSize: 13, color: colors.accent, fontWeight: 600 }}>HTML Preview</span>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button
                   onClick={() => {
@@ -304,8 +306,8 @@ export default function Canvas() {
                     if (w) { w.document.write(htmlPreview); w.document.close() }
                   }}
                   style={{
-                    padding: '3px 10px', background: '#2a2a4a', color: '#4fc3f7',
-                    border: '1px solid #4fc3f7', borderRadius: 4, cursor: 'pointer', fontSize: 11,
+                    padding: '3px 10px', background: colors.bgActive, color: colors.accent,
+                    border: `1px solid ${colors.accent}`, borderRadius: 4, cursor: 'pointer', fontSize: 11,
                   }}
                 >
                   Open in tab
@@ -313,8 +315,8 @@ export default function Canvas() {
                 <button
                   onClick={() => setHtmlPreview(null)}
                   style={{
-                    padding: '3px 10px', background: '#2a1a1a', color: '#f44',
-                    border: '1px solid #f44', borderRadius: 4, cursor: 'pointer', fontSize: 11,
+                    padding: '3px 10px', background: colors.bgDanger, color: colors.error,
+                    border: `1px solid ${colors.error}`, borderRadius: 4, cursor: 'pointer', fontSize: 11,
                   }}
                 >
                   Close

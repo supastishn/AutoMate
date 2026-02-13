@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { onDataUpdate } from '../hooks/useDataUpdates'
+import { useColors } from '../ThemeContext'
 
 // ── Types matching /api/dashboard response ──────────────────────────────
 
@@ -69,48 +70,54 @@ interface InlineStatus {
   type: 'success' | 'error'
 }
 
-// ── Styles ──────────────────────────────────────────────────────────────
+// ── Styles (theme-dependent, constructed per-render) ────────────────────
 
-const card: React.CSSProperties = {
-  background: '#141414', border: '1px solid #222', borderRadius: 8,
-  padding: 16, marginBottom: 12,
-}
-const sectionTitle: React.CSSProperties = {
-  fontSize: 13, color: '#888', marginBottom: 8, fontWeight: 600,
-  textTransform: 'uppercase' as const, letterSpacing: 1,
-}
-const statNum: React.CSSProperties = { fontSize: 26, fontWeight: 700 }
-const statLabel: React.CSSProperties = { fontSize: 11, color: '#888', marginTop: 2 }
-const pill: React.CSSProperties = {
-  display: 'inline-block', padding: '2px 8px', borderRadius: 12,
-  fontSize: 11, margin: '2px 3px', background: '#1a2a3a', color: '#4fc3f7',
-}
-const pillGreen: React.CSSProperties = { ...pill, background: '#1a2e1a', color: '#4caf50' }
-const pillRed: React.CSSProperties = { ...pill, background: '#2e1a1a', color: '#f44336' }
-const mono: React.CSSProperties = { fontFamily: 'monospace', fontSize: 12, color: '#aaa' }
-const grid2: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }
-const grid3: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }
+type C = Record<string, string>
 
-const overlay: React.CSSProperties = {
-  position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-  background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)',
-  display: 'flex', alignItems: 'center', justifyContent: 'center',
-  zIndex: 1000,
-}
-const modal: React.CSSProperties = {
-  background: '#1a1a1a', border: '1px solid #333', borderRadius: 12,
-  padding: 24, maxWidth: 600, width: '90%', maxHeight: '80vh',
-  overflowY: 'auto', position: 'relative',
-}
-const statusBadge = (status: string): React.CSSProperties => {
-  const isOk = status === 'ok-empty' || status === 'ok-token' || status === 'skipped'
-  const isFail = status === 'failed'
-  return {
-    display: 'inline-block', padding: '2px 8px', borderRadius: 10,
-    fontSize: 10, fontWeight: 600, textTransform: 'uppercase' as const,
-    background: isOk ? '#1a2e1a' : isFail ? '#2e1a1a' : '#1a2a3a',
-    color: isOk ? '#4caf50' : isFail ? '#f44336' : '#4fc3f7',
+function makeStyles(colors: C) {
+  const card: React.CSSProperties = {
+    background: colors.bgCard, border: `1px solid ${colors.border}`, borderRadius: 8,
+    padding: 16, marginBottom: 12,
   }
+  const sectionTitle: React.CSSProperties = {
+    fontSize: 13, color: colors.textSecondary, marginBottom: 8, fontWeight: 600,
+    textTransform: 'uppercase' as const, letterSpacing: 1,
+  }
+  const statNum: React.CSSProperties = { fontSize: 26, fontWeight: 700 }
+  const statLabel: React.CSSProperties = { fontSize: 11, color: colors.textSecondary, marginTop: 2 }
+  const pill: React.CSSProperties = {
+    display: 'inline-block', padding: '2px 8px', borderRadius: 12,
+    fontSize: 11, margin: '2px 3px', background: colors.accentMuted, color: colors.accent,
+  }
+  const pillGreen: React.CSSProperties = { ...pill, background: colors.bgHover, color: '#4caf50' }
+  const pillRed: React.CSSProperties = { ...pill, background: colors.bgHover, color: '#f44336' }
+  const mono: React.CSSProperties = { fontFamily: 'monospace', fontSize: 12, color: colors.textSecondary }
+  const grid2: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }
+  const grid3: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }
+
+  const overlay: React.CSSProperties = {
+    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+    background: colors.bgOverlay, backdropFilter: 'blur(4px)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    zIndex: 1000,
+  }
+  const modal: React.CSSProperties = {
+    background: colors.bgCard, border: `1px solid ${colors.borderLight}`, borderRadius: 12,
+    padding: 24, maxWidth: 600, width: '90%', maxHeight: '80vh',
+    overflowY: 'auto', position: 'relative',
+  }
+  const statusBadge = (status: string): React.CSSProperties => {
+    const isOk = status === 'ok-empty' || status === 'ok-token' || status === 'skipped'
+    const isFail = status === 'failed'
+    return {
+      display: 'inline-block', padding: '2px 8px', borderRadius: 10,
+      fontSize: 10, fontWeight: 600, textTransform: 'uppercase' as const,
+      background: isOk ? colors.bgHover : isFail ? colors.bgHover : colors.accentMuted,
+      color: isOk ? '#4caf50' : isFail ? '#f44336' : colors.accent,
+    }
+  }
+
+  return { card, sectionTitle, statNum, statLabel, pill, pillGreen, pillRed, mono, grid2, grid3, overlay, modal, statusBadge }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -156,7 +163,8 @@ function fmtDate(ts: number): string {
 
 // ── Heartbeat Detail Modal ───────────────────────────────────────────
 
-function HeartbeatModal({ entry, onClose }: { entry: HeartbeatLogEntry; onClose: () => void }) {
+function HeartbeatModal({ entry, onClose, styles, colors }: { entry: HeartbeatLogEntry; onClose: () => void; styles: ReturnType<typeof makeStyles>; colors: C }) {
+  const { overlay, modal, statusBadge, mono } = styles
   const statusLabel: Record<string, string> = {
     'ok-empty': 'OK (empty response)',
     'ok-token': 'OK (acknowledged)',
@@ -171,7 +179,7 @@ function HeartbeatModal({ entry, onClose }: { entry: HeartbeatLogEntry; onClose:
           onClick={onClose}
           style={{
             position: 'absolute', top: 12, right: 12, background: 'none',
-            border: 'none', color: '#888', fontSize: 20, cursor: 'pointer',
+            border: 'none', color: colors.textSecondary, fontSize: 20, cursor: 'pointer',
           }}
         >
           x
@@ -179,21 +187,21 @@ function HeartbeatModal({ entry, onClose }: { entry: HeartbeatLogEntry; onClose:
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
           <span style={statusBadge(entry.status)}>{entry.status.replace(/-/g, ' ')}</span>
-          <span style={{ fontSize: 13, color: '#aaa' }}>{fmtDate(entry.timestamp)}</span>
-          <span style={{ fontSize: 11, color: '#666' }}>({timeSince(entry.timestamp)})</span>
+          <span style={{ fontSize: 13, color: colors.textSecondary }}>{fmtDate(entry.timestamp)}</span>
+          <span style={{ fontSize: 11, color: colors.textMuted }}>({timeSince(entry.timestamp)})</span>
         </div>
 
-        <div style={{ ...mono, color: '#aaa', marginBottom: 16 }}>
+        <div style={{ ...mono, color: colors.textSecondary, marginBottom: 16 }}>
           {statusLabel[entry.status] || entry.status}
           {entry.responseLength != null && (
-            <span style={{ color: '#666', marginLeft: 12 }}>{entry.responseLength} chars</span>
+            <span style={{ color: colors.textMuted, marginLeft: 12 }}>{entry.responseLength} chars</span>
           )}
         </div>
 
         {entry.content && (
           <div style={{
             marginBottom: 16, padding: '12px 14px', borderRadius: 8,
-            background: '#111', border: '1px solid #333',
+            background: colors.bgSecondary, border: `1px solid ${colors.borderLight}`,
             ...mono, lineHeight: 1.6, whiteSpace: 'pre-wrap',
           }}>
             {entry.content}
@@ -203,14 +211,14 @@ function HeartbeatModal({ entry, onClose }: { entry: HeartbeatLogEntry; onClose:
         {entry.error && (
           <div style={{
             marginBottom: 16, padding: '12px 14px', borderRadius: 8,
-            background: '#1a1010', border: '1px solid #4a2020',
+            background: colors.bgHover, border: `1px solid ${colors.borderLight}`,
             ...mono, color: '#f44336', lineHeight: 1.6,
           }}>
             {entry.error}
           </div>
         )}
 
-        <div style={{ ...mono, fontSize: 10, color: '#555' }}>
+        <div style={{ ...mono, fontSize: 10, color: colors.textMuted }}>
           Session: {entry.sessionId}
         </div>
       </div>
@@ -220,18 +228,23 @@ function HeartbeatModal({ entry, onClose }: { entry: HeartbeatLogEntry; onClose:
 
 // ── Stat Card ───────────────────────────────────────────────────────────
 
-function StatCard({ label, value, color }: { label: string; value: string | number; color?: string }) {
-  return (
-    <div style={card}>
-      <div style={statLabel}>{label}</div>
-      <div style={{ ...statNum, color: color || '#e0e0e0' }}>{value}</div>
-    </div>
-  )
-}
+// StatCard is rendered from within Dashboard, which passes its styles down via closure.
+// We keep it as a plain function here and supply the styles from the call site.
 
 // ── Component ───────────────────────────────────────────────────────────
 
 export default function Dashboard() {
+  const colors = useColors()
+  const styles = makeStyles(colors)
+  const { card, sectionTitle, statNum, statLabel, pill, pillGreen, pillRed, mono, grid2, grid3, statusBadge } = styles
+
+  const StatCard = ({ label, value, color }: { label: string; value: string | number; color?: string }) => (
+    <div style={card}>
+      <div style={statLabel}>{label}</div>
+      <div style={{ ...statNum, color: color || colors.textPrimary }}>{value}</div>
+    </div>
+  )
+
   const [data, setData] = useState<DashboardData | null>(null)
   const [error, setError] = useState('')
   const [expandedSessions, setExpandedSessions] = useState(false)
@@ -304,12 +317,12 @@ export default function Dashboard() {
   if (error) return (
     <div style={{ padding: 40, color: '#f44336', textAlign: 'center' }}>
       <div style={{ fontSize: 20, marginBottom: 8 }}>{error}</div>
-      <div style={{ fontSize: 12, color: '#888' }}>Retrying every 5s...</div>
+      <div style={{ fontSize: 12, color: colors.textSecondary }}>Retrying every 5s...</div>
     </div>
   )
 
   if (!data) return (
-    <div style={{ padding: 40, color: '#888', textAlign: 'center' }}>Loading dashboard...</div>
+    <div style={{ padding: 40, color: colors.textSecondary, textAlign: 'center' }}>Loading dashboard...</div>
   )
 
   const { tools, memory, sessions, presence, skills, plugins } = data
@@ -324,7 +337,7 @@ export default function Dashboard() {
             background: statusColor(presence.status),
             boxShadow: `0 0 6px ${statusColor(presence.status)}`,
           }} />
-          <span style={{ fontSize: 13, color: '#aaa', textTransform: 'capitalize' as const }}>
+          <span style={{ fontSize: 13, color: colors.textSecondary, textTransform: 'capitalize' as const }}>
             {presence.status}{presence.typing ? ' (typing...)' : ''}
           </span>
         </div>
@@ -361,7 +374,7 @@ export default function Dashboard() {
         </div>
 
         <div style={{ marginTop: 12 }}>
-          <div style={{ fontSize: 11, color: '#666', marginBottom: 4 }}>Core Tools</div>
+          <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 4 }}>Core Tools</div>
           <div>{tools.coreTools.map(t => (
               <span key={t} style={{ ...pillGreen, cursor: 'pointer' }} onClick={() => {
                 fetch('/api/tools/unload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: t }) })
@@ -373,7 +386,7 @@ export default function Dashboard() {
         </div>
 
         <div style={{ marginTop: 10 }}>
-          <div style={{ fontSize: 11, color: '#666', marginBottom: 4 }}>Deferred Catalog</div>
+          <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 4 }}>Deferred Catalog</div>
           <div>{tools.deferredTools.map(t => (
               <span key={t.name} style={{ ...pill, cursor: 'pointer' }} title={t.summary + (t.actions ? `\nActions: ${t.actions.join(', ')}` : '') + '\nClick to load'} onClick={() => {
                 fetch('/api/tools/load', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: t.name }) })
@@ -388,17 +401,17 @@ export default function Dashboard() {
         {tools.sessionCount > 0 && (
           <div style={{ marginTop: 10 }}>
             <div
-              style={{ fontSize: 11, color: '#666', marginBottom: 4, cursor: 'pointer' }}
+              style={{ fontSize: 11, color: colors.textMuted, marginBottom: 4, cursor: 'pointer' }}
               onClick={() => setExpandedSessions(!expandedSessions)}
             >
               Per-Session Promotions ({tools.sessionCount} sessions) {expandedSessions ? '[-]' : '[+]'}
             </div>
             {expandedSessions && tools.sessions.map(s => (
               <div key={s.sessionId} style={{ ...mono, marginBottom: 4, paddingLeft: 8 }}>
-                <span style={{ color: '#666' }}>{s.sessionId.slice(0, 20)}...</span>
+                <span style={{ color: colors.textMuted }}>{s.sessionId.slice(0, 20)}...</span>
                 {s.promotedTools.length > 0
                   ? s.promotedTools.map(t => <span key={t} style={{ ...pill, fontSize: 10 }}>{t}</span>)
-                  : <span style={{ color: '#555', marginLeft: 8 }}>none</span>
+                  : <span style={{ color: colors.textMuted, marginLeft: 8 }}>none</span>
                 }
               </div>
             ))}
@@ -414,7 +427,7 @@ export default function Dashboard() {
             ? Object.entries(sessions.byChannel).map(([ch, count]) => (
                 <div key={ch} style={{ display: 'flex', justifyContent: 'space-between', ...mono, marginBottom: 4 }}>
                   <span style={{ textTransform: 'capitalize' as const }}>{ch}</span>
-                  <span style={{ color: '#4fc3f7' }}>{count}</span>
+                  <span style={{ color: colors.accent }}>{count}</span>
                 </div>
               ))
             : <div style={mono}>No active channels</div>
@@ -423,10 +436,10 @@ export default function Dashboard() {
         <div style={card}>
           <div style={sectionTitle}>Connected Clients</div>
           <div style={{ display: 'flex', justifyContent: 'space-between', ...mono, marginBottom: 4 }}>
-            <span>Webchat</span><span style={{ color: '#4fc3f7' }}>{data.webchatClients}</span>
+            <span>Webchat</span><span style={{ color: colors.accent }}>{data.webchatClients}</span>
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between', ...mono }}>
-            <span>Canvas</span><span style={{ color: '#4fc3f7' }}>{data.canvasClients}</span>
+            <span>Canvas</span><span style={{ color: colors.accent }}>{data.canvasClients}</span>
           </div>
         </div>
         <div style={card}>
@@ -463,16 +476,16 @@ export default function Dashboard() {
               </div>
             </div>
             <div style={{ marginTop: 12 }}>
-              <div style={{ fontSize: 11, color: '#666', marginBottom: 6 }}>Identity Files</div>
+              <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 6 }}>Identity Files</div>
               <div style={grid3}>
                 {memory.identityFiles.map(f => (
                   <div key={f.name} style={{
                     ...mono, padding: '6px 10px', borderRadius: 6,
-                    background: f.exists ? '#0d1f0d' : '#1a1a1a',
-                    border: `1px solid ${f.exists ? '#1a3a1a' : '#222'}`,
+                    background: f.exists ? colors.bgHover : colors.bgHover,
+                    border: `1px solid ${f.exists ? colors.borderLight : colors.border}`,
                   }}>
-                    <div style={{ color: f.exists ? '#4caf50' : '#555', marginBottom: 2 }}>{f.name}</div>
-                    <div style={{ fontSize: 10, color: '#666' }}>
+                    <div style={{ color: f.exists ? '#4caf50' : colors.textMuted, marginBottom: 2 }}>{f.name}</div>
+                    <div style={{ fontSize: 10, color: colors.textMuted }}>
                       {f.exists ? fmtBytes(f.size) : 'not found'}
                     </div>
                   </div>
@@ -491,8 +504,8 @@ export default function Dashboard() {
           <div style={sectionTitle}>Skills ({skills.length})</div>
           {skills.length > 0 ? skills.map(s => (
             <div key={s.name} style={{ ...mono, marginBottom: 6 }}>
-              <div style={{ color: '#4fc3f7' }}>{s.name}</div>
-              <div style={{ fontSize: 10, color: '#666' }}>{s.description}</div>
+              <div style={{ color: colors.accent }}>{s.name}</div>
+              <div style={{ fontSize: 10, color: colors.textMuted }}>{s.description}</div>
             </div>
           )) : <div style={mono}>No skills loaded</div>}
         </div>
@@ -501,12 +514,12 @@ export default function Dashboard() {
           {plugins.length > 0 ? plugins.map(p => (
             <div key={p.name} style={{ ...mono, marginBottom: 6 }}>
               <div style={{ color: '#ff9800' }}>{p.name}</div>
-              <div style={{ fontSize: 10, color: '#666' }}>
+              <div style={{ fontSize: 10, color: colors.textMuted }}>
                 {p.summary.replace(/^Plugin tool:\s*/, '')}
               </div>
               {p.actions && (
                 <div style={{ marginTop: 2 }}>
-                  {p.actions.map(a => <span key={a} style={{ ...pill, fontSize: 9, background: '#1a1a2e', color: '#9e9eff' }}>{a}</span>)}
+                  {p.actions.map(a => <span key={a} style={{ ...pill, fontSize: 9, background: colors.bgTertiary, color: '#9e9eff' }}>{a}</span>)}
                 </div>
               )}
             </div>
@@ -521,8 +534,8 @@ export default function Dashboard() {
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {['on', 'off', 'rebuild'].map(action => (
               <button key={action} onClick={() => handleIndexAction(action)} style={{
-                padding: '6px 16px', background: '#1a1a2e', color: '#4fc3f7',
-                border: '1px solid #333', borderRadius: 4, cursor: 'pointer', fontSize: 12,
+                padding: '6px 16px', background: colors.bgTertiary, color: colors.accent,
+                border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12,
                 textTransform: 'capitalize' as const,
               }}>
                 {action === 'on' ? 'Enable' : action === 'off' ? 'Disable' : 'Rebuild'}
@@ -549,8 +562,8 @@ export default function Dashboard() {
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {['on', 'off', 'now'].map(action => (
               <button key={action} onClick={() => handleHeartbeatAction(action)} style={{
-                padding: '6px 16px', background: '#1a1a2e', color: '#4fc3f7',
-                border: '1px solid #333', borderRadius: 4, cursor: 'pointer', fontSize: 12,
+                padding: '6px 16px', background: colors.bgTertiary, color: colors.accent,
+                border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12,
                 textTransform: 'capitalize' as const,
               }}>
                 {action === 'on' ? 'Enable' : action === 'off' ? 'Disable' : 'Trigger Now'}
@@ -586,26 +599,26 @@ export default function Dashboard() {
                 style={{
                   display: 'flex', alignItems: 'center', gap: 10,
                   padding: '8px 12px', borderRadius: 6,
-                  background: '#111', border: '1px solid #222',
+                  background: colors.bgSecondary, border: `1px solid ${colors.border}`,
                   cursor: 'pointer', transition: 'border-color 0.15s',
                 }}
-                onMouseEnter={e => (e.currentTarget.style.borderColor = '#444')}
-                onMouseLeave={e => (e.currentTarget.style.borderColor = '#222')}
+                onMouseEnter={e => (e.currentTarget.style.borderColor = colors.borderLight)}
+                onMouseLeave={e => (e.currentTarget.style.borderColor = colors.border)}
               >
                 <span style={statusBadge(entry.status)}>
                   {entry.status === 'sent' ? 'ALERT' : entry.status === 'failed' ? 'ERR' : 'OK'}
                 </span>
-                <span style={{ ...mono, color: '#888', minWidth: 70, fontSize: 11 }}>
+                <span style={{ ...mono, color: colors.textSecondary, minWidth: 70, fontSize: 11 }}>
                   {timeSince(entry.timestamp)}
                 </span>
-                <div style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', ...mono, fontSize: 11, color: '#aaa' }}>
+                <div style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', ...mono, fontSize: 11, color: colors.textSecondary }}>
                   {entry.content ? entry.content.slice(0, 80) : entry.error ? entry.error.slice(0, 80) : entry.status.replace(/-/g, ' ')}
                 </div>
               </div>
             ))}
           </div>
         ) : (
-          <div style={{ ...mono, color: '#555', padding: '12px 0' }}>
+          <div style={{ ...mono, color: colors.textMuted, padding: '12px 0' }}>
             No heartbeat runs yet. Enable heartbeat and trigger one to see results here.
           </div>
         )}

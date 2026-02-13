@@ -35,6 +35,7 @@ export interface PluginContext {
     memory?: any;
     sessions?: any;
     scheduler?: any;
+    agent?: any;
   };
 }
 
@@ -91,7 +92,7 @@ export class PluginManager {
   private eventBus: Map<string, Set<(...args: any[]) => void>> = new Map();
 
   // Core service refs (set externally)
-  private coreServices: { memory?: any; sessions?: any; scheduler?: any } = {};
+  private coreServices: { memory?: any; sessions?: any; scheduler?: any; agent?: any } = {};
 
   // Hot-reload watcher
   private watcher: FSWatcher | null = null;
@@ -106,8 +107,8 @@ export class PluginManager {
 
   // ── Core service injection ──────────────────────────────────────────
 
-  setCoreServices(memory?: any, sessions?: any, scheduler?: any): void {
-    this.coreServices = { memory, sessions, scheduler };
+  setCoreServices(memory?: any, sessions?: any, scheduler?: any, agent?: any): void {
+    this.coreServices = { memory, sessions, scheduler, agent };
   }
 
   // ── Event bus ───────────────────────────────────────────────────────
@@ -312,7 +313,16 @@ export class PluginManager {
     const entryPath = join(pluginDir, manifest.entry);
     if (!existsSync(entryPath)) { console.error(`[plugin] Entry file not found: ${manifest.entry} in ${name}/`); return null; }
 
-    const pluginModule = await import(entryPath) as PluginExports;
+    // Cache-bust: copy entry to a temp file so tsx/esbuild treats it as a new module
+    const tmpEntry = join('/tmp', `plugin-${name}-${Date.now()}.mjs`);
+    const { copyFileSync, unlinkSync } = await import('node:fs');
+    copyFileSync(entryPath, tmpEntry);
+    let pluginModule: PluginExports;
+    try {
+      pluginModule = await import(tmpEntry) as PluginExports;
+    } finally {
+      try { unlinkSync(tmpEntry); } catch {}
+    }
     const pluginConfig = this.getPluginConfig(manifest.name);
     const ctx: PluginContext = {
       config: this.config, pluginDir, pluginConfig,
@@ -351,6 +361,9 @@ export class PluginManager {
     try {
       this.watcher = watch(this.pluginsDir, { recursive: true }, (_event, filename) => {
         if (!filename) return;
+        // Ignore temp/dotfiles to avoid reload loops from cache-busting copies
+        const basename = filename.split('/').pop() || filename.split('\\').pop() || '';
+        if (basename.startsWith('.')) return;
         // Extract plugin dir name from changed file path
         const pluginName = filename.split('/')[0] || filename.split('\\')[0];
         if (!pluginName) return;
@@ -446,7 +459,8 @@ export class PluginManager {
 //   ctx.pluginConfig  - plugin-specific config (from config.json, merged with manifest defaults)
 //   ctx.log(msg)      - log with plugin prefix
 //   ctx.events.emit/on/off - event bus for cross-plugin communication
-//   ctx.services      - {memory, sessions, scheduler} core service references
+//   ctx.services      - {memory, sessions, scheduler, agent} core service references
+//                       agent.processMessage(sessionId, prompt) to inject messages into sessions
 
 export function activate(ctx) {
   ctx.log('Plugin activated');

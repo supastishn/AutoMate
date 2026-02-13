@@ -108,11 +108,12 @@ program
     let pluginManager: PluginManager | undefined;
     if (config.plugins?.enabled !== false) {
       pluginManager = new PluginManager(config, config.plugins?.directory);
-      pluginManager.setCoreServices(memoryManager, sessionManager, scheduler);
+      pluginManager.setCoreServices(memoryManager, sessionManager, scheduler, agent);
       try {
         const loaded = await pluginManager.loadAll();
+        // Always wire the plugin manager so the `plugin create` tool works even with 0 plugins
+        agent.setPluginManager(pluginManager);
         if (loaded.length > 0) {
-          agent.setPluginManager(pluginManager);
           console.log(`  Plugins: ${loaded.map(p => p.manifest.name).join(', ')}`);
           // Start plugin channels
           for (const plugin of loaded) {

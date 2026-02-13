@@ -1,5 +1,6 @@
 import React from 'react'
 import { onDataUpdate } from '../hooks/useDataUpdates'
+import { useColors } from '../ThemeContext'
 
 interface CronJob {
   id: string
@@ -23,224 +24,12 @@ interface CreateForm {
   sessionId: string
 }
 
-const colors = {
-  bg: '#0a0a0a',
-  card: '#141414',
-  border: '#222',
-  accent: '#4fc3f7',
-  green: '#4caf50',
-  red: '#f44336',
-  orange: '#ff9800',
-  textPrimary: '#e0e0e0',
-  textSecondary: '#888',
-}
-
 const spinnerKeyframes = `
 @keyframes cron-spin {
   0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
 }
 `
-
-const styles: Record<string, React.CSSProperties> = {
-  page: {
-    background: colors.bg,
-    minHeight: '100vh',
-    padding: '24px',
-    color: colors.textPrimary,
-    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-  },
-  header: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: '24px',
-  },
-  title: {
-    fontSize: '24px',
-    fontWeight: 700,
-    color: colors.textPrimary,
-    margin: 0,
-  },
-  grid: {
-    display: 'grid',
-    gap: '16px',
-    marginBottom: '32px',
-  },
-  card: {
-    background: colors.card,
-    border: `1px solid ${colors.border}`,
-    borderRadius: '8px',
-    padding: '16px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '10px',
-  },
-  cardHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  cardName: {
-    fontSize: '16px',
-    fontWeight: 600,
-    color: colors.textPrimary,
-    margin: 0,
-  },
-  badge: {
-    fontSize: '11px',
-    fontWeight: 600,
-    padding: '2px 8px',
-    borderRadius: '9999px',
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.5px',
-  },
-  prompt: {
-    fontSize: '13px',
-    color: colors.textSecondary,
-    lineHeight: '1.4',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap' as const,
-  },
-  meta: {
-    display: 'flex',
-    flexWrap: 'wrap' as const,
-    gap: '12px',
-    fontSize: '12px',
-    color: colors.textSecondary,
-  },
-  metaItem: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '4px',
-  },
-  metaLabel: {
-    color: colors.textSecondary,
-  },
-  metaValue: {
-    color: colors.textPrimary,
-    fontFamily: 'monospace',
-    fontSize: '12px',
-  },
-  actions: {
-    display: 'flex',
-    gap: '8px',
-    marginTop: '4px',
-  },
-  btnToggle: {
-    flex: 1,
-    padding: '6px 12px',
-    borderRadius: '4px',
-    border: 'none',
-    cursor: 'pointer',
-    fontSize: '12px',
-    fontWeight: 600,
-  },
-  btnDelete: {
-    padding: '6px 12px',
-    borderRadius: '4px',
-    border: `1px solid ${colors.red}`,
-    background: 'transparent',
-    color: colors.red,
-    cursor: 'pointer',
-    fontSize: '12px',
-    fontWeight: 600,
-  },
-  formSection: {
-    background: colors.card,
-    border: `1px solid ${colors.border}`,
-    borderRadius: '8px',
-    padding: '20px',
-  },
-  formTitle: {
-    fontSize: '18px',
-    fontWeight: 600,
-    marginBottom: '16px',
-    color: colors.textPrimary,
-  },
-  formGrid: {
-    display: 'grid',
-    gridTemplateColumns: '1fr 1fr',
-    gap: '12px',
-  },
-  formGroup: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: '4px',
-  },
-  formGroupFull: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: '4px',
-    gridColumn: '1 / -1',
-  },
-  label: {
-    fontSize: '12px',
-    fontWeight: 600,
-    color: colors.textSecondary,
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.5px',
-  },
-  input: {
-    padding: '8px 12px',
-    background: colors.bg,
-    border: `1px solid ${colors.border}`,
-    borderRadius: '4px',
-    color: colors.textPrimary,
-    fontSize: '14px',
-    fontFamily: 'inherit',
-    outline: 'none',
-  },
-  textarea: {
-    padding: '8px 12px',
-    background: colors.bg,
-    border: `1px solid ${colors.border}`,
-    borderRadius: '4px',
-    color: colors.textPrimary,
-    fontSize: '14px',
-    fontFamily: 'inherit',
-    outline: 'none',
-    resize: 'vertical' as const,
-    minHeight: '80px',
-  },
-  select: {
-    padding: '8px 12px',
-    background: colors.bg,
-    border: `1px solid ${colors.border}`,
-    borderRadius: '4px',
-    color: colors.textPrimary,
-    fontSize: '14px',
-    fontFamily: 'inherit',
-    outline: 'none',
-  },
-  btnCreate: {
-    padding: '10px 20px',
-    background: colors.accent,
-    color: '#000',
-    border: 'none',
-    borderRadius: '4px',
-    fontSize: '14px',
-    fontWeight: 600,
-    cursor: 'pointer',
-    marginTop: '8px',
-  },
-  empty: {
-    textAlign: 'center' as const,
-    color: colors.textSecondary,
-    padding: '48px 0',
-    fontSize: '14px',
-  },
-  scheduleChip: {
-    fontFamily: 'monospace',
-    fontSize: '11px',
-    padding: '2px 6px',
-    borderRadius: '4px',
-    background: colors.bg,
-    border: `1px solid ${colors.border}`,
-    color: colors.accent,
-  },
-}
 
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`
@@ -282,6 +71,7 @@ function truncate(s: string, max: number): string {
 }
 
 function Cron() {
+  const colors = useColors()
   const [jobs, setJobs] = React.useState<CronJob[]>([])
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
@@ -385,50 +175,70 @@ function Cron() {
   }
 
   const gridStyle: React.CSSProperties = {
-    ...styles.grid,
+    display: 'grid',
+    gap: 16,
+    marginBottom: 32,
     gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fill, minmax(360px, 1fr))',
   }
 
+  const cardStyle: React.CSSProperties = {
+    background: colors.bgCard,
+    border: `1px solid ${colors.border}`,
+    borderRadius: 8,
+    padding: 16,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 10,
+  }
+
+  const inputStyle: React.CSSProperties = {
+    padding: '8px 12px',
+    background: colors.bgPrimary,
+    border: `1px solid ${colors.border}`,
+    borderRadius: 4,
+    color: colors.textPrimary,
+    fontSize: 14,
+    fontFamily: 'inherit',
+    outline: 'none',
+  }
+
   return (
-    <div style={styles.page}>
+    <div style={{ background: colors.bgPrimary, minHeight: '100vh', padding: 24, color: colors.textPrimary }}>
       <style>{spinnerKeyframes}</style>
-      <div style={styles.header}>
-        <h1 style={styles.title}>Cron Jobs</h1>
-        <span style={{ fontSize: '13px', color: colors.textSecondary }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+        <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0 }}>Cron Jobs</h1>
+        <span style={{ fontSize: 13, color: colors.textSecondary }}>
           {jobs.length} job{jobs.length !== 1 ? 's' : ''}
         </span>
       </div>
 
       {error && (
-        <div
-          style={{
-            padding: '10px 14px',
-            background: 'rgba(244,67,54,0.1)',
-            border: `1px solid ${colors.red}`,
-            borderRadius: '4px',
-            color: colors.red,
-            fontSize: '13px',
-            marginBottom: '16px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-          }}
-        >
+        <div style={{
+          padding: '10px 14px',
+          background: colors.errorMuted,
+          border: `1px solid ${colors.error}`,
+          borderRadius: 4,
+          color: colors.error,
+          fontSize: 13,
+          marginBottom: 16,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}>
           <span>{error}</span>
           <button
             onClick={() => setError(null)}
             style={{
               background: 'none',
               border: 'none',
-              color: colors.red,
+              color: colors.error,
               cursor: 'pointer',
-              fontSize: '18px',
+              fontSize: 18,
               lineHeight: 1,
               padding: '0 4px',
-              marginLeft: '12px',
+              marginLeft: 12,
               fontWeight: 700,
             }}
-            title="Dismiss"
           >
             ×
           </button>
@@ -436,81 +246,108 @@ function Cron() {
       )}
 
       {loading ? (
-        <div style={{ ...styles.empty, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
-          <div
-            style={{
-              width: '24px',
-              height: '24px',
-              border: `3px solid ${colors.border}`,
-              borderTop: `3px solid ${colors.accent}`,
-              borderRadius: '50%',
-              animation: 'cron-spin 0.8s linear infinite',
-            }}
-          />
+        <div style={{ textAlign: 'center', color: colors.textSecondary, padding: 48, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+          <div style={{
+            width: 24,
+            height: 24,
+            border: `3px solid ${colors.border}`,
+            borderTop: `3px solid ${colors.accent}`,
+            borderRadius: '50%',
+            animation: 'cron-spin 0.8s linear infinite',
+          }} />
           <span>Loading jobs…</span>
         </div>
       ) : jobs.length === 0 ? (
-        <div style={styles.empty}>
-          <div style={{ fontSize: '32px', marginBottom: '8px', opacity: 0.4 }}>⏰</div>
+        <div style={{ textAlign: 'center', color: colors.textSecondary, padding: 48, fontSize: 14 }}>
+          <div style={{ fontSize: 32, marginBottom: 8, opacity: 0.4 }}>⏰</div>
           No cron jobs. Create one below.
         </div>
       ) : (
         <div style={gridStyle}>
           {jobs.map((job) => (
-            <div key={job.id} style={styles.card}>
-              <div style={styles.cardHeader}>
-                <h3 style={styles.cardName}>{job.name}</h3>
-                <span
-                  style={{
-                    ...styles.badge,
-                    background: job.enabled ? 'rgba(76,175,80,0.15)' : 'rgba(136,136,136,0.15)',
-                    color: job.enabled ? colors.green : colors.textSecondary,
-                  }}
-                >
+            <div key={job.id} style={cardStyle}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>{job.name}</h3>
+                <span style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  padding: '2px 8px',
+                  borderRadius: 9999,
+                  textTransform: 'uppercase',
+                  letterSpacing: 0.5,
+                  background: job.enabled ? colors.successMuted : colors.bgTertiary,
+                  color: job.enabled ? colors.success : colors.textSecondary,
+                }}>
                   {job.enabled ? 'Enabled' : 'Disabled'}
                 </span>
               </div>
 
-              <div style={styles.prompt} title={job.prompt}>
+              <div style={{ fontSize: 13, color: colors.textSecondary, lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={job.prompt}>
                 {truncate(job.prompt, 100)}
               </div>
 
-              <div style={styles.meta}>
-                <span style={styles.metaItem}>
-                  <span style={styles.metaLabel}>Schedule:</span>
-                  <span style={styles.scheduleChip}>{formatSchedule(job.schedule)}</span>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, fontSize: 12, color: colors.textSecondary }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span>Schedule:</span>
+                  <span style={{
+                    fontFamily: 'monospace',
+                    fontSize: 11,
+                    padding: '2px 6px',
+                    borderRadius: 4,
+                    background: colors.bgPrimary,
+                    border: `1px solid ${colors.border}`,
+                    color: colors.accent,
+                  }}>{formatSchedule(job.schedule)}</span>
                 </span>
-                <span style={styles.metaItem}>
-                  <span style={styles.metaLabel}>Next:</span>
-                  <span style={styles.metaValue}>{formatTime(job.nextRun)}</span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span>Next:</span>
+                  <span style={{ color: colors.textPrimary, fontFamily: 'monospace', fontSize: 12 }}>{formatTime(job.nextRun)}</span>
                 </span>
-                <span style={styles.metaItem}>
-                  <span style={styles.metaLabel}>Runs:</span>
-                  <span style={styles.metaValue}>{job.runCount}</span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span>Runs:</span>
+                  <span style={{ color: colors.textPrimary, fontFamily: 'monospace', fontSize: 12 }}>{job.runCount}</span>
                 </span>
               </div>
 
               {job.sessionId && (
-                <div style={{ fontSize: '11px', color: colors.textSecondary }}>
+                <div style={{ fontSize: 11, color: colors.textSecondary }}>
                   Session:{' '}
-                  <span style={{ fontFamily: 'monospace', color: colors.orange }}>
+                  <span style={{ fontFamily: 'monospace', color: colors.warning }}>
                     {job.sessionId}
                   </span>
                 </div>
               )}
 
-              <div style={styles.actions}>
+              <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
                 <button
                   style={{
-                    ...styles.btnToggle,
-                    background: job.enabled ? 'rgba(255,152,0,0.15)' : 'rgba(76,175,80,0.15)',
-                    color: job.enabled ? colors.orange : colors.green,
+                    flex: 1,
+                    padding: '6px 12px',
+                    borderRadius: 4,
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    background: job.enabled ? colors.warningMuted : colors.successMuted,
+                    color: job.enabled ? colors.warning : colors.success,
                   }}
                   onClick={() => toggleJob(job.id)}
                 >
                   {job.enabled ? 'Disable' : 'Enable'}
                 </button>
-                <button style={styles.btnDelete} onClick={() => deleteJob(job.id)}>
+                <button
+                  style={{
+                    padding: '6px 12px',
+                    borderRadius: 4,
+                    border: `1px solid ${colors.error}`,
+                    background: 'transparent',
+                    color: colors.error,
+                    cursor: 'pointer',
+                    fontSize: 12,
+                    fontWeight: 600,
+                  }}
+                  onClick={() => deleteJob(job.id)}
+                >
                   Delete
                 </button>
               </div>
@@ -519,14 +356,19 @@ function Cron() {
         </div>
       )}
 
-      <div style={styles.formSection}>
-        <div style={styles.formTitle}>Create Job</div>
+      <div style={{
+        background: colors.bgCard,
+        border: `1px solid ${colors.border}`,
+        borderRadius: 8,
+        padding: 20,
+      }}>
+        <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>Create Job</div>
         <form onSubmit={createJob}>
-          <div style={styles.formGrid}>
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Name</label>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.5 }}>Name</label>
               <input
-                style={styles.input}
+                style={inputStyle}
                 type="text"
                 placeholder="Job name"
                 value={form.name}
@@ -534,14 +376,12 @@ function Cron() {
               />
             </div>
 
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Schedule Type</label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.5 }}>Schedule Type</label>
               <select
-                style={styles.select}
+                style={inputStyle}
                 value={form.scheduleType}
-                onChange={(e) =>
-                  setForm({ ...form, scheduleType: e.target.value as CreateForm['scheduleType'] })
-                }
+                onChange={(e) => setForm({ ...form, scheduleType: e.target.value as CreateForm['scheduleType'] })}
               >
                 <option value="once">Once</option>
                 <option value="interval">Interval</option>
@@ -549,10 +389,10 @@ function Cron() {
               </select>
             </div>
 
-            <div style={styles.formGroupFull}>
-              <label style={styles.label}>Prompt</label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, gridColumn: '1 / -1' }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.5 }}>Prompt</label>
               <textarea
-                style={styles.textarea}
+                style={{ ...inputStyle, resize: 'vertical', minHeight: 80 }}
                 placeholder="What should this job do?"
                 value={form.prompt}
                 onChange={(e) => setForm({ ...form, prompt: e.target.value })}
@@ -560,10 +400,10 @@ function Cron() {
             </div>
 
             {form.scheduleType === 'cron' && (
-              <div style={styles.formGroup}>
-                <label style={styles.label}>Cron Expression</label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <label style={{ fontSize: 12, fontWeight: 600, color: colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.5 }}>Cron Expression</label>
                 <input
-                  style={{ ...styles.input, fontFamily: 'monospace' }}
+                  style={{ ...inputStyle, fontFamily: 'monospace' }}
                   type="text"
                   placeholder="*/5 * * * *"
                   value={form.cronExpression}
@@ -573,10 +413,10 @@ function Cron() {
             )}
 
             {form.scheduleType === 'interval' && (
-              <div style={styles.formGroup}>
-                <label style={styles.label}>Interval (minutes)</label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <label style={{ fontSize: 12, fontWeight: 600, color: colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.5 }}>Interval (minutes)</label>
                 <input
-                  style={{ ...styles.input, fontFamily: 'monospace' }}
+                  style={{ ...inputStyle, fontFamily: 'monospace' }}
                   type="number"
                   min="1"
                   placeholder="60"
@@ -586,10 +426,10 @@ function Cron() {
               </div>
             )}
 
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Session ID (optional)</label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.5 }}>Session ID (optional)</label>
               <input
-                style={{ ...styles.input, fontFamily: 'monospace' }}
+                style={{ ...inputStyle, fontFamily: 'monospace' }}
                 type="text"
                 placeholder="Existing session ID"
                 value={form.sessionId}
@@ -598,7 +438,17 @@ function Cron() {
             </div>
           </div>
 
-          <button type="submit" style={styles.btnCreate} disabled={creating}>
+          <button type="submit" style={{
+            padding: '10px 20px',
+            background: colors.accent,
+            color: colors.accentContrast,
+            border: 'none',
+            borderRadius: 4,
+            fontSize: 14,
+            fontWeight: 600,
+            cursor: 'pointer',
+            marginTop: 8,
+          }} disabled={creating}>
             {creating ? 'Creating…' : 'Create Job'}
           </button>
         </form>
