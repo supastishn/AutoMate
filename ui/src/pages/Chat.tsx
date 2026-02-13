@@ -369,6 +369,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
   const msgIdRef = useRef(0)
   const awaitingResponseRef = useRef(false)
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({})
+  const [expandedHeartbeats, setExpandedHeartbeats] = useState<Record<string, boolean>>({})
   const pendingToolCallsRef = useRef<{ name: string; arguments?: string; result: string }[]>([])
   const [streamingToolCalls, setStreamingToolCalls] = useState<{ name: string; arguments?: string; result: string }[]>([])
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
@@ -927,6 +928,39 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
     position: 'relative',
   })
 
+  /** Detect heartbeat-related messages */
+  const isHeartbeatMsg = (m: ChatMessage): boolean => {
+    const c = m.content.trim()
+    if (c === 'HEARTBEAT_OK' || c.includes('HEARTBEAT_OK')) return true
+    if (c.startsWith('[HEARTBEAT CHECK]') || c.endsWith('[HEARTBEAT CHECK]')) return true
+    if (c.startsWith('[HEARTBEAT]') || c.endsWith('[HEARTBEAT]')) return true
+    return false
+  }
+
+  /** Group messages: consecutive heartbeat msgs become groups, others stay solo */
+  type RenderItem = { kind: 'message'; msg: ChatMessage } | { kind: 'heartbeat'; msgs: ChatMessage[]; ts: number }
+  const buildRenderItems = (): RenderItem[] => {
+    if (!hideHeartbeats) return messages.map(msg => ({ kind: 'message' as const, msg }))
+    const items: RenderItem[] = []
+    let i = 0
+    while (i < messages.length) {
+      if (isHeartbeatMsg(messages[i])) {
+        const group: ChatMessage[] = []
+        const ts = messages[i].timestamp
+        while (i < messages.length && isHeartbeatMsg(messages[i])) {
+          group.push(messages[i])
+          i++
+        }
+        items.push({ kind: 'heartbeat', msgs: group, ts })
+      } else {
+        items.push({ kind: 'message', msg: messages[i] })
+        i++
+      }
+    }
+    return items
+  }
+  const renderItems = buildRenderItems()
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Header */}
@@ -1187,15 +1221,64 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           }
         }}
         style={{ flex: 1, overflow: 'auto', padding: 20, display: 'flex', flexDirection: 'column', gap: 4 }}>
-        {messages.filter((m) => {
-          if (!hideHeartbeats) return true
-          // Hide heartbeat-related messages: HEARTBEAT_OK responses or [HEARTBEAT CHECK] prompts
-          const content = m.content.trim()
-          if (content === 'HEARTBEAT_OK' || content.includes('HEARTBEAT_OK')) return false
-          if (content.startsWith('[HEARTBEAT CHECK]') || content.endsWith('[HEARTBEAT CHECK]')) return false
-          if (content.startsWith('[HEARTBEAT]') || content.endsWith('[HEARTBEAT]')) return false
-          return true
-        }).map((m) => (
+        {renderItems.map((item, itemIdx) => {
+          // ---- Heartbeat accordion (collapsed group) ----
+          if (item.kind === 'heartbeat') {
+            const hbKey = `hb_${itemIdx}_${item.ts}`
+            const isOpen = expandedHeartbeats[hbKey] || false
+            const dt = new Date(item.ts)
+            const label = `Heartbeat ${dt.getFullYear()}/${String(dt.getMonth() + 1).padStart(2, '0')}/${String(dt.getDate()).padStart(2, '0')} ${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}:${String(dt.getSeconds()).padStart(2, '0')}`
+            return (
+              <div key={hbKey} style={{ width: '100%', marginBottom: 6, alignSelf: 'stretch' }}>
+                <div
+                  onClick={() => setExpandedHeartbeats(prev => ({ ...prev, [hbKey]: !prev[hbKey] }))}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
+                    padding: '6px 12px', background: '#1a1520', borderRadius: 6,
+                    border: '1px solid #2a2040', userSelect: 'none', width: '100%',
+                    boxSizing: 'border-box',
+                  }}
+                >
+                  <span style={{
+                    display: 'inline-block', fontSize: 9, color: '#888',
+                    transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)',
+                    transition: 'transform 0.15s',
+                  }}>▶</span>
+                  <span style={{ fontSize: 12, color: '#ce93d8' }}>💜</span>
+                  <span style={{ fontSize: 12, color: '#ce93d8', fontFamily: 'monospace', fontWeight: 600 }}>{label}</span>
+                  <span style={{ fontSize: 10, color: '#555', marginLeft: 'auto' }}>{item.msgs.length} msg{item.msgs.length > 1 ? 's' : ''}</span>
+                </div>
+                {isOpen && (
+                  <div style={{
+                    marginTop: 4, padding: '8px 12px',
+                    background: '#0d0a12', borderRadius: '0 0 6px 6px',
+                    border: '1px solid #2a2040', borderTop: 'none',
+                  }}>
+                    {item.msgs.map((m) => (
+                      <div key={m.id} style={{
+                        padding: '8px 12px', marginBottom: 6, borderRadius: 8,
+                        background: m.role === 'user' ? '#1a3a5c' : m.role === 'system' ? '#1a1a1a' : '#111a11',
+                        border: `1px solid ${m.role === 'user' ? '#2a5a8c' : m.role === 'system' ? '#333' : '#1a3a1a'}`,
+                        fontSize: 13, lineHeight: 1.5, wordBreak: 'break-word',
+                      }}>
+                        <div style={{ fontSize: 10, color: '#666', marginBottom: 4 }}>
+                          {m.role === 'user' ? 'You' : m.role === 'assistant' ? 'AutoMate' : 'System'}
+                          <span style={{ marginLeft: 6, fontSize: 9, color: '#444' }}>
+                            {new Date(m.timestamp).toLocaleTimeString()}
+                          </span>
+                        </div>
+                        <div>{m.role === 'assistant' ? renderContentWithTools(m.content, m.toolCalls, m.id) : m.content}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          }
+
+          // ---- Normal message ----
+          const m = item.msg
+          return (
           <div key={m.id} style={msgStyle(m.role)}>
             {/* Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
@@ -1329,7 +1412,8 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
               </div>
             )}
           </div>
-        ))}
+          )
+        })}
 
         {/* Streaming message — tool accordions render inline where [used tool: X] markers appear */}
         {(streaming || streamingToolCalls.length > 0) && (
