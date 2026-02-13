@@ -1163,6 +1163,36 @@ def handle_command(cmd):
         ActionChains(browser).drag_and_drop(src, tgt).perform()
         return {"success": True}
 
+    elif action == "click_position":
+        x = int(cmd["x"])
+        y = int(cmd["y"])
+        # Click at exact viewport pixel coordinates using <html> element as anchor
+        html = browser.find_element(By.TAG_NAME, "html")
+        rect = html.rect
+        offset_x = x - rect["width"] / 2
+        offset_y = y - rect["height"] / 2
+        ActionChains(browser).move_to_element_with_offset(
+            html, offset_x, offset_y
+        ).click().perform()
+        # Return info about element at that position
+        el_info = browser.execute_script(
+            """
+            var el = document.elementFromPoint(arguments[0], arguments[1]);
+            if (!el) return null;
+            return {tag: el.tagName, text: (el.textContent||'').trim().slice(0,100),
+                    id: el.id||'', className: (el.className||'').toString().slice(0,100)};
+            """,
+            x,
+            y,
+        )
+        return {
+            "success": True,
+            "clicked_at": {"x": x, "y": y},
+            "element": el_info,
+            "url": browser.current_url,
+            "title": browser.title,
+        }
+
     elif action == "scroll":
         d = cmd.get("direction", "down")
         amt = cmd.get("amount", 500)

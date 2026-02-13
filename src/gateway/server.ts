@@ -28,6 +28,7 @@ interface WebChatClient {
   ws: WebSocket;
   sessionId: string;
   connectedAt: string;
+  agentOverride?: string;
 }
 
 interface CanvasClient {
@@ -1036,8 +1037,14 @@ this.app.post<{ Params: { id: string } }>('/api/sessions/:id/repair', async (req
         connectedAt: new Date().toISOString(),
       });
 
-      // Send welcome with presence state + processing flag
+      // Send welcome with presence state + processing flag + multi-agent info
       const isProcessing = this.agent.isProcessing(sessionId);
+      const agentsList = this.router
+        ? this.router.getAllAgents().map(m => {
+            const def = this.router!.getDefaultAgent();
+            return { name: m.name, isDefault: def?.name === m.name, model: m.agent.getConfig().agent.model };
+          })
+        : [];
       socket.send(JSON.stringify({
         type: 'connected',
         session_id: sessionId,
@@ -1045,6 +1052,8 @@ this.app.post<{ Params: { id: string } }>('/api/sessions/:id/repair', async (req
         presence: this.presenceManager.getState(),
         context: this.getContextInfo(sessionId),
         processing: isProcessing,
+        multiAgent: !!this.router && agentsList.length > 1,
+        agents: agentsList,
       }));
 
       // If connecting to an existing session with messages, send history immediately
@@ -1065,10 +1074,17 @@ this.app.post<{ Params: { id: string } }>('/api/sessions/:id/repair', async (req
           if (msg.type === 'message') {
             const content = msg.content as string;
 
+            // Store agent override from client (for multi-agent routing)
+            if (msg.agent) {
+              const client = this.webChatClients.get(clientId);
+              if (client) client.agentOverride = msg.agent;
+            }
+            const agentOverride = this.webChatClients.get(clientId)?.agentOverride;
+
             // Check commands — route through router if available
             if (content.startsWith('/')) {
               const cmdResult = this.router
-                ? await this.router.handleCommand(sessionId, content)
+                ? await this.router.handleCommand(sessionId, content, undefined, agentOverride)
                 : await this.agent.handleCommand(sessionId, content);
               if (cmdResult) {
                 socket.send(JSON.stringify({ type: 'response', content: cmdResult, done: true }));
@@ -1084,7 +1100,7 @@ this.app.post<{ Params: { id: string } }>('/api/sessions/:id/repair', async (req
               socket.send(JSON.stringify({ type: 'tool_call', name: tc.name, arguments: tc.arguments, result: tc.result }));
             };
             const result = this.router
-              ? await this.router.processMessage(sessionId, content, onStream)
+              ? await this.router.processMessage(sessionId, content, onStream, undefined, agentOverride)
               : await this.agent.processMessage(sessionId, content, onStream, onToolCall);
 
             // Send completion (include mapped messages so client gets fresh serverIndex values)
@@ -1227,10 +1243,11 @@ this.app.post<{ Params: { id: string } }>('/api/sessions/:id/repair', async (req
             this.sessionManager.saveSession(sessionId);
 
             // Now regenerate the response
+            const retryAgentOverride = this.webChatClients.get(clientId)?.agentOverride;
             const result = this.router
               ? await this.router.processMessage(sessionId, userContent, (chunk) => {
                   socket.send(JSON.stringify({ type: 'stream', content: chunk }));
-                })
+                }, undefined, retryAgentOverride)
               : await this.agent.processMessage(sessionId, userContent, (chunk) => {
                   socket.send(JSON.stringify({ type: 'stream', content: chunk }));
                 });

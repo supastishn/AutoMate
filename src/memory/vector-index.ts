@@ -30,6 +30,7 @@ interface IndexData {
   version: number;
   chunks: ChunkMeta[];
   fileHashes: Record<string, string>; // file -> hash to detect changes
+  embeddingCache?: Record<string, number[]>; // text hash -> embedding (persisted cache)
 }
 
 export interface EmbeddingConfig {
@@ -241,14 +242,19 @@ function simpleHash(str: string): string {
 export class VectorIndex {
   private chunks: ChunkMeta[] = [];
   private fileHashes: Record<string, string> = {};
+  private embeddingCache: Map<string, number[]> = new Map(); // text hash -> embedding
   private config: EmbeddingConfig;
   private indexPath: string;
+  private cachePath: string;
   private dirty: boolean = false;
+  private cacheDirty: boolean = false;
 
   constructor(memoryDir: string, config: EmbeddingConfig) {
     this.config = config;
     this.indexPath = join(memoryDir, '.vector-index.json');
+    this.cachePath = join(memoryDir, '.embedding-cache.json');
     this.load();
+    this.loadCache();
   }
 
   // ── Persistence ──────────────────────────────────────────────────────
@@ -270,19 +276,41 @@ export class VectorIndex {
     }
   }
 
+  private loadCache(): void {
+    if (!existsSync(this.cachePath)) return;
+
+    try {
+      const raw = readFileSync(this.cachePath, 'utf-8');
+      const data = JSON.parse(raw) as Record<string, number[]>;
+      this.embeddingCache = new Map(Object.entries(data));
+    } catch {
+      // Corrupted cache — start fresh
+      this.embeddingCache = new Map();
+    }
+  }
+
   save(): void {
-    if (!this.dirty) return;
+    if (this.dirty) {
+      const data: IndexData = {
+        version: 1,
+        chunks: this.chunks,
+        fileHashes: this.fileHashes,
+      };
 
-    const data: IndexData = {
-      version: 1,
-      chunks: this.chunks,
-      fileHashes: this.fileHashes,
-    };
+      const dir = dirname(this.indexPath);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(this.indexPath, JSON.stringify(data));
+      this.dirty = false;
+    }
 
-    const dir = dirname(this.indexPath);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(this.indexPath, JSON.stringify(data));
-    this.dirty = false;
+    // Save embedding cache separately (can be large)
+    if (this.cacheDirty) {
+      const cacheData = Object.fromEntries(this.embeddingCache);
+      const dir = dirname(this.cachePath);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(this.cachePath, JSON.stringify(cacheData));
+      this.cacheDirty = false;
+    }
   }
 
   // ── Embedding API ────────────────────────────────────────────────────
@@ -290,6 +318,28 @@ export class VectorIndex {
   private async getEmbeddings(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return [];
 
+    // Check cache first
+    const results: (number[] | null)[] = texts.map(t => {
+      const hash = simpleHash(t);
+      return this.embeddingCache.get(hash) || null;
+    });
+
+    // Find uncached texts
+    const uncachedIndices: number[] = [];
+    const uncachedTexts: string[] = [];
+    for (let i = 0; i < texts.length; i++) {
+      if (results[i] === null) {
+        uncachedIndices.push(i);
+        uncachedTexts.push(texts[i]);
+      }
+    }
+
+    // If all cached, return immediately
+    if (uncachedTexts.length === 0) {
+      return results as number[][];
+    }
+
+    // Fetch uncached embeddings
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (this.config.apiKey) {
       headers['Authorization'] = `Bearer ${this.config.apiKey}`;
@@ -297,7 +347,7 @@ export class VectorIndex {
 
     const body = {
       model: this.config.model,
-      input: texts,
+      input: uncachedTexts,
     };
 
     const res = await fetch(`${this.config.apiBase}/embeddings`, {
@@ -316,7 +366,33 @@ export class VectorIndex {
 
     // Sort by index to maintain order
     const sorted = json.data.sort((a, b) => a.index - b.index);
-    return sorted.map(d => d.embedding);
+
+    // Store in cache and results
+    for (let i = 0; i < sorted.length; i++) {
+      const originalIdx = uncachedIndices[i];
+      const embedding = sorted[i].embedding;
+      const hash = simpleHash(texts[originalIdx]);
+      
+      this.embeddingCache.set(hash, embedding);
+      results[originalIdx] = embedding;
+    }
+
+    this.cacheDirty = true;
+    return results as number[][];
+  }
+
+  /** Get cache statistics */
+  getCacheStats(): { size: number; hits: number } {
+    return {
+      size: this.embeddingCache.size,
+      hits: 0, // Not tracked currently
+    };
+  }
+
+  /** Clear the embedding cache */
+  clearCache(): void {
+    this.embeddingCache.clear();
+    this.cacheDirty = true;
   }
 
   // ── Indexing ─────────────────────────────────────────────────────────

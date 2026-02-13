@@ -201,14 +201,18 @@ export class AgentRouter {
     return null;
   }
 
-  /** Process a message, routing to the correct agent */
+  /** Process a message, routing to the correct agent.
+   *  If agentOverride is set, skip pattern matching and use that agent directly. */
   async processMessage(
     sessionId: string,
     message: string,
     onStream?: StreamCallback,
     userId?: string,
+    agentOverride?: string,
   ): Promise<AgentResponse & { agentName: string }> {
-    const managed = this.route(sessionId, userId);
+    const managed = agentOverride
+      ? this.agents.get(agentOverride) || this.route(sessionId, userId)
+      : this.route(sessionId, userId);
     if (!managed) {
       return { content: 'No agent available for this channel.', toolCalls: [], agentName: 'none' };
     }
@@ -227,7 +231,7 @@ export class AgentRouter {
   }
 
   /** Handle a slash command, routing to correct agent */
-  async handleCommand(sessionId: string, command: string, userId?: string): Promise<string | null> {
+  async handleCommand(sessionId: string, command: string, userId?: string, agentOverride?: string): Promise<string | null> {
     // Router-level commands
     const parts = command.trim().toLowerCase().split(/\s+/);
     if (parts[0] === '/agents') {
@@ -247,7 +251,9 @@ export class AgentRouter {
       }
     }
 
-    const managed = this.route(sessionId, userId);
+    const managed = agentOverride
+      ? this.agents.get(agentOverride) || this.route(sessionId, userId)
+      : this.route(sessionId, userId);
     if (!managed) return 'No agent available for this channel.';
     return await managed.agent.handleCommand(sessionId, command);
   }
