@@ -662,9 +662,14 @@ def start(config=None):
     if use_headless_new:
         opts.add_argument("--headless=new")
 
-    # Persistent profile for cookie/fingerprint persistence
-    profile_dir = config.get("profile_dir", os.environ.get("AUTOMATE_PROFILE_DIR", ""))
+    # Persistent profile for cookie/fingerprint/login persistence across sessions
+    profile_dir = config.get(
+        "profile_dir",
+        os.environ.get("AUTOMATE_PROFILE_DIR", ""),
+    )
     if profile_dir:
+        profile_dir = os.path.expanduser(profile_dir)
+        os.makedirs(profile_dir, exist_ok=True)
         opts.add_argument(f"--user-data-dir={profile_dir}")
 
     # Proxy support (HTTP, HTTPS, SOCKS5)

@@ -124,6 +124,7 @@ export const ConfigSchema = z.object({
   browser: z.object({
     enabled: z.boolean().default(true),
     headless: z.boolean().default(true),
+    profileDir: z.string().default('~/.automate/chrome-profile'),  // persistent Chrome profile (cookies, logins, etc.)
   }).default({}),
   skills: z.object({
     directory: z.string().default('~/.automate/skills'),
