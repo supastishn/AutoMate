@@ -950,19 +950,53 @@ def _human_move_to(element):
 
 
 def _human_type_text(element, text):
-    """Type text with human-like timing variations."""
-    for char in text:
-        element.send_keys(char)
-        # Variable delay: faster for common chars, slower for special
-        if char in " .,!?":
-            time.sleep(random.uniform(0.08, 0.20))
-        elif char.isupper():
+    """Type text with human-like timing variations.
+
+    Supports inline key commands: /enter, /tab, /escape, /backspace, /space
+    Example: "hello/enterworld" types "hello", presses Enter, types "world".
+    """
+    # Split text on /key commands, preserving them as tokens
+    import re
+    key_commands = {
+        '/enter': Keys.ENTER,
+        '/return': Keys.RETURN,
+        '/tab': Keys.TAB,
+        '/escape': Keys.ESCAPE,
+        '/backspace': Keys.BACKSPACE,
+        '/delete': Keys.DELETE,
+        '/space': Keys.SPACE,
+        '/up': Keys.ARROW_UP,
+        '/down': Keys.ARROW_DOWN,
+        '/left': Keys.ARROW_LEFT,
+        '/right': Keys.ARROW_RIGHT,
+    }
+    # Build regex: match any /key command (case-insensitive)
+    pattern = '(' + '|'.join(re.escape(k) for k in key_commands) + ')'
+    parts = re.split(pattern, text, flags=re.IGNORECASE)
+
+    for part in parts:
+        if not part:
+            continue
+        lower = part.lower()
+        if lower in key_commands:
+            # Send the special key
             time.sleep(random.uniform(0.05, 0.15))
+            element.send_keys(key_commands[lower])
+            time.sleep(random.uniform(0.1, 0.3))
         else:
-            time.sleep(random.uniform(0.03, 0.12))
-        # Occasional micro-pause (thinking)
-        if random.random() < 0.05:
-            time.sleep(random.uniform(0.3, 0.8))
+            # Type each character with human-like delays
+            for char in part:
+                element.send_keys(char)
+                # Variable delay: faster for common chars, slower for special
+                if char in " .,!?":
+                    time.sleep(random.uniform(0.08, 0.20))
+                elif char.isupper():
+                    time.sleep(random.uniform(0.05, 0.15))
+                else:
+                    time.sleep(random.uniform(0.03, 0.12))
+                # Occasional micro-pause (thinking)
+                if random.random() < 0.05:
+                    time.sleep(random.uniform(0.3, 0.8))
 
 
 def _human_scroll(browser_inst, direction="down", amount=None):
