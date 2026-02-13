@@ -264,6 +264,9 @@ export class HeartbeatManager {
     });
 
     try {
+      // Auto-elevate heartbeat session so tools work without restrictions
+      this.agent.elevateSession(sessionId);
+
       // Single-turn: send message and get response, streaming chunks to clients
       let streamedContent = '';
       const result = await this.agent.processMessage(sessionId, prompt, (chunk) => {

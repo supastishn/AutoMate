@@ -660,6 +660,12 @@ export class Agent {
     onStream?: StreamCallback,
     onToolCall?: ToolCallCallback,
   ): Promise<AgentResponse> {
+    // Auto-elevate automated sessions (heartbeat, cron, plugins) so tools work without restrictions
+    // Only webchat sessions require explicit /elevated on
+    if (this.isAutomatedSession(sessionId) && !this.elevatedSessions.has(sessionId)) {
+      this.elevatedSessions.add(sessionId);
+    }
+
     // If session is busy, queue the message
     if (this.processing.has(sessionId)) {
       return new Promise((resolve, reject) => {
@@ -1425,6 +1431,24 @@ export class Agent {
   /** Check if a session has elevated permissions */
   isElevated(sessionId: string): boolean {
     return this.elevatedSessions.has(sessionId);
+  }
+
+  /** Check if a session is automated (heartbeat, cron, plugin channels) vs interactive webchat */
+  private isAutomatedSession(sessionId: string): boolean {
+    // Automated session patterns:
+    // - heartbeat sessions: webchat:heartbeat, webchat:heartbeat:agentName
+    // - cron sessions: cron:*, webchat:cron:*
+    // - plugin channels: discord:*, telegram:*, slack:*, etc. (not webchat: prefix)
+    // - subagent sessions: subagent:*
+    if (sessionId.includes('heartbeat')) return true;
+    if (sessionId.startsWith('cron:')) return true;
+    if (sessionId.includes(':cron:')) return true;
+    if (sessionId.startsWith('subagent:')) return true;
+    // Plugin channels use their own prefixes (discord:, telegram:, etc.)
+    // We consider anything NOT starting with 'webchat:' as potentially automated
+    // BUT we also need to allow webchat:heartbeat which is already covered above
+    if (!sessionId.startsWith('webchat:')) return true;
+    return false;
   }
 
   /** Elevate a session programmatically (e.g. for heartbeat/cron) */
