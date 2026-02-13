@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { useColors } from '../ThemeContext'
 
 const API = window.location.origin
 
@@ -126,91 +127,6 @@ const SECTIONS: SectionDef[] = [
 
 const MASKED = '***'
 
-// Styles
-const cardStyle: React.CSSProperties = {
-  background: '#111',
-  border: '1px solid #333',
-  borderRadius: 8,
-  marginBottom: 12,
-  overflow: 'hidden',
-}
-
-const sectionHeaderStyle: React.CSSProperties = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  padding: '14px 20px',
-  cursor: 'pointer',
-  userSelect: 'none',
-  fontSize: 15,
-  fontWeight: 600,
-  color: '#e0e0e0',
-}
-
-const fieldRowStyle: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  padding: '10px 20px',
-  borderTop: '1px solid #1e1e1e',
-  gap: 16,
-}
-
-const labelStyle: React.CSSProperties = {
-  fontSize: 13,
-  color: '#ccc',
-  minWidth: 180,
-  flexShrink: 0,
-}
-
-const inputStyle: React.CSSProperties = {
-  background: '#1a1a2e',
-  border: '1px solid #333',
-  borderRadius: 4,
-  color: '#e0e0e0',
-  padding: '6px 10px',
-  fontSize: 13,
-  flex: 1,
-  maxWidth: 400,
-  outline: 'none',
-  fontFamily: 'monospace',
-}
-
-const chipStyle: React.CSSProperties = {
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 6,
-  background: '#1a1a2e',
-  border: '1px solid #333',
-  borderRadius: 14,
-  padding: '3px 10px',
-  fontSize: 12,
-  color: '#e0e0e0',
-  marginRight: 6,
-  marginBottom: 4,
-}
-
-const chipRemoveStyle: React.CSSProperties = {
-  cursor: 'pointer',
-  color: '#888',
-  fontWeight: 700,
-  fontSize: 14,
-  lineHeight: 1,
-}
-
-const toastStyle = (isError: boolean): React.CSSProperties => ({
-  position: 'fixed',
-  bottom: 24,
-  right: 24,
-  background: isError ? '#b71c1c' : '#1b5e20',
-  color: '#fff',
-  padding: '12px 24px',
-  borderRadius: 8,
-  fontSize: 14,
-  zIndex: 9999,
-  boxShadow: '0 4px 20px rgba(0,0,0,.5)',
-})
-
 interface ProviderInfo {
   name: string
   model: string
@@ -218,6 +134,7 @@ interface ProviderInfo {
 }
 
 export default function Settings() {
+  const colors = useColors()
   const [config, setConfig] = useState<any>(null)
   const [original, setOriginal] = useState<any>(null)
   const [loading, setLoading] = useState(true)
@@ -228,6 +145,91 @@ export default function Settings() {
   const [providers, setProviders] = useState<ProviderInfo[]>([])
   const [currentModel, setCurrentModel] = useState('')
   const [switching, setSwitching] = useState(false)
+
+  // Styles using theme
+  const cardStyle: React.CSSProperties = {
+    background: colors.bgSecondary,
+    border: `1px solid ${colors.borderLight}`,
+    borderRadius: 8,
+    marginBottom: 12,
+    overflow: 'hidden',
+  }
+
+  const sectionHeaderStyle: React.CSSProperties = {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '14px 20px',
+    cursor: 'pointer',
+    userSelect: 'none',
+    fontSize: 15,
+    fontWeight: 600,
+    color: colors.textPrimary,
+  }
+
+  const fieldRowStyle: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '10px 20px',
+    borderTop: `1px solid ${colors.border}`,
+    gap: 16,
+  }
+
+  const labelStyle: React.CSSProperties = {
+    fontSize: 13,
+    color: colors.textSecondary,
+    minWidth: 180,
+    flexShrink: 0,
+  }
+
+  const inputStyle: React.CSSProperties = {
+    background: colors.bgTertiary,
+    border: `1px solid ${colors.borderLight}`,
+    borderRadius: 4,
+    color: colors.textPrimary,
+    padding: '6px 10px',
+    fontSize: 13,
+    flex: 1,
+    maxWidth: 400,
+    outline: 'none',
+    fontFamily: 'monospace',
+  }
+
+  const chipStyle: React.CSSProperties = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    background: colors.bgTertiary,
+    border: `1px solid ${colors.borderLight}`,
+    borderRadius: 14,
+    padding: '3px 10px',
+    fontSize: 12,
+    color: colors.textPrimary,
+    marginRight: 6,
+    marginBottom: 4,
+  }
+
+  const chipRemoveStyle: React.CSSProperties = {
+    cursor: 'pointer',
+    color: colors.textSecondary,
+    fontWeight: 700,
+    fontSize: 14,
+    lineHeight: 1,
+  }
+
+  const toastStyle = (isError: boolean): React.CSSProperties => ({
+    position: 'fixed',
+    bottom: 24,
+    right: 24,
+    background: isError ? colors.error : colors.success,
+    color: '#fff',
+    padding: '12px 24px',
+    borderRadius: 8,
+    fontSize: 14,
+    zIndex: 9999,
+    boxShadow: `0 4px 20px ${colors.shadow}`,
+  })
 
   useEffect(() => {
     fetch(`${API}/api/config/full`, { headers: authHeaders() })
@@ -361,7 +363,7 @@ export default function Settings() {
               width: 44,
               height: 24,
               borderRadius: 12,
-              background: checked ? '#4fc3f7' : '#333',
+              background: checked ? colors.accent : colors.borderLight,
               position: 'relative',
               cursor: 'pointer',
               transition: 'background .2s',
@@ -373,7 +375,7 @@ export default function Settings() {
                 width: 18,
                 height: 18,
                 borderRadius: 9,
-                background: '#fff',
+                background: colors.bgSecondary,
                 position: 'absolute',
                 top: 3,
                 left: checked ? 23 : 3,
@@ -398,7 +400,7 @@ export default function Settings() {
                 <span style={chipRemoveStyle} onClick={() => removeTag(field.key, idx)}>×</span>
               </span>
             ))}
-            {arr.length === 0 && <span style={{ fontSize: 12, color: '#555' }}>No items</span>}
+            {arr.length === 0 && <span style={{ fontSize: 12, color: colors.textMuted }}>No items</span>}
           </div>
           <div style={{ display: 'flex', gap: 6, width: '100%', maxWidth: 420 }}>
             <input
@@ -411,10 +413,10 @@ export default function Settings() {
             <button
               onClick={() => addTag(field.key)}
               style={{
-                background: '#4fc3f7',
+                background: colors.accent,
                 border: 'none',
                 borderRadius: 4,
-                color: '#000',
+                color: colors.accentContrast,
                 padding: '6px 12px',
                 fontSize: 12,
                 cursor: 'pointer',
@@ -462,19 +464,19 @@ export default function Settings() {
 
   if (loading) {
     return (
-      <div style={{ padding: 40, color: '#888' }}>Loading settings...</div>
+      <div style={{ padding: 40, color: colors.textSecondary }}>Loading settings...</div>
     )
   }
 
   if (!config) {
     return (
-      <div style={{ padding: 40, color: '#f44' }}>Failed to load configuration.</div>
+      <div style={{ padding: 40, color: colors.error }}>Failed to load configuration.</div>
     )
   }
 
   return (
-    <div style={{ padding: 30, maxWidth: 900, background: '#0a0a0a', minHeight: '100vh' }}>
-      <h1 style={{ fontSize: 24, marginBottom: 24, fontWeight: 600, color: '#e0e0e0' }}>Settings</h1>
+    <div style={{ padding: 30, maxWidth: 900, background: colors.bgPrimary, minHeight: '100vh' }}>
+      <h1 style={{ fontSize: 24, marginBottom: 24, fontWeight: 600, color: colors.textPrimary }}>Settings</h1>
 
       {SECTIONS.map(section => {
         const isCollapsed = !!collapsed[section.title]
@@ -482,7 +484,7 @@ export default function Settings() {
           <div key={section.title} style={cardStyle}>
             <div style={sectionHeaderStyle} onClick={() => toggleSection(section.title)}>
               <span>{section.title}</span>
-              <span style={{ color: '#888', fontSize: 18, transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)', transition: 'transform .2s' }}>
+              <span style={{ color: colors.textSecondary, fontSize: 18, transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)', transition: 'transform .2s' }}>
                 ▼
               </span>
             </div>
@@ -499,7 +501,7 @@ export default function Settings() {
       <div style={cardStyle}>
         <div style={sectionHeaderStyle} onClick={() => toggleSection('System Prompt')}>
           <span>System Prompt</span>
-          <span style={{ color: '#888', fontSize: 18, transform: collapsed['System Prompt'] ? 'rotate(-90deg)' : 'rotate(0deg)', transition: 'transform .2s' }}>
+          <span style={{ color: colors.textSecondary, fontSize: 18, transform: collapsed['System Prompt'] ? 'rotate(-90deg)' : 'rotate(0deg)', transition: 'transform .2s' }}>
             ▼
           </span>
         </div>
@@ -510,13 +512,13 @@ export default function Settings() {
               onChange={e => handleChange('agent.systemPrompt', e.target.value)}
               style={{
                 width: '100%', minHeight: 300, resize: 'vertical',
-                background: '#1a1a2e', border: '1px solid #333', borderRadius: 4,
-                color: '#e0e0e0', padding: 16, fontFamily: 'monospace', fontSize: 13,
+                background: colors.bgTertiary, border: `1px solid ${colors.borderLight}`, borderRadius: 4,
+                color: colors.textPrimary, padding: 16, fontFamily: 'monospace', fontSize: 13,
                 lineHeight: 1.6, outline: 'none', boxSizing: 'border-box' as const,
               }}
               spellCheck={false}
             />
-            <div style={{ fontSize: 11, color: '#666', marginTop: 6 }}>
+            <div style={{ fontSize: 11, color: colors.inputPlaceholder, marginTop: 6 }}>
               This prompt is injected at the start of every conversation. Markdown supported.
             </div>
           </div>
@@ -527,42 +529,42 @@ export default function Settings() {
       <div style={cardStyle}>
         <div style={sectionHeaderStyle} onClick={() => toggleSection('Providers')}>
           <span>Providers</span>
-          <span style={{ color: '#888', fontSize: 18, transform: collapsed['Providers'] ? 'rotate(-90deg)' : 'rotate(0deg)', transition: 'transform .2s' }}>
+          <span style={{ color: colors.textSecondary, fontSize: 18, transform: collapsed['Providers'] ? 'rotate(-90deg)' : 'rotate(0deg)', transition: 'transform .2s' }}>
             ▼
           </span>
         </div>
         {!collapsed['Providers'] && (
           <div style={{ padding: 20 }}>
             {currentModel && (
-              <div style={{ marginBottom: 16, fontSize: 13, color: '#999' }}>
-                Current model: <span style={{ color: '#4fc3f7', fontFamily: 'monospace' }}>{currentModel}</span>
+              <div style={{ marginBottom: 16, fontSize: 13, color: colors.textSecondary }}>
+                Current model: <span style={{ color: colors.accent, fontFamily: 'monospace' }}>{currentModel}</span>
               </div>
             )}
             {providers.length === 0 ? (
-              <div style={{ fontSize: 13, color: '#555' }}>No providers loaded.</div>
+              <div style={{ fontSize: 13, color: colors.textMuted }}>No providers loaded.</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {providers.map((p, i) => (
                   <div key={i} style={{
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                     padding: '10px 16px', borderRadius: 6,
-                    background: p.active ? '#0d2137' : '#141414',
-                    border: p.active ? '1px solid #1a5276' : '1px solid #222',
+                    background: p.active ? colors.accentMuted : colors.bgCard,
+                    border: p.active ? `1px solid ${colors.accent}` : `1px solid ${colors.border}`,
                   }}>
                     <div>
-                      <div style={{ fontSize: 14, color: p.active ? '#4fc3f7' : '#ccc', fontWeight: p.active ? 600 : 400 }}>
+                      <div style={{ fontSize: 14, color: p.active ? colors.accent : colors.textSecondary, fontWeight: p.active ? 600 : 400 }}>
                         {p.name}
-                        {p.active && <span style={{ marginLeft: 8, fontSize: 10, color: '#4fc3f7', background: '#0d2137', border: '1px solid #1a5276', borderRadius: 10, padding: '2px 8px' }}>active</span>}
+                        {p.active && <span style={{ marginLeft: 8, fontSize: 10, color: colors.accent, background: colors.accentMuted, border: `1px solid ${colors.accent}`, borderRadius: 10, padding: '2px 8px' }}>active</span>}
                       </div>
-                      <div style={{ fontSize: 12, color: '#666', fontFamily: 'monospace', marginTop: 2 }}>{p.model}</div>
+                      <div style={{ fontSize: 12, color: colors.inputPlaceholder, fontFamily: 'monospace', marginTop: 2 }}>{p.model}</div>
                     </div>
                     {!p.active && (
                       <button
                         onClick={() => switchProvider(p.name)}
                         disabled={switching}
                         style={{
-                          padding: '6px 16px', background: 'transparent', color: '#4fc3f7',
-                          border: '1px solid #333', borderRadius: 4, cursor: switching ? 'not-allowed' : 'pointer',
+                          padding: '6px 16px', background: 'transparent', color: colors.accent,
+                          border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: switching ? 'not-allowed' : 'pointer',
                           fontSize: 12, fontWeight: 600, opacity: switching ? 0.5 : 1,
                         }}
                       >
@@ -581,8 +583,8 @@ export default function Settings() {
       <div style={{ ...cardStyle, padding: 16, marginBottom: 12 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: '#e0e0e0' }}>Test Webhook</div>
-            <div style={{ fontSize: 12, color: '#888', marginTop: 2 }}>Send a test event to verify webhook configuration</div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: colors.textPrimary }}>Test Webhook</div>
+            <div style={{ fontSize: 12, color: colors.textSecondary, marginTop: 2 }}>Send a test event to verify webhook configuration</div>
           </div>
           <button
             onClick={() => {
@@ -596,8 +598,8 @@ export default function Settings() {
                 .catch(e => showToast(`Webhook test failed: ${e.message}`, true))
             }}
             style={{
-              padding: '8px 20px', background: '#1a1a2e', color: '#4fc3f7',
-              border: '1px solid #333', borderRadius: 4, cursor: 'pointer', fontSize: 13,
+              padding: '8px 20px', background: colors.bgTertiary, color: colors.accent,
+              border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 13,
             }}
           >
             Send Test
@@ -610,8 +612,8 @@ export default function Settings() {
           onClick={handleSave}
           disabled={saving}
           style={{
-            background: saving ? '#333' : '#4fc3f7',
-            color: saving ? '#888' : '#000',
+            background: saving ? colors.borderLight : colors.accent,
+            color: saving ? colors.textSecondary : colors.accentContrast,
             border: 'none',
             borderRadius: 6,
             padding: '12px 36px',
@@ -626,12 +628,12 @@ export default function Settings() {
       </div>
 
       {/* Danger Zone */}
-      <div style={{ ...cardStyle, padding: 16, marginBottom: 40, border: '1px solid #4a2a2a' }}>
-        <h3 style={{ fontSize: 16, fontWeight: 600, color: '#f44336', marginBottom: 8 }}>Danger Zone</h3>
+      <div style={{ ...cardStyle, padding: 16, marginBottom: 40, border: `1px solid ${colors.borderDanger}` }}>
+        <h3 style={{ fontSize: 16, fontWeight: 600, color: colors.error, marginBottom: 8 }}>Danger Zone</h3>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: '#e0e0e0' }}>Factory Reset</div>
-            <div style={{ fontSize: 12, color: '#888', marginTop: 2 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: colors.textPrimary }}>Factory Reset</div>
+            <div style={{ fontSize: 12, color: colors.textSecondary, marginTop: 2 }}>
               Wipes all memory, identity files, sessions, and restores BOOTSTRAP.md. This cannot be undone.
             </div>
           </div>
@@ -649,8 +651,8 @@ export default function Settings() {
                 .catch(e => showToast(`Factory reset failed: ${e.message}`, true))
             }}
             style={{
-              padding: '8px 20px', background: '#2e1a1a', color: '#f44336',
-              border: '1px solid #4a2a2a', borderRadius: 4, cursor: 'pointer',
+              padding: '8px 20px', background: colors.bgDanger, color: colors.error,
+              border: `1px solid ${colors.borderDanger}`, borderRadius: 4, cursor: 'pointer',
               fontSize: 13, fontWeight: 600, flexShrink: 0,
             }}
           >

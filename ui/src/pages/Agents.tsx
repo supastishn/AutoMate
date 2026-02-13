@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { useColors } from '../ThemeContext'
 
 interface AgentInfo {
   name: string
@@ -26,68 +27,75 @@ function authHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
-// ── Styles ──────────────────────────────────────────────────────
-const card: React.CSSProperties = {
-  background: '#111', border: '1px solid #222', borderRadius: 8, overflow: 'hidden',
-}
+// ── Styles (theme-dependent) ──────────────────────────────────────────
+function makeStyles(colors: Record<string, string>) {
+  const card: React.CSSProperties = {
+    background: colors.bgSecondary, border: `1px solid ${colors.border}`, borderRadius: 8, overflow: 'hidden',
+  }
 
-const inputStyle: React.CSSProperties = {
-  width: '100%', padding: '7px 10px', background: '#1a1a2e', border: '1px solid #333',
-  borderRadius: 4, color: '#e0e0e0', fontSize: 12, outline: 'none', fontFamily: 'monospace',
-  boxSizing: 'border-box' as const,
-}
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '7px 10px', background: colors.bgTertiary, border: `1px solid ${colors.borderLight}`,
+    borderRadius: 4, color: colors.textPrimary, fontSize: 12, outline: 'none', fontFamily: 'monospace',
+    boxSizing: 'border-box' as const,
+  }
 
-const btnPrimary: React.CSSProperties = {
-  padding: '7px 18px', background: '#4fc3f7', color: '#000', border: 'none',
-  borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600,
-}
+  const btnPrimary: React.CSSProperties = {
+    padding: '7px 18px', background: colors.accent, color: colors.accentContrast, border: 'none',
+    borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600,
+  }
 
-const btnGhost: React.CSSProperties = {
-  padding: '5px 12px', background: 'transparent', color: '#4fc3f7',
-  border: '1px solid #333', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600,
-}
+  const btnGhost: React.CSSProperties = {
+    padding: '5px 12px', background: 'transparent', color: colors.accent,
+    border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600,
+  }
 
-const btnDanger: React.CSSProperties = {
-  padding: '5px 12px', background: '#2e1a1a', color: '#f44336',
-  border: '1px solid #4a2a2a', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600,
-}
+  const btnDanger: React.CSSProperties = {
+    padding: '5px 12px', background: colors.bgDanger, color: colors.error,
+    border: `1px solid ${colors.borderDanger}`, borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600,
+  }
 
-const badge = (active: boolean): React.CSSProperties => ({
-  fontSize: 10, padding: '2px 8px', borderRadius: 10, fontWeight: 600,
-  background: active ? '#0d2137' : '#1a1a1a',
-  color: active ? '#4fc3f7' : '#666',
-  border: `1px solid ${active ? '#1a5276' : '#333'}`,
-})
+  const badge = (active: boolean): React.CSSProperties => ({
+    fontSize: 10, padding: '2px 8px', borderRadius: 10, fontWeight: 600,
+    background: active ? colors.accentMuted : colors.bgHover,
+    color: active ? colors.accent : colors.textMuted,
+    border: `1px solid ${active ? colors.borderFocus : colors.borderLight}`,
+  })
 
-const metaRow: React.CSSProperties = {
-  display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#666', marginBottom: 2,
-}
+  const metaRow: React.CSSProperties = {
+    display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: colors.textMuted, marginBottom: 2,
+  }
 
-const metaLabel: React.CSSProperties = {
-  color: '#555', minWidth: 70, flexShrink: 0,
-}
+  const metaLabel: React.CSSProperties = {
+    color: colors.textMuted, minWidth: 70, flexShrink: 0,
+  }
 
-const metaValue: React.CSSProperties = {
-  color: '#aaa', fontFamily: 'monospace', fontSize: 11, wordBreak: 'break-all' as const,
-}
+  const metaValue: React.CSSProperties = {
+    color: colors.textSecondary, fontFamily: 'monospace', fontSize: 11, wordBreak: 'break-all' as const,
+  }
 
-const sectionHeader: React.CSSProperties = {
-  fontSize: 11, fontWeight: 600, color: '#555', textTransform: 'uppercase' as const,
-  letterSpacing: 1, marginBottom: 8, marginTop: 16,
-}
+  const sectionHeader: React.CSSProperties = {
+    fontSize: 11, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase' as const,
+    letterSpacing: 1, marginBottom: 8, marginTop: 16,
+  }
 
-const chipStyle: React.CSSProperties = {
-  display: 'inline-flex', alignItems: 'center', gap: 4,
-  background: '#1a1a2e', border: '1px solid #333', borderRadius: 12,
-  padding: '2px 10px', fontSize: 11, color: '#e0e0e0', marginRight: 4, marginBottom: 4,
+  const chipStyle: React.CSSProperties = {
+    display: 'inline-flex', alignItems: 'center', gap: 4,
+    background: colors.bgTertiary, border: `1px solid ${colors.borderLight}`, borderRadius: 12,
+    padding: '2px 10px', fontSize: 11, color: colors.textPrimary, marginRight: 4, marginBottom: 4,
+  }
+
+  return { card, inputStyle, btnPrimary, btnGhost, btnDanger, badge, metaRow, metaLabel, metaValue, sectionHeader, chipStyle }
 }
 
 // ── Agent Card ──────────────────────────────────────────────────
-function AgentCard({ agent, onReload, showToast }: {
+function AgentCard({ agent, onReload, showToast, colors }: {
   agent: AgentInfo
   onReload: () => void
   showToast: (msg: string, err?: boolean) => void
+  colors: Record<string, string>
 }) {
+  const styles = makeStyles(colors)
+  const { card, inputStyle, btnPrimary, btnGhost, btnDanger, badge, metaRow, metaLabel, metaValue, sectionHeader, chipStyle } = styles
   const [expanded, setExpanded] = useState(false)
   const [switching, setSwitching] = useState(false)
   const [removing, setRemoving] = useState(false)
@@ -149,7 +157,7 @@ function AgentCard({ agent, onReload, showToast }: {
     : '(default)'
 
   return (
-    <div style={{ ...card, borderLeft: agent.isDefault ? '3px solid #4fc3f7' : '3px solid transparent' }}>
+    <div style={{ ...card, borderLeft: agent.isDefault ? `3px solid ${colors.accent}` : '3px solid transparent' }}>
       {/* Header bar */}
       <div
         onClick={() => setExpanded(!expanded)}
@@ -159,26 +167,26 @@ function AgentCard({ agent, onReload, showToast }: {
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: 1 }}>
-          <span style={{ fontSize: 16, fontWeight: 600, color: '#4fc3f7' }}>{agent.name}</span>
+          <span style={{ fontSize: 16, fontWeight: 600, color: colors.accent }}>{agent.name}</span>
           {agent.isDefault && <span style={badge(true)}>default</span>}
           {agent.heartbeat && <span style={badge(agent.heartbeat.active)}>♥ {agent.heartbeat.active ? 'on' : 'off'}</span>}
-          <span style={{ fontSize: 11, color: '#555', marginLeft: 'auto', flexShrink: 0 }}>
+          <span style={{ fontSize: 11, color: colors.textMuted, marginLeft: 'auto', flexShrink: 0 }}>
             {agent.sessionCount || 0} sessions · {agent.skillCount || 0} skills
           </span>
         </div>
-        <span style={{ color: '#555', fontSize: 14, marginLeft: 12, transition: 'transform .2s', transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)' }}>▼</span>
+        <span style={{ color: colors.textMuted, fontSize: 14, marginLeft: 12, transition: 'transform .2s', transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)' }}>▼</span>
       </div>
 
       {/* Summary row (always visible) */}
-      <div style={{ padding: '0 20px 12px', display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, color: '#888' }}>
-        {agent.model && <span>Model: <span style={{ color: '#ccc', fontFamily: 'monospace' }}>{agent.model}</span></span>}
-        <span>Channels: <span style={{ color: '#ccc' }}>{agent.channels.join(', ')}</span></span>
-        <span>Allow: <span style={{ color: '#ccc' }}>{agent.allowFrom.join(', ')}</span></span>
+      <div style={{ padding: '0 20px 12px', display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, color: colors.textSecondary }}>
+        {agent.model && <span>Model: <span style={{ color: colors.textPrimary, fontFamily: 'monospace' }}>{agent.model}</span></span>}
+        <span>Channels: <span style={{ color: colors.textPrimary }}>{agent.channels.join(', ')}</span></span>
+        <span>Allow: <span style={{ color: colors.textPrimary }}>{agent.allowFrom.join(', ')}</span></span>
       </div>
 
       {/* Expanded detail */}
       {expanded && (
-        <div style={{ borderTop: '1px solid #1e1e1e', padding: 20 }}>
+        <div style={{ borderTop: `1px solid ${colors.border}`, padding: 20 }}>
           {/* Actions bar */}
           <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
             {!agent.isDefault && (
@@ -221,10 +229,10 @@ function AgentCard({ agent, onReload, showToast }: {
           {/* Channels (editable) */}
           <div style={sectionHeader}>Routing</div>
           <div style={{ marginBottom: 8 }}>
-            <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>
+            <div style={{ fontSize: 12, color: colors.textSecondary, marginBottom: 4 }}>
               Channels
               <span onClick={() => { setEditChannels(!editChannels); setChannelsInput(agent.channels.join(', ')) }}
-                style={{ color: '#4fc3f7', marginLeft: 8, cursor: 'pointer', fontSize: 11 }}>
+                style={{ color: colors.accent, marginLeft: 8, cursor: 'pointer', fontSize: 11 }}>
                 {editChannels ? 'cancel' : 'edit'}
               </span>
             </div>
@@ -242,10 +250,10 @@ function AgentCard({ agent, onReload, showToast }: {
             )}
           </div>
           <div style={{ marginBottom: 8 }}>
-            <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>
+            <div style={{ fontSize: 12, color: colors.textSecondary, marginBottom: 4 }}>
               Allow From
               <span onClick={() => { setEditAllowFrom(!editAllowFrom); setAllowFromInput(agent.allowFrom.join(', ')) }}
-                style={{ color: '#4fc3f7', marginLeft: 8, cursor: 'pointer', fontSize: 11 }}>
+                style={{ color: colors.accent, marginLeft: 8, cursor: 'pointer', fontSize: 11 }}>
                 {editAllowFrom ? 'cancel' : 'edit'}
               </span>
             </div>
@@ -269,14 +277,14 @@ function AgentCard({ agent, onReload, showToast }: {
               <div style={sectionHeader}>Tool Policy</div>
               {agent.tools.allow.length > 0 && (
                 <div style={{ marginBottom: 6 }}>
-                  <span style={{ fontSize: 11, color: '#555' }}>Allow: </span>
-                  {agent.tools.allow.map((t, i) => <span key={i} style={{ ...chipStyle, borderColor: '#2a4a2a', color: '#81c784' }}>{t}</span>)}
+                  <span style={{ fontSize: 11, color: colors.textMuted }}>Allow: </span>
+                  {agent.tools.allow.map((t, i) => <span key={i} style={{ ...chipStyle, borderColor: colors.borderSuccess, color: colors.success }}>{t}</span>)}
                 </div>
               )}
               {agent.tools.deny.length > 0 && (
                 <div>
-                  <span style={{ fontSize: 11, color: '#555' }}>Deny: </span>
-                  {agent.tools.deny.map((t, i) => <span key={i} style={{ ...chipStyle, borderColor: '#4a2a2a', color: '#e57373' }}>{t}</span>)}
+                  <span style={{ fontSize: 11, color: colors.textMuted }}>Deny: </span>
+                  {agent.tools.deny.map((t, i) => <span key={i} style={{ ...chipStyle, borderColor: colors.borderDanger, color: colors.error }}>{t}</span>)}
                 </div>
               )}
             </>
@@ -285,8 +293,8 @@ function AgentCard({ agent, onReload, showToast }: {
           {/* System Prompt preview */}
           <div style={sectionHeader}>System Prompt</div>
           <div style={{
-            background: '#0a0a0a', border: '1px solid #1e1e1e', borderRadius: 4,
-            padding: 12, fontSize: 12, color: '#888', fontFamily: 'monospace',
+            background: colors.bgPrimary, border: `1px solid ${colors.border}`, borderRadius: 4,
+            padding: 12, fontSize: 12, color: colors.textSecondary, fontFamily: 'monospace',
             lineHeight: 1.5, whiteSpace: 'pre-wrap' as const, maxHeight: 200, overflowY: 'auto' as const,
           }}>
             {agent.systemPrompt || '(using default system prompt)'}
@@ -298,10 +306,13 @@ function AgentCard({ agent, onReload, showToast }: {
 }
 
 // ── Create Form ─────────────────────────────────────────────────
-function CreateAgentForm({ onCreated, showToast }: {
+function CreateAgentForm({ onCreated, showToast, colors }: {
   onCreated: () => void
   showToast: (msg: string, err?: boolean) => void
+  colors: Record<string, string>
 }) {
+  const styles = makeStyles(colors)
+  const { inputStyle, btnPrimary } = styles
   const [name, setName] = useState('')
   const [model, setModel] = useState('')
   const [channels, setChannels] = useState('*')
@@ -343,46 +354,46 @@ function CreateAgentForm({ onCreated, showToast }: {
   }
 
   return (
-    <div style={{ background: '#141414', border: '1px solid #333', borderRadius: 8, padding: 20, marginBottom: 20 }}>
-      <h3 style={{ fontSize: 15, marginBottom: 14, color: '#e0e0e0' }}>Create New Agent</h3>
+    <div style={{ background: colors.bgCard, border: `1px solid ${colors.border}`, borderRadius: 8, padding: 20, marginBottom: 20 }}>
+      <h3 style={{ fontSize: 15, marginBottom: 14, color: colors.textPrimary }}>Create New Agent</h3>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <div>
-          <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>Name *</div>
+          <div style={{ fontSize: 11, color: colors.textSecondary, marginBottom: 4 }}>Name *</div>
           <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. coder" style={inputStyle}
             onKeyDown={e => { if (e.key === 'Enter') submit() }} />
         </div>
         <div>
-          <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>Model (optional — inherits default)</div>
+          <div style={{ fontSize: 11, color: colors.textSecondary, marginBottom: 4 }}>Model (optional — inherits default)</div>
           <input value={model} onChange={e => setModel(e.target.value)} placeholder="e.g. claude-sonnet-4-20250514" style={inputStyle} />
         </div>
         <div>
-          <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>Channel patterns (comma-separated)</div>
+          <div style={{ fontSize: 11, color: colors.textSecondary, marginBottom: 4 }}>Channel patterns (comma-separated)</div>
           <input value={channels} onChange={e => setChannels(e.target.value)} placeholder="* (all)" style={inputStyle} />
         </div>
         <div>
-          <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>Allow from (comma-separated user IDs)</div>
+          <div style={{ fontSize: 11, color: colors.textSecondary, marginBottom: 4 }}>Allow from (comma-separated user IDs)</div>
           <input value={allowFrom} onChange={e => setAllowFrom(e.target.value)} placeholder="* (all)" style={inputStyle} />
         </div>
       </div>
 
       {/* Advanced toggle */}
       <div onClick={() => setShowAdvanced(!showAdvanced)}
-        style={{ fontSize: 12, color: '#4fc3f7', cursor: 'pointer', marginTop: 12, userSelect: 'none' }}>
+        style={{ fontSize: 12, color: colors.accent, cursor: 'pointer', marginTop: 12, userSelect: 'none' }}>
         {showAdvanced ? '▼' : '▶'} Advanced options
       </div>
       {showAdvanced && (
         <div style={{ marginTop: 10 }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
             <div>
-              <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>Max Tokens</div>
+              <div style={{ fontSize: 11, color: colors.textSecondary, marginBottom: 4 }}>Max Tokens</div>
               <input type="number" value={maxTokens} onChange={e => setMaxTokens(e.target.value)} placeholder="8192" style={inputStyle} />
             </div>
             <div>
-              <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>Temperature</div>
+              <div style={{ fontSize: 11, color: colors.textSecondary, marginBottom: 4 }}>Temperature</div>
               <input type="number" step="0.1" value={temperature} onChange={e => setTemperature(e.target.value)} placeholder="0.3" style={inputStyle} />
             </div>
           </div>
-          <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>System Prompt</div>
+          <div style={{ fontSize: 11, color: colors.textSecondary, marginBottom: 4 }}>System Prompt</div>
           <textarea value={systemPrompt} onChange={e => setSystemPrompt(e.target.value)}
             placeholder="Custom system prompt for this agent (leave empty to use default)…"
             style={{ ...inputStyle, minHeight: 100, resize: 'vertical' as const, lineHeight: 1.5 }} />
@@ -392,8 +403,8 @@ function CreateAgentForm({ onCreated, showToast }: {
       <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
         <button onClick={submit} disabled={!name.trim() || creating} style={{
           ...btnPrimary,
-          background: name.trim() && !creating ? '#4fc3f7' : '#333',
-          color: name.trim() && !creating ? '#000' : '#666',
+          background: name.trim() && !creating ? colors.accent : colors.borderLight,
+          color: name.trim() && !creating ? colors.accentContrast : colors.textMuted,
           cursor: name.trim() && !creating ? 'pointer' : 'default',
         }}>
           {creating ? 'Creating…' : 'Create Agent'}
@@ -405,6 +416,9 @@ function CreateAgentForm({ onCreated, showToast }: {
 
 // ── Main Page ───────────────────────────────────────────────────
 export default function Agents() {
+  const colors = useColors()
+  const styles = makeStyles(colors)
+  const { btnPrimary, btnGhost } = styles
   const [agents, setAgents] = useState<AgentInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [toast, setToast] = useState<{ msg: string; err: boolean } | null>(null)
@@ -427,63 +441,63 @@ export default function Agents() {
   useEffect(() => { loadAgents() }, [])
 
   return (
-    <div style={{ padding: 30, maxWidth: 1000, minHeight: '100vh' }}>
+    <div style={{ padding: 30, maxWidth: 1000, minHeight: '100vh', background: colors.bgPrimary }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <h1 style={{ fontSize: 24, fontWeight: 600, color: '#e0e0e0' }}>Agents</h1>
+        <h1 style={{ fontSize: 24, fontWeight: 600, color: colors.textPrimary }}>Agents</h1>
         <div style={{ display: 'flex', gap: 8 }}>
           <button onClick={loadAgents} style={btnGhost} title="Refresh">↻</button>
           <button onClick={() => setShowCreate(!showCreate)} style={{
             ...btnPrimary,
-            background: showCreate ? '#333' : '#4fc3f7',
-            color: showCreate ? '#888' : '#000',
+            background: showCreate ? colors.borderLight : colors.accent,
+            color: showCreate ? colors.textSecondary : colors.accentContrast,
           }}>
             {showCreate ? 'Cancel' : '+ New Agent'}
           </button>
         </div>
       </div>
-      <div style={{ fontSize: 13, color: '#666', marginBottom: 20 }}>
+      <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 20 }}>
         Multi-agent system with isolated memory, sessions, skills, and channel-based routing.
         Click an agent to expand its full configuration.
       </div>
 
-      {showCreate && <CreateAgentForm onCreated={() => { setShowCreate(false); loadAgents() }} showToast={showToast} />}
+      {showCreate && <CreateAgentForm onCreated={() => { setShowCreate(false); loadAgents() }} showToast={showToast} colors={colors} />}
 
       {loading ? (
-        <div style={{ color: '#555', fontSize: 13, padding: 20, textAlign: 'center' }}>Loading agents…</div>
+        <div style={{ color: colors.textMuted, fontSize: 13, padding: 20, textAlign: 'center' }}>Loading agents…</div>
       ) : agents.length === 0 ? (
-        <div style={{ background: '#111', border: '1px solid #222', borderRadius: 8, padding: 24, color: '#666', fontSize: 13 }}>
+        <div style={{ background: colors.bgSecondary, border: `1px solid ${colors.border}`, borderRadius: 8, padding: 24, color: colors.textMuted, fontSize: 13 }}>
           No multi-agent profiles configured. The system is running with a single default agent.
           <br /><br />
-          Add agent profiles in your <code style={{ color: '#4fc3f7' }}>automate.json</code> under the{' '}
-          <code style={{ color: '#4fc3f7' }}>"agents"</code> array, or click <b>+ New Agent</b> above.
+          Add agent profiles in your <code style={{ color: colors.accent }}>automate.json</code> under the{' '}
+          <code style={{ color: colors.accent }}>"agents"</code> array, or click <b>+ New Agent</b> above.
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {agents.map(agent => (
-            <AgentCard key={agent.name} agent={agent} onReload={loadAgents} showToast={showToast} />
+            <AgentCard key={agent.name} agent={agent} onReload={loadAgents} showToast={showToast} colors={colors} />
           ))}
         </div>
       )}
 
       {/* Info card */}
-      <div style={{ background: '#111', border: '1px solid #1e1e1e', borderRadius: 8, padding: 20, marginTop: 20 }}>
-        <h3 style={{ fontSize: 13, marginBottom: 8, color: '#555', fontWeight: 600 }}>How Multi-Agent Routing Works</h3>
-        <div style={{ fontSize: 12, color: '#555', lineHeight: 1.7 }}>
-          Each agent has <b style={{ color: '#888' }}>isolated memory, sessions, and skills</b>. Messages are routed based
-          on channel patterns (e.g., <code style={{ color: '#4fc3f7' }}>discord:*</code> routes all Discord
-          messages to a specific agent). The <b style={{ color: '#888' }}>default agent</b> handles messages that don't match any pattern.
-          Agents share a common <code style={{ color: '#4fc3f7' }}>shared_memory</code> directory for coordination.
+      <div style={{ background: colors.bgSecondary, border: `1px solid ${colors.border}`, borderRadius: 8, padding: 20, marginTop: 20 }}>
+        <h3 style={{ fontSize: 13, marginBottom: 8, color: colors.textMuted, fontWeight: 600 }}>How Multi-Agent Routing Works</h3>
+        <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.7 }}>
+          Each agent has <b style={{ color: colors.textSecondary }}>isolated memory, sessions, and skills</b>. Messages are routed based
+          on channel patterns (e.g., <code style={{ color: colors.accent }}>discord:*</code> routes all Discord
+          messages to a specific agent). The <b style={{ color: colors.textSecondary }}>default agent</b> handles messages that don't match any pattern.
+          Agents share a common <code style={{ color: colors.accent }}>shared_memory</code> directory for coordination.
           <br /><br />
-          Chat commands: <code style={{ color: '#4fc3f7' }}>/agents list</code> · <code style={{ color: '#4fc3f7' }}>/agents switch &lt;name&gt;</code>
+          Chat commands: <code style={{ color: colors.accent }}>/agents list</code> · <code style={{ color: colors.accent }}>/agents switch &lt;name&gt;</code>
         </div>
       </div>
 
       {toast && (
         <div style={{
           position: 'fixed', bottom: 30, right: 30, padding: '12px 24px',
-          background: toast.err ? '#b71c1c' : '#1b5e20', color: '#fff',
+          background: toast.err ? colors.error : colors.success, color: '#fff',
           borderRadius: 8, fontSize: 13, zIndex: 300, maxWidth: 400,
-          boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+          boxShadow: `0 4px 12px ${colors.shadow}`,
         }}>
           {toast.msg}
         </div>

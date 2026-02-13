@@ -1,4 +1,5 @@
 import React from 'react'
+import { useColors } from '../ThemeContext'
 
 const API = window.location.origin
 
@@ -31,17 +32,6 @@ interface Toast {
   type: 'success' | 'error'
 }
 
-const colors = {
-  bg: '#0a0a0a',
-  card: '#141414',
-  border: '#222',
-  accent: '#4fc3f7',
-  green: '#4caf50',
-  red: '#f44336',
-  text: '#e0e0e0',
-  textDim: '#888',
-} as const
-
 const spinnerKeyframes = `
 @keyframes mem-spin {
   0% { transform: rotate(0deg); }
@@ -54,6 +44,7 @@ const spinnerKeyframes = `
 `
 
 const Memory: React.FC = () => {
+  const colors = useColors()
   const [files, setFiles] = React.useState<MemoryFile[]>([])
   const [selectedFile, setSelectedFile] = React.useState<string | null>(null)
   const [fileContent, setFileContent] = React.useState<string>('')
@@ -172,140 +163,9 @@ const Memory: React.FC = () => {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
   }
 
-  const containerStyle: React.CSSProperties = {
-    display: 'flex',
-    flexDirection: 'column',
-    height: '100%',
-    background: colors.bg,
-    color: colors.text,
-    fontFamily: 'system-ui, -apple-system, sans-serif',
-    position: 'relative',
-  }
-
-  const searchBarStyle: React.CSSProperties = {
-    display: 'flex',
-    gap: 8,
-    padding: '12px 16px',
-    borderBottom: `1px solid ${colors.border}`,
-    background: colors.card,
-    alignItems: 'center',
-  }
-
-  const searchInputStyle: React.CSSProperties = {
-    flex: 1,
-    background: colors.bg,
-    border: `1px solid ${colors.border}`,
-    borderRadius: 4,
-    padding: '8px 12px',
-    color: colors.text,
-    fontSize: 14,
-    outline: 'none',
-    fontFamily: 'inherit',
-  }
-
-  const searchBtnStyle: React.CSSProperties = {
-    background: colors.accent,
-    color: '#000',
-    border: 'none',
-    borderRadius: 4,
-    padding: '8px 16px',
-    cursor: 'pointer',
-    fontWeight: 600,
-    fontSize: 14,
-    opacity: searching ? 0.6 : 1,
-  }
-
-  const bodyStyle: React.CSSProperties = {
-    display: 'flex',
-    flex: 1,
-    overflow: 'hidden',
-    position: 'relative',
-    flexDirection: isMobile ? 'column' : 'row',
-  }
-
-  const sidebarStyle: React.CSSProperties = isMobile
-    ? {
-        position: 'absolute' as const,
-        top: 0,
-        left: 0,
-        width: '80%',
-        maxWidth: 300,
-        height: '100%',
-        zIndex: 20,
-        borderRight: `1px solid ${colors.border}`,
-        overflowY: 'auto',
-        background: colors.card,
-        transform: sidebarOpen ? 'translateX(0)' : 'translateX(-100%)',
-        transition: 'transform 0.2s ease',
-        boxShadow: sidebarOpen ? '4px 0 20px rgba(0,0,0,0.5)' : 'none',
-      }
-    : {
-        width: 240,
-        minWidth: 240,
-        borderRight: `1px solid ${colors.border}`,
-        overflowY: 'auto',
-        background: colors.card,
-      }
-
-  const sidebarHeaderStyle: React.CSSProperties = {
-    padding: '12px 16px',
-    fontSize: 12,
-    fontWeight: 700,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    color: colors.textDim,
-    borderBottom: `1px solid ${colors.border}`,
-  }
-
-  const fileItemStyle = (active: boolean): React.CSSProperties => ({
-    padding: '10px 16px',
-    cursor: 'pointer',
-    borderBottom: `1px solid ${colors.border}`,
-    background: active ? colors.bg : 'transparent',
-    borderLeft: active ? `3px solid ${colors.accent}` : '3px solid transparent',
-    transition: 'background 0.15s',
-  })
-
-  const fileNameStyle = (active: boolean): React.CSSProperties => ({
-    fontSize: 13,
-    fontWeight: active ? 600 : 400,
-    color: active ? colors.accent : colors.text,
-    wordBreak: 'break-all',
-    fontFamily: 'monospace',
-  })
-
-  const fileMetaStyle: React.CSSProperties = {
-    fontSize: 11,
-    color: colors.textDim,
-    marginTop: 4,
-  }
-
-  const mainAreaStyle: React.CSSProperties = {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column',
-    overflow: 'hidden',
-  }
-
-  const mainHeaderStyle: React.CSSProperties = {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '12px 20px',
-    borderBottom: `1px solid ${colors.border}`,
-    background: colors.card,
-  }
-
-  const mainHeaderTitleStyle: React.CSSProperties = {
-    fontSize: 14,
-    fontWeight: 600,
-    fontFamily: 'monospace',
-    color: colors.accent,
-  }
-
   const btnStyle = (color: string, disabled?: boolean): React.CSSProperties => ({
     background: color,
-    color: color === colors.accent || color === colors.green ? '#000' : '#fff',
+    color: color === colors.accent || color === colors.success ? colors.accentContrast : '#fff',
     border: 'none',
     borderRadius: 4,
     padding: '6px 14px',
@@ -316,105 +176,40 @@ const Memory: React.FC = () => {
     opacity: disabled ? 0.5 : 1,
   })
 
-  const contentStyle: React.CSSProperties = {
-    flex: 1,
-    overflow: 'auto',
-    padding: 20,
-  }
-
-  const preStyle: React.CSSProperties = {
-    fontFamily: 'monospace',
-    fontSize: 13,
-    lineHeight: 1.6,
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-word',
-    color: colors.text,
-    margin: 0,
-  }
-
-  const textareaStyle: React.CSSProperties = {
-    width: '100%',
-    height: '100%',
-    background: colors.bg,
-    color: colors.text,
-    border: `1px solid ${colors.border}`,
-    borderRadius: 4,
-    padding: 16,
-    fontFamily: 'monospace',
-    fontSize: 13,
-    lineHeight: 1.6,
-    resize: 'none',
-    outline: 'none',
-    boxSizing: 'border-box',
-  }
-
-  const emptyStateStyle: React.CSSProperties = {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-    color: colors.textDim,
-    fontSize: 14,
-    flexDirection: 'column',
-    gap: 8,
-  }
-
-  const resultCardStyle: React.CSSProperties = {
-    background: colors.card,
-    border: `1px solid ${colors.border}`,
-    borderRadius: 6,
-    padding: 16,
-    marginBottom: 12,
-    cursor: 'pointer',
-  }
-
-  const resultFileStyle: React.CSSProperties = {
-    fontSize: 13,
-    fontWeight: 600,
-    color: colors.accent,
-    fontFamily: 'monospace',
-    marginBottom: 8,
-  }
-
-  const resultSnippetStyle: React.CSSProperties = {
-    fontSize: 12,
-    color: colors.textDim,
-    fontFamily: 'monospace',
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-word',
-    lineHeight: 1.5,
-    maxHeight: 100,
-    overflow: 'hidden',
-  }
-
-  const resultScoreStyle: React.CSSProperties = {
-    fontSize: 11,
-    color: colors.green,
-    marginTop: 8,
-    fontWeight: 600,
-  }
-
-  const sidebarToggleBtnStyle: React.CSSProperties = {
-    background: colors.card,
-    border: `1px solid ${colors.border}`,
-    borderRadius: 4,
-    color: colors.accent,
-    cursor: 'pointer',
-    padding: '6px 10px',
-    fontSize: 16,
-    lineHeight: 1,
-    fontWeight: 700,
-    flexShrink: 0,
-  }
-
   return (
-    <div style={containerStyle}>
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      height: '100%',
+      background: colors.bgPrimary,
+      color: colors.textPrimary,
+      fontFamily: 'system-ui, -apple-system, sans-serif',
+      position: 'relative',
+    }}>
       <style>{spinnerKeyframes}</style>
       {/* Search Bar */}
-      <div style={searchBarStyle}>
+      <div style={{
+        display: 'flex',
+        gap: 8,
+        padding: '12px 16px',
+        borderBottom: `1px solid ${colors.border}`,
+        background: colors.bgCard,
+        alignItems: 'center',
+      }}>
         {isMobile && (
           <button
-            style={sidebarToggleBtnStyle}
+            style={{
+              background: colors.bgCard,
+              border: `1px solid ${colors.border}`,
+              borderRadius: 4,
+              color: colors.accent,
+              cursor: 'pointer',
+              padding: '6px 10px',
+              fontSize: 16,
+              lineHeight: 1,
+              fontWeight: 700,
+              flexShrink: 0,
+            }}
             onClick={() => setSidebarOpen(!sidebarOpen)}
             title="Toggle sidebar"
           >
@@ -422,7 +217,17 @@ const Memory: React.FC = () => {
           </button>
         )}
         <input
-          style={searchInputStyle}
+          style={{
+            flex: 1,
+            background: colors.bgPrimary,
+            border: `1px solid ${colors.border}`,
+            borderRadius: 4,
+            padding: '8px 12px',
+            color: colors.textPrimary,
+            fontSize: 14,
+            outline: 'none',
+            fontFamily: 'inherit',
+          }}
           placeholder="Search memory..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
@@ -431,7 +236,17 @@ const Memory: React.FC = () => {
           }}
         />
         <button
-          style={searchBtnStyle}
+          style={{
+            background: colors.accent,
+            color: colors.accentContrast,
+            border: 'none',
+            borderRadius: 4,
+            padding: '8px 16px',
+            cursor: 'pointer',
+            fontWeight: 600,
+            fontSize: 14,
+            opacity: searching ? 0.6 : 1,
+          }}
           onClick={doSearch}
           disabled={searching}
         >
@@ -440,7 +255,13 @@ const Memory: React.FC = () => {
       </div>
 
       {/* Body */}
-      <div style={bodyStyle}>
+      <div style={{
+        display: 'flex',
+        flex: 1,
+        overflow: 'hidden',
+        position: 'relative',
+        flexDirection: isMobile ? 'column' : 'row',
+      }}>
         {/* Mobile overlay backdrop */}
         {isMobile && sidebarOpen && (
           <div
@@ -451,28 +272,72 @@ const Memory: React.FC = () => {
               left: 0,
               right: 0,
               bottom: 0,
-              background: 'rgba(0,0,0,0.5)',
+              background: colors.bgOverlay,
               zIndex: 10,
             }}
           />
         )}
 
         {/* Sidebar */}
-        <div style={sidebarStyle}>
-          <div style={sidebarHeaderStyle}>Memory Files</div>
+        <div style={isMobile
+          ? {
+              position: 'absolute' as const,
+              top: 0,
+              left: 0,
+              width: '80%',
+              maxWidth: 300,
+              height: '100%',
+              zIndex: 20,
+              borderRight: `1px solid ${colors.border}`,
+              overflowY: 'auto',
+              background: colors.bgCard,
+              transform: sidebarOpen ? 'translateX(0)' : 'translateX(-100%)',
+              transition: 'transform 0.2s ease',
+              boxShadow: sidebarOpen ? `4px 0 20px ${colors.shadow}` : 'none',
+            }
+          : {
+              width: 240,
+              minWidth: 240,
+              borderRight: `1px solid ${colors.border}`,
+              overflowY: 'auto',
+              background: colors.bgCard,
+            }
+        }>
+          <div style={{
+            padding: '12px 16px',
+            fontSize: 12,
+            fontWeight: 700,
+            textTransform: 'uppercase',
+            letterSpacing: 1,
+            color: colors.textMuted,
+            borderBottom: `1px solid ${colors.border}`,
+          }}>Memory Files</div>
           {files.length === 0 && (
-            <div style={{ padding: 16, color: colors.textDim, fontSize: 13 }}>
+            <div style={{ padding: 16, color: colors.textMuted, fontSize: 13 }}>
               No files found
             </div>
           )}
           {files.map((f) => (
             <div
               key={f.name}
-              style={fileItemStyle(selectedFile === f.name)}
+              style={{
+                padding: '10px 16px',
+                cursor: 'pointer',
+                borderBottom: `1px solid ${colors.border}`,
+                background: selectedFile === f.name ? colors.bgPrimary : 'transparent',
+                borderLeft: selectedFile === f.name ? `3px solid ${colors.accent}` : '3px solid transparent',
+                transition: 'background 0.15s',
+              }}
               onClick={() => selectFile(f.name)}
             >
-              <div style={fileNameStyle(selectedFile === f.name)}>{f.name}</div>
-              <div style={fileMetaStyle}>
+              <div style={{
+                fontSize: 13,
+                fontWeight: selectedFile === f.name ? 600 : 400,
+                color: selectedFile === f.name ? colors.accent : colors.textPrimary,
+                wordBreak: 'break-all',
+                fontFamily: 'monospace',
+              }}>{f.name}</div>
+              <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
                 {formatSize(f.size)} &middot;{' '}
                 {new Date(f.modified).toLocaleDateString()}
               </div>
@@ -481,30 +346,44 @@ const Memory: React.FC = () => {
         </div>
 
         {/* Main Area */}
-        <div style={mainAreaStyle}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           {searchResults.length > 0 ? (
             <>
-              <div style={mainHeaderStyle}>
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '12px 20px',
+                borderBottom: `1px solid ${colors.border}`,
+                background: colors.bgCard,
+              }}>
                 <span style={{ fontSize: 14, fontWeight: 600 }}>
                   Search Results ({searchResults.length})
                 </span>
                 <button
-                  style={btnStyle(colors.red)}
+                  style={btnStyle(colors.error)}
                   onClick={() => setSearchResults([])}
                 >
                   Clear
                 </button>
               </div>
-              <div style={contentStyle}>
+              <div style={{ flex: 1, overflow: 'auto', padding: 20 }}>
                 {searchResults.map((r, i) => (
                   <div
                     key={i}
-                    style={resultCardStyle}
+                    style={{
+                      background: colors.bgCard,
+                      border: `1px solid ${colors.border}`,
+                      borderRadius: 6,
+                      padding: 16,
+                      marginBottom: 12,
+                      cursor: 'pointer',
+                    }}
                     onClick={() => selectFile(r.file)}
                   >
-                    <div style={resultFileStyle}>{r.file}</div>
-                    <div style={resultSnippetStyle}>{r.content}</div>
-                    <div style={resultScoreStyle}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: colors.accent, fontFamily: 'monospace', marginBottom: 8 }}>{r.file}</div>
+                    <div style={{ fontSize: 12, color: colors.textMuted, fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.5, maxHeight: 100, overflow: 'hidden' }}>{r.content}</div>
+                    <div style={{ fontSize: 11, color: colors.success, marginTop: 8, fontWeight: 600 }}>
                       Score: {(r.score * 100).toFixed(1)}%
                     </div>
                   </div>
@@ -513,13 +392,20 @@ const Memory: React.FC = () => {
             </>
           ) : selectedFile ? (
             <>
-              <div style={mainHeaderStyle}>
-                <span style={mainHeaderTitleStyle}>{selectedFile}</span>
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '12px 20px',
+                borderBottom: `1px solid ${colors.border}`,
+                background: colors.bgCard,
+              }}>
+                <span style={{ fontSize: 14, fontWeight: 600, fontFamily: 'monospace', color: colors.accent }}>{selectedFile}</span>
                 <div>
                   {editing ? (
                     <>
                       <button
-                        style={btnStyle(colors.red)}
+                        style={btnStyle(colors.error)}
                         onClick={() => {
                           setEditing(false)
                           setEditContent(fileContent)
@@ -528,7 +414,7 @@ const Memory: React.FC = () => {
                         Cancel
                       </button>
                       <button
-                        style={btnStyle(colors.green, saving)}
+                        style={btnStyle(colors.success, saving)}
                         onClick={saveFile}
                         disabled={saving}
                       >
@@ -545,7 +431,7 @@ const Memory: React.FC = () => {
                   )}
                 </div>
               </div>
-              <div style={contentStyle}>
+              <div style={{ flex: 1, overflow: 'auto', padding: 20 }}>
                 {loadingContent ? (
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 10 }}>
                     <div
@@ -558,22 +444,53 @@ const Memory: React.FC = () => {
                         animation: 'mem-spin 0.8s linear infinite',
                       }}
                     />
-                    <span style={{ color: colors.textDim, fontSize: 13 }}>Loading file…</span>
+                    <span style={{ color: colors.textMuted, fontSize: 13 }}>Loading file…</span>
                   </div>
                 ) : editing ? (
                   <textarea
-                    style={textareaStyle}
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      background: colors.bgPrimary,
+                      color: colors.textPrimary,
+                      border: `1px solid ${colors.border}`,
+                      borderRadius: 4,
+                      padding: 16,
+                      fontFamily: 'monospace',
+                      fontSize: 13,
+                      lineHeight: 1.6,
+                      resize: 'none',
+                      outline: 'none',
+                      boxSizing: 'border-box',
+                    }}
                     value={editContent}
                     onChange={(e) => setEditContent(e.target.value)}
                     spellCheck={false}
                   />
                 ) : (
-                  <pre style={preStyle}>{fileContent}</pre>
+                  <pre style={{
+                    fontFamily: 'monospace',
+                    fontSize: 13,
+                    lineHeight: 1.6,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    color: colors.textPrimary,
+                    margin: 0,
+                  }}>{fileContent}</pre>
                 )}
               </div>
             </>
           ) : (
-            <div style={emptyStateStyle}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flex: 1,
+              color: colors.textMuted,
+              fontSize: 14,
+              flexDirection: 'column',
+              gap: 8,
+            }}>
               <div style={{ fontSize: 28, opacity: 0.3 }}>📁</div>
               Select a file from the sidebar or search memory
             </div>
@@ -600,8 +517,8 @@ const Memory: React.FC = () => {
               fontSize: 13,
               fontWeight: 600,
               color: '#fff',
-              background: t.type === 'success' ? colors.green : colors.red,
-              boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+              background: t.type === 'success' ? colors.success : colors.error,
+              boxShadow: `0 4px 16px ${colors.shadow}`,
               animation: 'mem-toast-in 0.25s ease-out',
               display: 'flex',
               alignItems: 'center',

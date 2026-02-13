@@ -67,6 +67,7 @@ export class SessionManager {
   private transcriptIndexTimer: NodeJS.Timeout | null = null;
   private defaultCompactInstructions: string | null = null; // default instructions for all compactions
   private overheadEstimator: ((sessionId: string) => number) | null = null; // callback to get system prompt + tool defs overhead
+  private sessionTokens: Map<string, { prompt: number; completion: number; total: number; msgCountAtSnapshot: number }> = new Map(); // actual API-reported token counts per session
 
   constructor(config: Config) {
     this.config = config;
@@ -277,6 +278,19 @@ export class SessionManager {
     this.overheadEstimator = fn;
   }
 
+  /** Store actual API-reported token usage for a session.
+   *  Called after each LLM API call with the usage data from the response.
+   *  prompt_tokens includes the full context (system prompt + tools + messages). */
+  setSessionTokens(sessionId: string, usage: { promptTokens: number; completionTokens: number; totalTokens: number }): void {
+    const session = this.sessions.get(sessionId);
+    this.sessionTokens.set(sessionId, {
+      prompt: usage.promptTokens,
+      completion: usage.completionTokens,
+      total: usage.totalTokens,
+      msgCountAtSnapshot: session ? session.messages.length : 0,
+    });
+  }
+
   addMessage(sessionId: string, message: LLMMessage): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
@@ -399,6 +413,7 @@ export class SessionManager {
     session.messages = [];
     session.messageCount = 0;
     session.updatedAt = new Date().toISOString();
+    this.sessionTokens.delete(sessionId); // clear stale API token data
     this.saveSession(sessionId);
   }
 
@@ -596,6 +611,7 @@ export class SessionManager {
       },
     ];
     session.updatedAt = new Date().toISOString();
+    this.sessionTokens.delete(sessionId); // clear stale API token data after compaction
     this.saveSession(sessionId);
 
     const afterTokens = this.estimateTokensForMessages(session.messages);
@@ -806,14 +822,24 @@ export class SessionManager {
     return Math.ceil(chars / 4);
   }
 
-  /** Estimate tokens for a session's messages INCLUDING system prompt + tool defs overhead */
+  /** Get token count for a session.
+   *  Uses actual API-reported prompt_tokens when available (adjusted for messages added since the snapshot).
+   *  Falls back to character-based estimate + overhead when no API data exists. */
   private estimateTokensWithOverhead(sessionId: string, messages: LLMMessage[]): number {
+    const snapshot = this.sessionTokens.get(sessionId);
+    if (snapshot && snapshot.prompt > 0) {
+      // Use real API value, plus estimate for any messages added after the snapshot
+      const newMsgs = messages.slice(snapshot.msgCountAtSnapshot);
+      const delta = newMsgs.length > 0 ? this.estimateTokensForMessages(newMsgs) : 0;
+      return snapshot.prompt + snapshot.completion + delta;
+    }
+    // Fallback: character-based estimate + overhead
     const msgTokens = this.estimateTokensForMessages(messages);
     const overhead = this.overheadEstimator ? this.overheadEstimator(sessionId) : 0;
     return msgTokens + overhead;
   }
 
-  /** Get approximate token count for a session (includes system prompt + tool definition overhead) */
+  /** Get token count for a session (uses real API values when available). */
   estimateTokens(sessionId: string): number {
     const messages = this.getMessages(sessionId);
     return this.estimateTokensWithOverhead(sessionId, messages);

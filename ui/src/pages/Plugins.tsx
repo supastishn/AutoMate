@@ -1,5 +1,6 @@
 import React from 'react'
 import { onDataUpdate } from '../hooks/useDataUpdates'
+import { useColors } from '../ThemeContext'
 
 interface PluginTool {
   name: string
@@ -27,80 +28,8 @@ const skeletonKeyframes = `
 }
 `
 
-const card: React.CSSProperties = {
-  background: '#141414',
-  border: '1px solid #222',
-  borderRadius: 8,
-  padding: 20,
-}
-
-const btnBase: React.CSSProperties = {
-  border: 'none',
-  borderRadius: 6,
-  padding: '8px 16px',
-  fontSize: 13,
-  fontWeight: 600,
-  cursor: 'pointer',
-  transition: 'opacity 0.15s',
-}
-
-const inputStyle: React.CSSProperties = {
-  background: '#0a0a0a',
-  border: '1px solid #333',
-  borderRadius: 6,
-  padding: '8px 12px',
-  fontSize: 13,
-  color: '#e0e0e0',
-  outline: 'none',
-  flex: 1,
-  minWidth: 140,
-}
-
-const selectStyle: React.CSSProperties = {
-  ...inputStyle,
-  flex: 'none',
-  minWidth: 140,
-  cursor: 'pointer',
-}
-
-function typeBadgeColor(type: string): string {
-  switch (type) {
-    case 'tool': return '#4fc3f7'
-    case 'channel': return '#4caf50'
-    case 'middleware': return '#ff9800'
-    default: return '#888'
-  }
-}
-
-function SkeletonCard() {
-  const shimmerBg = 'linear-gradient(90deg, #1a1a1a 25%, #242424 50%, #1a1a1a 75%)'
-  const barStyle = (width: string, height: number): React.CSSProperties => ({
-    width,
-    height,
-    borderRadius: 4,
-    background: shimmerBg,
-    backgroundSize: '400px 100%',
-    animation: 'plugin-shimmer 1.5s infinite linear',
-  })
-  return (
-    <div style={{ ...card }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-        <div style={barStyle('120px', 16)} />
-        <div style={barStyle('40px', 14)} />
-        <div style={{ ...barStyle('50px', 14), marginLeft: 'auto' }} />
-      </div>
-      <div style={barStyle('90%', 12)} />
-      <div style={{ ...barStyle('60%', 12), marginTop: 6 }} />
-      <div style={{ marginTop: 14, display: 'flex', gap: 6 }}>
-        <div style={barStyle('60px', 22)} />
-        <div style={barStyle('80px', 22)} />
-        <div style={barStyle('70px', 22)} />
-      </div>
-    </div>
-  )
-}
-
 export default function Plugins() {
+  const colors = useColors()
   const [plugins, setPlugins] = React.useState<Plugin[]>([])
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
@@ -109,6 +38,79 @@ export default function Plugins() {
   const [scaffoldType, setScaffoldType] = React.useState<'tool' | 'channel' | 'middleware'>('tool')
   const [scaffoldStatus, setScaffoldStatus] = React.useState<string | null>(null)
   const [unloading, setUnloading] = React.useState<string | null>(null)
+
+  const card: React.CSSProperties = {
+    background: colors.bgCard,
+    border: `1px solid ${colors.border}`,
+    borderRadius: 8,
+    padding: 20,
+  }
+
+  const btnBase: React.CSSProperties = {
+    border: 'none',
+    borderRadius: 6,
+    padding: '8px 16px',
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: 'pointer',
+    transition: 'opacity 0.15s',
+  }
+
+  const inputStyle: React.CSSProperties = {
+    background: colors.bgPrimary,
+    border: `1px solid ${colors.borderLight}`,
+    borderRadius: 6,
+    padding: '8px 12px',
+    fontSize: 13,
+    color: colors.textPrimary,
+    outline: 'none',
+    flex: 1,
+    minWidth: 140,
+  }
+
+  const selectStyle: React.CSSProperties = {
+    ...inputStyle,
+    flex: 'none',
+    minWidth: 140,
+    cursor: 'pointer',
+  }
+
+  function typeBadgeColor(type: string): string {
+    switch (type) {
+      case 'tool': return colors.accent
+      case 'channel': return colors.success
+      case 'middleware': return colors.warning
+      default: return colors.textSecondary
+    }
+  }
+
+  function SkeletonCard() {
+    const shimmerBg = `linear-gradient(90deg, ${colors.bgHover} 25%, ${colors.bgCard} 50%, ${colors.bgHover} 75%)`
+    const barStyle = (width: string, height: number): React.CSSProperties => ({
+      width,
+      height,
+      borderRadius: 4,
+      background: shimmerBg,
+      backgroundSize: '400px 100%',
+      animation: 'plugin-shimmer 1.5s infinite linear',
+    })
+    return (
+      <div style={{ ...card }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+          <div style={barStyle('120px', 16)} />
+          <div style={barStyle('40px', 14)} />
+          <div style={{ ...barStyle('50px', 14), marginLeft: 'auto' }} />
+        </div>
+        <div style={barStyle('90%', 12)} />
+        <div style={{ ...barStyle('60%', 12), marginTop: 6 }} />
+        <div style={{ marginTop: 14, display: 'flex', gap: 6 }}>
+          <div style={barStyle('60px', 22)} />
+          <div style={barStyle('80px', 22)} />
+          <div style={barStyle('70px', 22)} />
+        </div>
+      </div>
+    )
+  }
 
   const fetchPlugins = React.useCallback(() => {
     fetch('/api/plugins')
@@ -183,18 +185,18 @@ export default function Plugins() {
   }
 
   return (
-    <div style={{ padding: 30, maxWidth: 960, background: '#0a0a0a', minHeight: '100vh' }}>
+    <div style={{ padding: 30, maxWidth: 960, background: colors.bgPrimary, minHeight: '100vh' }}>
       <style>{skeletonKeyframes}</style>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
-        <h1 style={{ fontSize: 24, fontWeight: 600, margin: 0, color: '#e0e0e0' }}>Plugins</h1>
+        <h1 style={{ fontSize: 24, fontWeight: 600, margin: 0, color: colors.textPrimary }}>Plugins</h1>
         <button
           onClick={handleReload}
           disabled={reloading}
           style={{
             ...btnBase,
-            background: reloading ? '#333' : '#4fc3f7',
-            color: reloading ? '#888' : '#000',
+            background: reloading ? colors.borderLight : colors.accent,
+            color: reloading ? colors.textSecondary : colors.accentContrast,
             opacity: reloading ? 0.7 : 1,
           }}
         >
@@ -204,7 +206,7 @@ export default function Plugins() {
 
       {/* Scaffold form */}
       <div style={{ ...card, marginBottom: 24 }}>
-        <h3 style={{ fontSize: 15, fontWeight: 600, marginTop: 0, marginBottom: 12, color: '#ccc' }}>
+        <h3 style={{ fontSize: 15, fontWeight: 600, marginTop: 0, marginBottom: 12, color: colors.textSecondary }}>
           Scaffold New Plugin
         </h3>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -230,8 +232,8 @@ export default function Plugins() {
             disabled={!scaffoldName.trim()}
             style={{
               ...btnBase,
-              background: scaffoldName.trim() ? '#4caf50' : '#333',
-              color: scaffoldName.trim() ? '#000' : '#666',
+              background: scaffoldName.trim() ? colors.success : colors.borderLight,
+              color: scaffoldName.trim() ? colors.successContrast : colors.inputPlaceholder,
             }}
           >
             Create
@@ -241,7 +243,7 @@ export default function Plugins() {
           <div style={{
             marginTop: 10,
             fontSize: 13,
-            color: scaffoldStatus.includes('Failed') ? '#f44336' : '#4caf50',
+            color: scaffoldStatus.includes('Failed') ? colors.error : colors.success,
           }}>
             {scaffoldStatus}
           </div>
@@ -252,10 +254,10 @@ export default function Plugins() {
       {error && !loading && (
         <div style={{
           padding: '12px 16px',
-          background: 'rgba(244,67,54,0.1)',
-          border: '1px solid #f44336',
+          background: colors.errorMuted,
+          border: `1px solid ${colors.error}`,
           borderRadius: 6,
-          color: '#f44336',
+          color: colors.error,
           fontSize: 13,
           marginBottom: 16,
           display: 'flex',
@@ -268,7 +270,7 @@ export default function Plugins() {
             style={{
               background: 'none',
               border: 'none',
-              color: '#f44336',
+              color: colors.error,
               cursor: 'pointer',
               fontSize: 18,
               lineHeight: 1,
@@ -291,7 +293,7 @@ export default function Plugins() {
       ) : plugins.length === 0 && !error ? (
         <div style={{ ...card, textAlign: 'center' as const, padding: 40 }}>
           <div style={{ fontSize: 32, marginBottom: 8, opacity: 0.3 }}>🧩</div>
-          <div style={{ color: '#666', fontSize: 13 }}>
+          <div style={{ color: colors.inputPlaceholder, fontSize: 13 }}>
             No plugins installed. Use the scaffold form above or install plugins manually.
           </div>
         </div>
@@ -304,12 +306,12 @@ export default function Plugins() {
               <div key={m.name} style={{ ...card }}>
                 {/* Card header */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                  <span style={{ fontSize: 16, fontWeight: 600, color: '#e0e0e0' }}>{m.name}</span>
+                  <span style={{ fontSize: 16, fontWeight: 600, color: colors.textPrimary }}>{m.name}</span>
                   <span style={{
                     fontSize: 11,
                     fontFamily: 'monospace',
-                    color: '#888',
-                    background: '#0a0a0a',
+                    color: colors.textSecondary,
+                    background: colors.bgPrimary,
                     padding: '2px 6px',
                     borderRadius: 4,
                   }}>
@@ -335,9 +337,9 @@ export default function Plugins() {
                       ...btnBase,
                       padding: '4px 10px',
                       fontSize: 11,
-                      background: unloading === m.name ? '#333' : '#2e1a1a',
-                      color: unloading === m.name ? '#666' : '#f44336',
-                      border: '1px solid #4a2a2a',
+                      background: unloading === m.name ? colors.borderLight : colors.bgDanger,
+                      color: unloading === m.name ? colors.inputPlaceholder : colors.error,
+                      border: `1px solid ${colors.borderDanger}`,
                     }}
                   >
                     {unloading === m.name ? 'Unloading...' : 'Unload'}
@@ -346,7 +348,7 @@ export default function Plugins() {
 
                 {/* Description */}
                 {m.description && (
-                  <div style={{ fontSize: 13, color: '#888', marginBottom: 12, lineHeight: 1.5 }}>
+                  <div style={{ fontSize: 13, color: colors.textSecondary, marginBottom: 12, lineHeight: 1.5 }}>
                     {m.description}
                   </div>
                 )}
@@ -354,7 +356,7 @@ export default function Plugins() {
                 {/* Tools */}
                 {p.tools && p.tools.length > 0 && (
                   <div>
-                    <div style={{ fontSize: 11, color: '#555', textTransform: 'uppercase', marginBottom: 6, letterSpacing: 0.5 }}>
+                    <div style={{ fontSize: 11, color: colors.textMuted, textTransform: 'uppercase', marginBottom: 6, letterSpacing: 0.5 }}>
                       Tools ({p.tools.length})
                     </div>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
@@ -365,11 +367,11 @@ export default function Plugins() {
                           style={{
                             fontSize: 12,
                             fontFamily: 'monospace',
-                            background: '#0d0d0d',
-                            border: '1px solid #1a1a1a',
+                            background: colors.bgSecondary,
+                            border: `1px solid ${colors.border}`,
                             borderRadius: 12,
                             padding: '3px 10px',
-                            color: '#4fc3f7',
+                            color: colors.accent,
                             cursor: 'default',
                           }}
                         >
@@ -384,12 +386,12 @@ export default function Plugins() {
                 {(p.channel || p.middleware) && (
                   <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
                     {p.channel && (
-                      <span style={{ fontSize: 11, color: '#4caf50', fontFamily: 'monospace' }}>
+                      <span style={{ fontSize: 11, color: colors.success, fontFamily: 'monospace' }}>
                         + channel
                       </span>
                     )}
                     {p.middleware && (
-                      <span style={{ fontSize: 11, color: '#ff9800', fontFamily: 'monospace' }}>
+                      <span style={{ fontSize: 11, color: colors.warning, fontFamily: 'monospace' }}>
                         + middleware
                       </span>
                     )}

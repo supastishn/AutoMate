@@ -17,6 +17,7 @@ import { setCanvasBroadcaster, getCanvas, getAllCanvases, type CanvasEvent } fro
 import { setImageBroadcaster, type ImageEvent } from '../agent/tools/image.js';
 import { PresenceManager, type PresenceEvent, type TypingEvent } from './presence.js';
 import { fetchRegistry, searchSkills, fetchSkillContent, vetSkillContent, formatVetResult, installSkill, uninstallSkill, updateSkill, updateAllSkills, listInstalled } from '../clawhub/registry.js';
+import { getBackgroundAgents, clearCompletedAgents } from '../agent/tools/subagent.js';
 
 interface ContextInfo {
   used: number;
@@ -270,7 +271,7 @@ export class GatewayServer {
     this.app.get<{ Params: { id: string } }>('/api/sessions/:id', async (req) => {
       const session = this.sessionManager.getSession(req.params.id);
       if (!session) return { error: 'Not found' };
-      return { session };
+      return { session, processing: this.agent.isProcessing(req.params.id) };
     });
 
     this.app.delete<{ Params: { id: string } }>('/api/sessions/:id', async (req) => {
@@ -1006,6 +1007,16 @@ this.app.post<{ Params: { id: string } }>('/api/sessions/:id/repair', async (req
       return { ok: true, name: req.params.name, changes };
     });
 
+// ── SubAgents API ──────────────────────────────────────────────────
+this.app.get('/api/subagents', async () => {
+  return { agents: getBackgroundAgents() };
+});
+
+this.app.post('/api/subagents/clear', async () => {
+  const cleared = clearCompletedAgents();
+  return { ok: true, cleared };
+});
+
 // ── Plugin Unload API ─────────────────────────────────────────────
     this.app.post<{ Body: { name: string } }>('/api/plugins/unload', async (req, reply) => {
       const pm = this.agent.getPluginManager();
@@ -1093,11 +1104,14 @@ this.app.post<{ Params: { id: string } }>('/api/sessions/:id/repair', async (req
             }
 
             // Stream response — route through router if available
+            // Use sendToSession so that if the client reconnects mid-stream
+            // (e.g. page refresh), chunks are delivered to the new socket.
+            const streamSessionId = sessionId;
             const onStream = (chunk: string) => {
-              socket.send(JSON.stringify({ type: 'stream', content: chunk }));
+              this.sendToSession(streamSessionId, { type: 'stream', content: chunk });
             };
             const onToolCall = (tc: { name: string; arguments?: string; result: string }) => {
-              socket.send(JSON.stringify({ type: 'tool_call', name: tc.name, arguments: tc.arguments, result: tc.result }));
+              this.sendToSession(streamSessionId, { type: 'tool_call', name: tc.name, arguments: tc.arguments, result: tc.result });
             };
             const result = this.router
               ? await this.router.processMessage(sessionId, content, onStream, undefined, agentOverride)
@@ -1105,7 +1119,7 @@ this.app.post<{ Params: { id: string } }>('/api/sessions/:id/repair', async (req
 
             // Send completion (include mapped messages so client gets fresh serverIndex values)
             const updatedSession = this.sessionManager.getSession(sessionId);
-            socket.send(JSON.stringify({
+            this.sendToSession(sessionId, {
               type: 'response',
               content: result.content,
               tool_calls: result.toolCalls,
@@ -1113,7 +1127,7 @@ this.app.post<{ Params: { id: string } }>('/api/sessions/:id/repair', async (req
               context: this.getContextInfo(sessionId),
               messages: updatedSession ? this.mapSessionMessages(updatedSession.messages) : [],
               done: true,
-            }));
+            });
           }
 
           // User typing indicator — broadcast to other clients
@@ -1243,13 +1257,14 @@ this.app.post<{ Params: { id: string } }>('/api/sessions/:id/repair', async (req
             this.sessionManager.saveSession(sessionId);
 
             // Now regenerate the response
+            const retrySessionId = sessionId;
             const retryAgentOverride = this.webChatClients.get(clientId)?.agentOverride;
             const result = this.router
               ? await this.router.processMessage(sessionId, userContent, (chunk) => {
-                  socket.send(JSON.stringify({ type: 'stream', content: chunk }));
+                  this.sendToSession(retrySessionId, { type: 'stream', content: chunk });
                 }, undefined, retryAgentOverride)
               : await this.agent.processMessage(sessionId, userContent, (chunk) => {
-                  socket.send(JSON.stringify({ type: 'stream', content: chunk }));
+                  this.sendToSession(retrySessionId, { type: 'stream', content: chunk });
                 });
 
             // Re-add the messages that were after the regenerated response
@@ -1259,7 +1274,7 @@ this.app.post<{ Params: { id: string } }>('/api/sessions/:id/repair', async (req
 
             // Send completion with updated messages
             const updatedSession = this.sessionManager.getSession(sessionId);
-            socket.send(JSON.stringify({
+            this.sendToSession(sessionId, {
               type: 'retry_complete',
               session_id: sessionId,
               content: result.content,
@@ -1267,7 +1282,7 @@ this.app.post<{ Params: { id: string } }>('/api/sessions/:id/repair', async (req
               usage: result.usage,
               messages: updatedSession ? this.mapSessionMessages(updatedSession.messages) : [],
               context: this.getContextInfo(sessionId),
-            }));
+            });
           }
         } catch (err) {
           socket.send(JSON.stringify({ type: 'error', message: String(err) }));
@@ -1315,6 +1330,16 @@ this.app.post<{ Params: { id: string } }>('/api/sessions/:id/repair', async (req
         this.canvasClients.delete(clientId);
       });
     });
+  }
+
+  /** Send a JSON message to all webchat clients currently attached to a given session. */
+  private sendToSession(sessionId: string, payload: Record<string, unknown>): void {
+    const msg = JSON.stringify(payload);
+    for (const [, client] of this.webChatClients) {
+      if (client.sessionId === sessionId) {
+        try { client.ws.send(msg); } catch {}
+      }
+    }
   }
 
   /** Map raw session messages to a client-friendly format, pairing tool results with assistant tool_calls. */

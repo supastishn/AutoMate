@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { useColors } from '../ThemeContext'
 
 interface Skill {
   name: string
@@ -6,16 +7,17 @@ interface Skill {
   file?: string
 }
 
-const card = {
-  background: '#141414', border: '1px solid #222', borderRadius: 8, padding: 20,
-} as React.CSSProperties
-
 export default function Skills() {
+  const colors = useColors()
   const [skills, setSkills] = useState<Skill[]>([])
   const [loading, setLoading] = useState(true)
   const [newName, setNewName] = useState('')
   const [newContent, setNewContent] = useState('# My Skill\n\nDescribe what this skill does...')
   const [creating, setCreating] = useState(false)
+
+  const card: React.CSSProperties = {
+    background: colors.bgCard, border: `1px solid ${colors.border}`, borderRadius: 8, padding: 20,
+  }
 
   useEffect(() => {
     fetch('/api/skills')
@@ -29,42 +31,42 @@ export default function Skills() {
 
   return (
     <div style={{ padding: 30, maxWidth: 900 }}>
-      <h1 style={{ fontSize: 24, marginBottom: 24, fontWeight: 600 }}>Skills</h1>
+      <h1 style={{ fontSize: 24, marginBottom: 24, fontWeight: 600, color: colors.textPrimary }}>Skills</h1>
 
       <div style={{ ...card, marginBottom: 16 }}>
-        <div style={{ fontSize: 14, color: '#888', marginBottom: 12 }}>
-          Skills are plugin modules that extend AutoMate's capabilities. 
+        <div style={{ fontSize: 14, color: colors.textSecondary, marginBottom: 12 }}>
+          Skills are plugin modules that extend AutoMate's capabilities.
           Each skill is a directory with a SKILL.md file that gets injected into the agent's system prompt.
         </div>
-        <div style={{ fontSize: 13, fontFamily: 'monospace', color: '#4fc3f7' }}>
+        <div style={{ fontSize: 13, fontFamily: 'monospace', color: colors.accent }}>
           ~/.automate/skills/
         </div>
       </div>
 
       {/* Loaded skills */}
       <div style={{ ...card, marginBottom: 16 }}>
-        <h3 style={{ fontSize: 16, marginBottom: 12 }}>
+        <h3 style={{ fontSize: 16, marginBottom: 12, color: colors.textPrimary }}>
           Loaded Skills ({skills.length})
         </h3>
         {loading ? (
-          <div style={{ color: '#666', fontSize: 13 }}>Loading...</div>
+          <div style={{ color: colors.inputPlaceholder, fontSize: 13 }}>Loading...</div>
         ) : skills.length === 0 ? (
-          <div style={{ color: '#666', fontSize: 13 }}>
-            No skills loaded. Install skills via <code style={{ color: '#4fc3f7' }}>automate clawhub browse</code>
+          <div style={{ color: colors.inputPlaceholder, fontSize: 13 }}>
+            No skills loaded. Install skills via <code style={{ color: colors.accent }}>automate clawhub browse</code>
           </div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
             {skills.map(s => (
               <div key={s.name} style={{
-                padding: 12, background: '#0d0d0d', borderRadius: 6, border: '1px solid #1a1a1a',
+                padding: 12, background: colors.bgSecondary, borderRadius: 6, border: `1px solid ${colors.border}`,
                 display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
               }}>
                 <div>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: '#4fc3f7', marginBottom: 4 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: colors.accent, marginBottom: 4 }}>
                     {s.name}
                   </div>
                   {s.description && (
-                    <div style={{ fontSize: 12, color: '#888' }}>{s.description}</div>
+                    <div style={{ fontSize: 12, color: colors.textSecondary }}>{s.description}</div>
                   )}
                 </div>
                 <button onClick={() => {
@@ -84,8 +86,8 @@ export default function Skills() {
                     })
                     .catch(() => alert('Failed to uninstall'))
                 }} style={{
-                  padding: '2px 8px', background: '#2e1a1a', color: '#f44336',
-                  border: '1px solid #4a2a2a', borderRadius: 4, cursor: 'pointer', fontSize: 11,
+                  padding: '2px 8px', background: colors.bgDanger, color: colors.error,
+                  border: `1px solid ${colors.borderDanger}`, borderRadius: 4, cursor: 'pointer', fontSize: 11,
                   flexShrink: 0,
                 }}>
                   Uninstall
@@ -97,27 +99,27 @@ export default function Skills() {
       </div>
 
       <div style={{ ...card, marginBottom: 16 }}>
-        <h3 style={{ fontSize: 16, marginBottom: 12 }}>Creating a Skill</h3>
-        <div style={{ fontSize: 13, fontFamily: 'monospace', background: '#0a0a0a', padding: 12, borderRadius: 4, lineHeight: 1.8 }}>
-          <div style={{ color: '#888' }}># Create a skill directory</div>
-          <div style={{ color: '#e0e0e0' }}>mkdir -p ~/.automate/skills/my-skill</div>
-          <div style={{ color: '#e0e0e0', marginTop: 4 }}>cat {'>'} ~/.automate/skills/my-skill/SKILL.md {'<<'} 'EOF'</div>
-          <div style={{ color: '#81c784' }}># My Custom Skill</div>
-          <div style={{ color: '#81c784' }}>When the user asks about X, do Y.</div>
-          <div style={{ color: '#e0e0e0' }}>EOF</div>
+        <h3 style={{ fontSize: 16, marginBottom: 12, color: colors.textPrimary }}>Creating a Skill</h3>
+        <div style={{ fontSize: 13, fontFamily: 'monospace', background: colors.bgPrimary, padding: 12, borderRadius: 4, lineHeight: 1.8 }}>
+          <div style={{ color: colors.textSecondary }}># Create a skill directory</div>
+          <div style={{ color: colors.textPrimary }}>mkdir -p ~/.automate/skills/my-skill</div>
+          <div style={{ color: colors.textPrimary, marginTop: 4 }}>cat {'>'} ~/.automate/skills/my-skill/SKILL.md {'<<'} 'EOF'</div>
+          <div style={{ color: colors.syntaxString }}># My Custom Skill</div>
+          <div style={{ color: colors.syntaxString }}>When the user asks about X, do Y.</div>
+          <div style={{ color: colors.textPrimary }}>EOF</div>
         </div>
       </div>
 
       <div style={{ ...card, marginBottom: 16 }}>
-        <h3 style={{ fontSize: 16, marginBottom: 12 }}>Create Skill</h3>
+        <h3 style={{ fontSize: 16, marginBottom: 12, color: colors.textPrimary }}>Create Skill</h3>
         <div style={{ marginBottom: 8 }}>
           <input
             value={newName}
             onChange={e => setNewName(e.target.value)}
             placeholder="Skill name (e.g. my-assistant)"
             style={{
-              width: '100%', padding: '8px 12px', background: '#1a1a1a', border: '1px solid #333',
-              borderRadius: 4, color: '#e0e0e0', fontSize: 13, outline: 'none', fontFamily: 'monospace',
+              width: '100%', padding: '8px 12px', background: colors.bgHover, border: `1px solid ${colors.borderLight}`,
+              borderRadius: 4, color: colors.textPrimary, fontSize: 13, outline: 'none', fontFamily: 'monospace',
               boxSizing: 'border-box',
             }}
           />
@@ -128,8 +130,8 @@ export default function Skills() {
             onChange={e => setNewContent(e.target.value)}
             rows={6}
             style={{
-              width: '100%', padding: '8px 12px', background: '#1a1a1a', border: '1px solid #333',
-              borderRadius: 4, color: '#e0e0e0', fontSize: 12, outline: 'none', fontFamily: 'monospace',
+              width: '100%', padding: '8px 12px', background: colors.bgHover, border: `1px solid ${colors.borderLight}`,
+              borderRadius: 4, color: colors.textPrimary, fontSize: 12, outline: 'none', fontFamily: 'monospace',
               boxSizing: 'border-box', resize: 'vertical',
             }}
           />
@@ -153,8 +155,8 @@ export default function Skills() {
               .finally(() => setCreating(false))
           }}
           style={{
-            padding: '8px 20px', background: newName.trim() && !creating ? '#4fc3f7' : '#333',
-            color: newName.trim() && !creating ? '#000' : '#666',
+            padding: '8px 20px', background: newName.trim() && !creating ? colors.accent : colors.borderLight,
+            color: newName.trim() && !creating ? colors.accentContrast : colors.inputPlaceholder,
             border: 'none', borderRadius: 4, cursor: newName.trim() && !creating ? 'pointer' : 'default',
             fontWeight: 600, fontSize: 13,
           }}
@@ -164,12 +166,12 @@ export default function Skills() {
       </div>
 
       <div style={card}>
-        <h3 style={{ fontSize: 16, marginBottom: 12 }}>ClawHub Registry</h3>
-        <div style={{ fontSize: 13, color: '#888', marginBottom: 12 }}>
+        <h3 style={{ fontSize: 16, marginBottom: 12, color: colors.textPrimary }}>ClawHub Registry</h3>
+        <div style={{ fontSize: 13, color: colors.textSecondary, marginBottom: 12 }}>
           Browse and install community skills from the ClawHub registry. Preview skills with security scanning before installing.
         </div>
-        <div style={{ fontSize: 13 }}>
-          Visit the <strong style={{ color: '#4fc3f7' }}>ClawHub</strong> tab in the sidebar to browse, search, install, and manage community skills.
+        <div style={{ fontSize: 13, color: colors.textPrimary }}>
+          Visit the <strong style={{ color: colors.accent }}>ClawHub</strong> tab in the sidebar to browse, search, install, and manage community skills.
         </div>
       </div>
     </div>

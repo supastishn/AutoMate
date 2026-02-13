@@ -1,4 +1,5 @@
 import React from "react";
+import { useColors } from '../ThemeContext'
 
 interface DoctorResponse {
   ok: string[];
@@ -15,12 +16,6 @@ function parseLine(raw: string): { severity: Severity; text: string } {
   return { severity: "info", text: raw.trim() };
 }
 
-const dotColor: Record<Severity, string> = {
-  ok: "#4caf50",
-  warn: "#ff9800",
-  info: "#4fc3f7",
-};
-
 const fadeInKeyframes = `
 @keyframes doctor-fade-in {
   from { opacity: 0; transform: translateY(8px); }
@@ -28,107 +23,17 @@ const fadeInKeyframes = `
 }
 `;
 
-const styles: Record<string, React.CSSProperties> = {
-  page: {
-    background: "#0a0a0a",
-    minHeight: "100vh",
-    padding: "32px 24px",
-    color: "#e0e0e0",
-    fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-  },
-  header: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 24,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: 700,
-    color: "#fff",
-    margin: 0,
-  },
-  button: {
-    background: "#4fc3f7",
-    color: "#0a0a0a",
-    border: "none",
-    borderRadius: 6,
-    padding: "10px 20px",
-    fontSize: 14,
-    fontWeight: 600,
-    cursor: "pointer",
-  },
-  buttonDisabled: {
-    background: "#333",
-    color: "#888",
-    border: "none",
-    borderRadius: 6,
-    padding: "10px 20px",
-    fontSize: 14,
-    fontWeight: 600,
-    cursor: "not-allowed",
-  },
-  summaryCard: {
-    background: "#141414",
-    border: "1px solid #222",
-    borderRadius: 10,
-    padding: "20px 28px",
-    marginBottom: 28,
-    display: "flex",
-    gap: 32,
-    alignItems: "center",
-    flexWrap: "wrap" as const,
-  },
-  summaryBadge: {
-    fontSize: 16,
-    fontWeight: 600,
-    fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
-  },
-  section: {
-    marginBottom: 28,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: 600,
-    color: "#fff",
-    marginBottom: 12,
-  },
-  card: {
-    background: "#141414",
-    border: "1px solid #222",
-    borderRadius: 8,
-    overflow: "hidden",
-  },
-  row: {
-    display: "flex",
-    alignItems: "center",
-    gap: 12,
-    padding: "12px 20px",
-    borderBottom: "1px solid #1a1a1a",
-    fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
-    fontSize: 13,
-    lineHeight: 1.5,
-  },
-  dot: {
-    width: 8,
-    height: 8,
-    borderRadius: "50%",
-    flexShrink: 0,
-  },
-  loading: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 64,
-    color: "#888",
-    fontSize: 15,
-  },
-};
-
 const Doctor: React.FC = () => {
+  const colors = useColors()
   const [data, setData] = React.useState<DoctorResponse | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [lastRun, setLastRun] = React.useState<Date | null>(null);
+
+  const dotColor: Record<Severity, string> = {
+    ok: colors.success,
+    warn: colors.warning,
+    info: colors.accent,
+  };
 
   const fetchAudit = React.useCallback(() => {
     setLoading(true);
@@ -151,18 +56,33 @@ const Doctor: React.FC = () => {
   };
 
   return (
-    <div style={styles.page}>
+    <div style={{
+      background: colors.bgPrimary,
+      minHeight: "100vh",
+      padding: "32px 24px",
+      color: colors.textPrimary,
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+    }}>
       <style>{fadeInKeyframes}</style>
-      <div style={styles.header}>
-        <h1 style={styles.title}>Security Audit</h1>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
+        <h1 style={{ fontSize: 28, fontWeight: 700, color: colors.textPrimary, margin: 0 }}>Security Audit</h1>
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
           {lastRun && (
-            <span style={{ fontSize: 12, color: "#666", fontFamily: "monospace" }}>
+            <span style={{ fontSize: 12, color: colors.inputPlaceholder, fontFamily: "monospace" }}>
               Last run: {lastRun.toLocaleTimeString()}
             </span>
           )}
           <button
-            style={loading ? styles.buttonDisabled : styles.button}
+            style={{
+              background: loading ? colors.borderLight : colors.accent,
+              color: loading ? colors.textSecondary : colors.accentContrast,
+              border: "none",
+              borderRadius: 6,
+              padding: "10px 20px",
+              fontSize: 14,
+              fontWeight: 600,
+              cursor: loading ? "not-allowed" : "pointer",
+            }}
             disabled={loading}
             onClick={fetchAudit}
           >
@@ -172,41 +92,65 @@ const Doctor: React.FC = () => {
       </div>
 
       {loading && (
-        <div style={styles.loading}>Running audit...</div>
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 64,
+          color: colors.textSecondary,
+          fontSize: 15,
+        }}>Running audit...</div>
       )}
 
       {!loading && data && (
         <div style={fadeInStyle}>
           {/* Summary */}
-          <div style={styles.summaryCard}>
-            <span style={{ ...styles.summaryBadge, color: "#4caf50" }}>
+          <div style={{
+            background: colors.bgCard,
+            border: `1px solid ${colors.border}`,
+            borderRadius: 10,
+            padding: "20px 28px",
+            marginBottom: 28,
+            display: "flex",
+            gap: 32,
+            alignItems: "center",
+            flexWrap: "wrap" as const,
+          }}>
+            <span style={{ fontSize: 16, fontWeight: 600, fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace", color: colors.success }}>
               {data.total.passed} passed
             </span>
-            <span style={{ ...styles.summaryBadge, color: "#ff9800" }}>
+            <span style={{ fontSize: 16, fontWeight: 600, fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace", color: colors.warning }}>
               {data.total.warnings} warnings/info
             </span>
           </div>
 
           {/* Passed */}
           {data.ok.length > 0 && (
-            <div style={styles.section}>
-              <div style={styles.sectionTitle}>Passed</div>
-              <div style={styles.card}>
+            <div style={{ marginBottom: 28 }}>
+              <div style={{ fontSize: 18, fontWeight: 600, color: colors.textPrimary, marginBottom: 12 }}>Passed</div>
+              <div style={{
+                background: colors.bgCard,
+                border: `1px solid ${colors.border}`,
+                borderRadius: 8,
+                overflow: "hidden",
+              }}>
                 {data.ok.map((line, i) => {
                   const parsed = parseLine(line);
                   return (
                     <div
                       key={i}
                       style={{
-                        ...styles.row,
-                        ...(i === data.ok.length - 1
-                          ? { borderBottom: "none" }
-                          : {}),
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 12,
+                        padding: "12px 20px",
+                        borderBottom: i === data.ok.length - 1 ? "none" : `1px solid ${colors.bgHover}`,
+                        fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
+                        fontSize: 13,
+                        lineHeight: 1.5,
                       }}
                     >
-                      <span
-                        style={{ ...styles.dot, background: dotColor.ok }}
-                      />
+                      <span style={{ width: 8, height: 8, borderRadius: "50%", flexShrink: 0, background: dotColor.ok }} />
                       <span>{parsed.text}</span>
                     </div>
                   );
@@ -217,27 +161,31 @@ const Doctor: React.FC = () => {
 
           {/* Issues */}
           {data.issues.length > 0 && (
-            <div style={styles.section}>
-              <div style={styles.sectionTitle}>Issues</div>
-              <div style={styles.card}>
+            <div style={{ marginBottom: 28 }}>
+              <div style={{ fontSize: 18, fontWeight: 600, color: colors.textPrimary, marginBottom: 12 }}>Issues</div>
+              <div style={{
+                background: colors.bgCard,
+                border: `1px solid ${colors.border}`,
+                borderRadius: 8,
+                overflow: "hidden",
+              }}>
                 {data.issues.map((line, i) => {
                   const parsed = parseLine(line);
                   return (
                     <div
                       key={i}
                       style={{
-                        ...styles.row,
-                        ...(i === data.issues.length - 1
-                          ? { borderBottom: "none" }
-                          : {}),
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 12,
+                        padding: "12px 20px",
+                        borderBottom: i === data.issues.length - 1 ? "none" : `1px solid ${colors.bgHover}`,
+                        fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', monospace",
+                        fontSize: 13,
+                        lineHeight: 1.5,
                       }}
                     >
-                      <span
-                        style={{
-                          ...styles.dot,
-                          background: dotColor[parsed.severity],
-                        }}
-                      />
+                      <span style={{ width: 8, height: 8, borderRadius: "50%", flexShrink: 0, background: dotColor[parsed.severity] }} />
                       <span>{parsed.text}</span>
                     </div>
                   );
@@ -249,7 +197,14 @@ const Doctor: React.FC = () => {
       )}
 
       {!loading && !data && (
-        <div style={styles.loading}>
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 64,
+          color: colors.textSecondary,
+          fontSize: 15,
+        }}>
           Failed to fetch audit data. Click Re-run Audit to try again.
         </div>
       )}

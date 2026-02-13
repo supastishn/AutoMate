@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react'
 import { emitDataUpdate } from '../hooks/useDataUpdates'
+import { useColors } from '../ThemeContext'
 
 const SLASH_COMMANDS = [
   { cmd: '/new', desc: 'Start a new session' },
@@ -50,19 +51,19 @@ function renderMarkdown(text: string): React.ReactNode[] {
       const codeKey = key++
       nodes.push(
         <div key={codeKey} style={{ margin: '8px 0' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 10, color: '#888', padding: '2px 10px', background: '#1a1a2e', borderRadius: '4px 4px 0 0', borderBottom: '1px solid #333' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 10, color: 'var(--textSecondary)', padding: '2px 10px', background: 'var(--bgTertiary)', borderRadius: '4px 4px 0 0', borderBottom: '1px solid var(--borderLight)' }}>
             <span>{lang || 'code'}</span>
             <div style={{ display: 'flex', gap: 6 }}>
               {isHtml && (
                 <button
                   data-html-preview={code}
                   style={{
-                    background: '#2a1a3e', color: '#ce93d8', border: '1px solid #4a2a6a',
+                    background: 'var(--bgHover)', color: 'var(--heartbeat)', border: '1px solid var(--borderLight)',
                     borderRadius: 3, padding: '1px 8px', cursor: 'pointer', fontSize: 10,
                     fontWeight: 600, transition: 'all 0.15s',
                   }}
-                  onMouseEnter={e => { e.currentTarget.style.background = '#3a2a5e'; e.currentTarget.style.color = '#e0b0ff' }}
-                  onMouseLeave={e => { e.currentTarget.style.background = '#2a1a3e'; e.currentTarget.style.color = '#ce93d8' }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'var(--bgActive)'; e.currentTarget.style.color = 'var(--heartbeat)' }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'var(--bgHover)'; e.currentTarget.style.color = 'var(--heartbeat)' }}
                 >
                   ▶ Preview HTML
                 </button>
@@ -70,7 +71,7 @@ function renderMarkdown(text: string): React.ReactNode[] {
               <button
                 onClick={() => navigator.clipboard.writeText(code)}
                 style={{
-                  background: 'none', color: '#666', border: '1px solid #333',
+                  background: 'none', color: 'var(--textMuted)', border: '1px solid var(--borderLight)',
                   borderRadius: 3, padding: '1px 6px', cursor: 'pointer', fontSize: 10,
                 }}
               >
@@ -79,8 +80,8 @@ function renderMarkdown(text: string): React.ReactNode[] {
             </div>
           </div>
           <pre style={{
-            margin: 0, padding: 12, background: '#0d0d0d', borderRadius: '0 0 4px 4px',
-            fontSize: 12, lineHeight: 1.6, overflow: 'auto', border: '1px solid #2a2a2a',
+            margin: 0, padding: 12, background: 'var(--bgPrimary)', borderRadius: '0 0 4px 4px',
+            fontSize: 12, lineHeight: 1.6, overflow: 'auto', border: '1px solid var(--border)',
             fontFamily: '"Fira Code", "JetBrains Mono", monospace',
           }}>
             <code>{highlightCode(code, lang)}</code>
@@ -92,15 +93,15 @@ function renderMarkdown(text: string): React.ReactNode[] {
 
     // Headers
     if (line.startsWith('### ')) {
-      nodes.push(<h4 key={key++} style={{ fontSize: 14, fontWeight: 600, margin: '12px 0 4px', color: '#e0e0e0' }}>{formatInline(line.slice(4))}</h4>)
+      nodes.push(<h4 key={key++} style={{ fontSize: 14, fontWeight: 600, margin: '12px 0 4px', color: 'var(--textPrimary)' }}>{formatInline(line.slice(4))}</h4>)
       i++; continue
     }
     if (line.startsWith('## ')) {
-      nodes.push(<h3 key={key++} style={{ fontSize: 16, fontWeight: 600, margin: '14px 0 6px', color: '#e0e0e0' }}>{formatInline(line.slice(3))}</h3>)
+      nodes.push(<h3 key={key++} style={{ fontSize: 16, fontWeight: 600, margin: '14px 0 6px', color: 'var(--textPrimary)' }}>{formatInline(line.slice(3))}</h3>)
       i++; continue
     }
     if (line.startsWith('# ')) {
-      nodes.push(<h2 key={key++} style={{ fontSize: 18, fontWeight: 700, margin: '16px 0 8px', color: '#fff' }}>{formatInline(line.slice(2))}</h2>)
+      nodes.push(<h2 key={key++} style={{ fontSize: 18, fontWeight: 700, margin: '16px 0 8px', color: 'var(--textPrimary)' }}>{formatInline(line.slice(2))}</h2>)
       i++; continue
     }
 
@@ -143,8 +144,8 @@ function renderMarkdown(text: string): React.ReactNode[] {
       }
       nodes.push(
         <blockquote key={key++} style={{
-          margin: '8px 0', padding: '8px 14px', borderLeft: '3px solid #4fc3f7',
-          background: '#0d1520', color: '#aaa', fontStyle: 'italic',
+          margin: '8px 0', padding: '8px 14px', borderLeft: '3px solid var(--accent)',
+          background: 'var(--bgHover)', color: 'var(--textSecondary)', fontStyle: 'italic',
         }}>
           {quoteLines.map((l, j) => <div key={j}>{formatInline(l)}</div>)}
         </blockquote>
@@ -154,7 +155,7 @@ function renderMarkdown(text: string): React.ReactNode[] {
 
     // Horizontal rule
     if (line.match(/^---+$/)) {
-      nodes.push(<hr key={key++} style={{ border: 'none', borderTop: '1px solid #333', margin: '12px 0' }} />)
+      nodes.push(<hr key={key++} style={{ border: 'none', borderTop: '1px solid var(--borderLight)', margin: '12px 0' }} />)
       i++; continue
     }
 
@@ -190,7 +191,7 @@ function formatInline(text: string): React.ReactNode {
     // Inline code
     let match = remaining.match(/^`([^`]+)`/)
     if (match) {
-      parts.push(<code key={key++} style={{ background: '#1a1a2e', padding: '1px 5px', borderRadius: 3, fontSize: '0.9em', color: '#e6db74', fontFamily: 'monospace' }}>{match[1]}</code>)
+      parts.push(<code key={key++} style={{ background: 'var(--bgTertiary)', padding: '1px 5px', borderRadius: 3, fontSize: '0.9em', color: 'var(--syntaxInlineCode)', fontFamily: 'monospace' }}>{match[1]}</code>)
       remaining = remaining.slice(match[0].length)
       continue
     }
@@ -198,7 +199,7 @@ function formatInline(text: string): React.ReactNode {
     // Bold
     match = remaining.match(/^\*\*(.+?)\*\*/)
     if (match) {
-      parts.push(<strong key={key++} style={{ fontWeight: 600, color: '#fff' }}>{match[1]}</strong>)
+      parts.push(<strong key={key++} style={{ fontWeight: 600, color: 'var(--textPrimary)' }}>{match[1]}</strong>)
       remaining = remaining.slice(match[0].length)
       continue
     }
@@ -214,7 +215,7 @@ function formatInline(text: string): React.ReactNode {
     // Link
     match = remaining.match(/^\[([^\]]+)\]\(([^)]+)\)/)
     if (match) {
-      parts.push(<a key={key++} href={match[2]} target="_blank" rel="noopener noreferrer" style={{ color: '#4fc3f7', textDecoration: 'underline' }}>{match[1]}</a>)
+      parts.push(<a key={key++} href={match[2]} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)', textDecoration: 'underline' }}>{match[1]}</a>)
       remaining = remaining.slice(match[0].length)
       continue
     }
@@ -237,7 +238,7 @@ function formatInline(text: string): React.ReactNode {
   return parts.length === 1 ? parts[0] : <>{parts}</>
 }
 
-// Simple syntax highlighting by token type
+// Simple syntax highlighting by token type (uses CSS variables for theme support)
 function highlightCode(code: string, lang: string): React.ReactNode {
   const keywords = new Set([
     'const', 'let', 'var', 'function', 'return', 'if', 'else', 'for', 'while',
@@ -257,15 +258,15 @@ function highlightCode(code: string, lang: string): React.ReactNode {
   for (const token of tokens) {
     if (!token) continue
     if (keywords.has(token)) {
-      parts.push(<span key={key++} style={{ color: '#c678dd' }}>{token}</span>)
+      parts.push(<span key={key++} style={{ color: 'var(--syntaxKeyword)' }}>{token}</span>)
     } else if (token.match(/^("|'|`)/) ) {
-      parts.push(<span key={key++} style={{ color: '#98c379' }}>{token}</span>)
+      parts.push(<span key={key++} style={{ color: 'var(--syntaxString)' }}>{token}</span>)
     } else if (token.match(/^\/\//)) {
-      parts.push(<span key={key++} style={{ color: '#5c6370', fontStyle: 'italic' }}>{token}</span>)
+      parts.push(<span key={key++} style={{ color: 'var(--syntaxComment)', fontStyle: 'italic' }}>{token}</span>)
     } else if (token.match(/^\d/)) {
-      parts.push(<span key={key++} style={{ color: '#d19a66' }}>{token}</span>)
+      parts.push(<span key={key++} style={{ color: 'var(--syntaxNumber)' }}>{token}</span>)
     } else if (token.match(/^[{}()\[\];,.:!<>=+\-*/&|^~?@#]/)) {
-      parts.push(<span key={key++} style={{ color: '#abb2bf' }}>{token}</span>)
+      parts.push(<span key={key++} style={{ color: 'var(--syntaxPunctuation)' }}>{token}</span>)
     } else {
       parts.push(<span key={key++}>{token}</span>)
     }
@@ -275,11 +276,12 @@ function highlightCode(code: string, lang: string): React.ReactNode {
 }
 
 /** Render a single tool call accordion button + expandable details */
-function ToolAccordion({ t, toolKey, isExpanded, onToggle }: {
+function ToolAccordion({ t, toolKey, isExpanded, onToggle, colors }: {
   t: { name: string; arguments?: string; result: string }
   toolKey: string
   isExpanded: boolean
   onToggle: () => void
+  colors: Record<string, string>
 }) {
   return (
     <div style={{ marginBottom: 4 }}>
@@ -287,43 +289,43 @@ function ToolAccordion({ t, toolKey, isExpanded, onToggle }: {
         onClick={onToggle}
         style={{
           display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer',
-          padding: '3px 8px', background: '#1a1a2e', borderRadius: 4,
-          border: '1px solid #2a2a4a', userSelect: 'none',
+          padding: '3px 8px', background: colors.bgTertiary, borderRadius: 4,
+          border: `1px solid ${colors.borderLight}`, userSelect: 'none',
         }}
       >
         <span style={{
-          display: 'inline-block', fontSize: 9, color: '#888',
+          display: 'inline-block', fontSize: 9, color: colors.textSecondary,
           transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
           transition: 'transform 0.15s',
         }}>▶</span>
-        <span style={{ color: '#6a6aaa' }}>⚙</span>
-        <span style={{ color: '#4fc3f7', fontWeight: 600, fontFamily: 'monospace' }}>{t.name}</span>
+        <span style={{ color: colors.textMuted }}>⚙</span>
+        <span style={{ color: colors.accent, fontWeight: 600, fontFamily: 'monospace' }}>{t.name}</span>
       </div>
       {isExpanded && (
         <div style={{
           marginTop: 4, marginLeft: 12, padding: '6px 10px',
-          background: '#0d0d0d', borderRadius: 4, border: '1px solid #1a1a2e',
+          background: colors.bgPrimary, borderRadius: 4, border: `1px solid ${colors.bgTertiary}`,
           fontFamily: '"Fira Code", "JetBrains Mono", monospace', fontSize: 11,
           maxHeight: 200, overflow: 'auto',
         }}>
           {t.arguments && (
             <div style={{ marginBottom: t.result ? 6 : 0 }}>
-              <div style={{ color: '#888', marginBottom: 2, fontSize: 10 }}>Arguments:</div>
-              <pre style={{ margin: 0, color: '#d19a66', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+              <div style={{ color: colors.textSecondary, marginBottom: 2, fontSize: 10 }}>Arguments:</div>
+              <pre style={{ margin: 0, color: 'var(--syntaxNumber)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
                 {(() => { try { return JSON.stringify(JSON.parse(t.arguments!), null, 2) } catch { return t.arguments } })()}
               </pre>
             </div>
           )}
           {t.result && (
             <div>
-              <div style={{ color: '#888', marginBottom: 2, fontSize: 10 }}>Result:</div>
-              <pre style={{ margin: 0, color: '#98c379', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+              <div style={{ color: colors.textSecondary, marginBottom: 2, fontSize: 10 }}>Result:</div>
+              <pre style={{ margin: 0, color: 'var(--syntaxString)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
                 {t.result.length > 2000 ? t.result.slice(0, 2000) + '…' : t.result}
               </pre>
             </div>
           )}
           {!t.arguments && !t.result && (
-            <div style={{ color: '#555', fontStyle: 'italic' }}>No details available</div>
+            <div style={{ color: colors.textMuted, fontStyle: 'italic' }}>No details available</div>
           )}
         </div>
       )}
@@ -340,6 +342,7 @@ interface HeartbeatActivity {
 }
 
 export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId?: string | null; onSessionLoaded?: () => void }) {
+  const colors = useColors()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState('')
@@ -375,10 +378,19 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({})
   const [expandedHeartbeats, setExpandedHeartbeats] = useState<Record<string, boolean>>({})
   const pendingToolCallsRef = useRef<{ name: string; arguments?: string; result: string }[]>([])
+  const processingPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [streamingToolCalls, setStreamingToolCalls] = useState<{ name: string; arguments?: string; result: string }[]>([])
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
   const [editingContent, setEditingContent] = useState('')
   const makeId = () => `msg_${++msgIdRef.current}_${Date.now()}`
+
+  /** Stop the processing-recovery poll if running. */
+  const stopProcessingPoll = () => {
+    if (processingPollRef.current) {
+      clearInterval(processingPollRef.current)
+      processingPollRef.current = null
+    }
+  }
 
   /** Render markdown content with tool accordions inline where [used tool: X] markers appear */
   const renderContentWithTools = (
@@ -405,11 +417,12 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
               toolKey={toolKey}
               isExpanded={expandedTools[toolKey] || false}
               onToggle={() => setExpandedTools(prev => ({ ...prev, [toolKey]: !prev[toolKey] }))}
+              colors={colors}
             />
           )
         }
         // No matching tool data — show placeholder text
-        return <div key={i} style={{ color: '#888', fontSize: 11, fontFamily: 'monospace', margin: '4px 0' }}>⚙ {name}</div>
+        return <div key={i} style={{ color: colors.textSecondary, fontSize: 11, fontFamily: 'monospace', margin: '4px 0' }}>⚙ {name}</div>
       }
       return node
     })
@@ -417,7 +430,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
 
   useEffect(() => {
     connect()
-    return () => { wsRef.current?.close() }
+    return () => { stopProcessingPoll(); wsRef.current?.close() }
   }, [])
 
   useEffect(() => {
@@ -468,7 +481,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
       setConnected(true)
       setNeedsAuth(false)
     }
-    ws.onclose = () => { setConnected(false); setTimeout(connect, 3000) }
+    ws.onclose = () => { stopProcessingPoll(); setConnected(false); setTimeout(connect, 3000) }
     ws.onerror = () => {
       // May need auth
       fetch('/api/health').then(r => {
@@ -483,11 +496,31 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         setCurrentSessionId(msg.session_id)
         if (msg.context) setContextInfo(msg.context)
         // If the server is still processing this session (e.g. page refresh mid-stream),
-        // show the thinking indicator immediately
+        // show the thinking indicator and start polling for completion.
+        // Stream chunks may arrive via WS (sendToSession), but if the response
+        // event was lost during the reconnect gap, the poll recovers gracefully.
         if (msg.processing) {
           setAwaitingResponse(true)
           awaitingResponseRef.current = true
           setTyping(true)
+          stopProcessingPoll()
+          const pollSessionId = msg.session_id as string
+          processingPollRef.current = setInterval(async () => {
+            try {
+              const r = await fetch(`/api/sessions/${encodeURIComponent(pollSessionId)}`)
+              const data = await r.json()
+              if (data.session && !data.processing) {
+                // Agent finished — reload session to get complete state
+                stopProcessingPoll()
+                if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                  wsRef.current.send(JSON.stringify({ type: 'load_session', session_id: pollSessionId }))
+                }
+                setAwaitingResponse(false)
+                awaitingResponseRef.current = false
+                setTyping(false)
+              }
+            } catch {}
+          }, 2500)
         }
         // Multi-agent support: show agent picker on fresh sessions
         if (msg.multiAgent && msg.agents?.length > 1) {
@@ -591,6 +624,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         setStreamingToolCalls(prev => [...prev, tc])
       }
       if (msg.type === 'response') {
+        stopProcessingPoll()
         setTyping(false)
         setAwaitingResponse(false)
         awaitingResponseRef.current = false
@@ -634,6 +668,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         })
       }
       if (msg.type === 'error') {
+        stopProcessingPoll()
         setTyping(false)
         setAwaitingResponse(false)
         awaitingResponseRef.current = false
@@ -645,6 +680,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         }])
       }
       if (msg.type === 'interrupted') {
+        stopProcessingPoll()
         setTyping(false)
         setAwaitingResponse(false)
         awaitingResponseRef.current = false
@@ -751,6 +787,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
       }
       // Handle retry_complete (after retry)
       if (msg.type === 'retry_complete') {
+        stopProcessingPoll()
         setTyping(false)
         setAwaitingResponse(false)
         awaitingResponseRef.current = false
@@ -917,10 +954,10 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
   // Auth login screen
   if (needsAuth) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', background: '#0a0a0a' }}>
-        <div style={{ padding: 40, background: '#141414', borderRadius: 12, border: '1px solid #222', maxWidth: 400, width: '100%' }}>
-          <h2 style={{ fontSize: 20, marginBottom: 8, color: '#4fc3f7' }}>AutoMate</h2>
-          <p style={{ fontSize: 13, color: '#888', marginBottom: 20 }}>Enter your authentication token to connect.</p>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', background: colors.bgPrimary }}>
+        <div style={{ padding: 40, background: colors.bgCard, borderRadius: 12, border: `1px solid ${colors.border}`, maxWidth: 400, width: '100%' }}>
+          <h2 style={{ fontSize: 20, marginBottom: 8, color: colors.accent }}>AutoMate</h2>
+          <p style={{ fontSize: 13, color: colors.textSecondary, marginBottom: 20 }}>Enter your authentication token to connect.</p>
           <input
             value={authToken}
             onChange={e => setAuthToken(e.target.value)}
@@ -934,8 +971,8 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
             placeholder="Bearer token..."
             type="password"
             style={{
-              width: '100%', padding: '10px 14px', background: '#1a1a1a', border: '1px solid #333',
-              borderRadius: 6, color: '#e0e0e0', fontSize: 14, outline: 'none', fontFamily: 'monospace',
+              width: '100%', padding: '10px 14px', background: colors.bgHover, border: `1px solid ${colors.borderLight}`,
+              borderRadius: 6, color: colors.textPrimary, fontSize: 14, outline: 'none', fontFamily: 'monospace',
               boxSizing: 'border-box', marginBottom: 12,
             }}
           />
@@ -946,7 +983,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
               connect()
             }}
             style={{
-              width: '100%', padding: '10px 20px', background: '#4fc3f7', color: '#000', border: 'none',
+              width: '100%', padding: '10px 20px', background: colors.accent, color: colors.accentContrast, border: 'none',
               borderRadius: 6, cursor: 'pointer', fontWeight: 600, fontSize: 14,
             }}
           >
@@ -963,8 +1000,8 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
     borderRadius: 10,
     maxWidth: '85%',
     alignSelf: role === 'user' ? 'flex-end' : 'flex-start',
-    background: role === 'user' ? '#1a3a5c' : role === 'system' ? '#1a1a1a' : '#111a11',
-    border: `1px solid ${role === 'user' ? '#2a5a8c' : role === 'system' ? '#333' : '#1a3a1a'}`,
+    background: role === 'user' ? colors.accentMuted : role === 'system' ? colors.bgHover : colors.bgCard,
+    border: `1px solid ${role === 'user' ? colors.borderFocus : role === 'system' ? colors.borderLight : colors.border}`,
     fontSize: 14,
     lineHeight: 1.6,
     wordBreak: 'break-word',
@@ -1009,18 +1046,18 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Header */}
-      <div style={{ padding: '12px 20px', borderBottom: '1px solid #222', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <div style={{ padding: '12px 20px', borderBottom: `1px solid ${colors.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ width: 8, height: 8, borderRadius: '50%', background: connected ? '#4caf50' : '#f44' }} />
-          <span style={{ fontSize: 14, color: '#888' }}>{connected ? 'Connected' : 'Disconnected'}</span>
+          <div style={{ width: 8, height: 8, borderRadius: '50%', background: connected ? colors.success : colors.error }} />
+          <span style={{ fontSize: 14, color: colors.textSecondary }}>{connected ? 'Connected' : 'Disconnected'}</span>
           {multiAgent && (
             <button
               onClick={() => setShowAgentPicker(true)}
               style={{
-                padding: '3px 10px', background: selectedAgent ? '#0d2137' : '#1a1a1a',
-                border: selectedAgent ? '1px solid #1a5276' : '1px solid #333',
+                padding: '3px 10px', background: selectedAgent ? colors.accentMuted : colors.bgHover,
+                border: selectedAgent ? `1px solid ${colors.borderFocus}` : `1px solid ${colors.borderLight}`,
                 borderRadius: 12, cursor: 'pointer', fontSize: 11, fontWeight: 600,
-                color: selectedAgent ? '#4fc3f7' : '#888', transition: 'all 0.15s',
+                color: selectedAgent ? colors.accent : colors.textSecondary, transition: 'all 0.15s',
               }}
             >
               {selectedAgent ? `⚡ ${selectedAgent}` : '🤖 Pick Agent'}
@@ -1030,15 +1067,15 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         {contextInfo && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }} title={`${contextInfo.used.toLocaleString()} / ${contextInfo.limit.toLocaleString()} tokens`}>
             <div style={{
-              width: 80, height: 6, background: '#1a1a2e', borderRadius: 3, overflow: 'hidden',
+              width: 80, height: 6, background: colors.bgTertiary, borderRadius: 3, overflow: 'hidden',
             }}>
               <div style={{
                 width: `${Math.min(contextInfo.percent, 100)}%`, height: '100%', borderRadius: 3,
-                background: contextInfo.percent > 80 ? '#f44' : contextInfo.percent > 50 ? '#ff9800' : '#4caf50',
+                background: contextInfo.percent > 80 ? colors.error : contextInfo.percent > 50 ? colors.warning : colors.success,
                 transition: 'width 0.3s, background 0.3s',
               }} />
             </div>
-            <span style={{ fontSize: 10, color: contextInfo.percent > 80 ? '#f44' : '#666', fontFamily: 'monospace' }}>
+            <span style={{ fontSize: 10, color: contextInfo.percent > 80 ? colors.error : colors.textMuted, fontFamily: 'monospace' }}>
               {contextInfo.percent}%
             </span>
           </div>
@@ -1050,8 +1087,8 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
             setElevated(next)
             fetch('/api/command', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command: `/elevated ${next ? 'on' : 'off'}`, sessionId: currentSessionId }) }).catch(() => {})
           }} title={elevated ? 'Elevated: ON' : 'Elevated: OFF'} style={{
-            padding: '4px 10px', background: elevated ? '#1a2e1a' : '#1a1a2e',
-            color: elevated ? '#4caf50' : '#888', border: `1px solid ${elevated ? '#4caf50' : '#333'}`,
+            padding: '4px 10px', background: elevated ? colors.bgHover : colors.bgTertiary,
+            color: elevated ? colors.success : colors.textSecondary, border: `1px solid ${elevated ? colors.success : colors.borderLight}`,
             borderRadius: 4, cursor: 'pointer', fontSize: 13,
           }}>
             {elevated ? '\u{1F6E1}\uFE0F' : '\u{1F512}'}
@@ -1062,8 +1099,8 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
             setHideHeartbeats(next)
             localStorage.setItem('automate_hide_heartbeats', String(next))
           }} title={hideHeartbeats ? 'Heartbeats: Hidden' : 'Heartbeats: Visible'} style={{
-            padding: '4px 10px', background: hideHeartbeats ? '#2e1a1a' : '#1a1a2e',
-            color: hideHeartbeats ? '#f48' : '#ce93d8', border: `1px solid ${hideHeartbeats ? '#4a2a2a' : '#333'}`,
+            padding: '4px 10px', background: hideHeartbeats ? colors.bgHover : colors.bgTertiary,
+            color: hideHeartbeats ? colors.error : colors.heartbeat, border: `1px solid ${colors.borderLight}`,
             borderRadius: 4, cursor: 'pointer', fontSize: 13,
           }}>
             {hideHeartbeats ? '💔' : '💜'}
@@ -1071,8 +1108,8 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           {/* Model picker */}
           <div style={{ position: 'relative' }}>
             <button onClick={() => setShowModelPicker(!showModelPicker)} style={{
-              padding: '4px 12px', background: '#1a1a2e', color: '#4fc3f7',
-              border: '1px solid #333', borderRadius: 4, cursor: 'pointer', fontSize: 11,
+              padding: '4px 12px', background: colors.bgTertiary, color: colors.accent,
+              border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 11,
               maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             }}>
               {currentModel.split('/').pop() || 'Model'}
@@ -1080,8 +1117,8 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
             {showModelPicker && (
               <div style={{
                 position: 'absolute', top: 30, right: 0, zIndex: 100,
-                background: '#141414', border: '1px solid #333', borderRadius: 8,
-                minWidth: 220, boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
+                background: colors.bgCard, border: `1px solid ${colors.borderLight}`, borderRadius: 8,
+                minWidth: 220, boxShadow: `0 8px 24px ${colors.shadow}`,
               }}>
                 {models.map((m, i) => (
                   <div key={i} onClick={() => {
@@ -1089,14 +1126,14 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
                       .then(r => r.json()).then((d: any) => { if (d.success) setCurrentModel(d.model || m.model) }).catch(() => {})
                     setShowModelPicker(false)
                   }} style={{
-                    padding: '8px 14px', cursor: 'pointer', borderBottom: '1px solid #1a1a1a',
-                    background: m.active ? '#1a1a2e' : 'transparent',
+                    padding: '8px 14px', cursor: 'pointer', borderBottom: `1px solid ${colors.border}`,
+                    background: m.active ? colors.bgTertiary : 'transparent',
                   }}
-                  onMouseEnter={e => (e.currentTarget.style.background = '#1a1a2e')}
-                  onMouseLeave={e => (e.currentTarget.style.background = m.active ? '#1a1a2e' : 'transparent')}
+                  onMouseEnter={e => (e.currentTarget.style.background = colors.bgTertiary)}
+                  onMouseLeave={e => (e.currentTarget.style.background = m.active ? colors.bgTertiary : 'transparent')}
                   >
-                    <div style={{ fontSize: 12, color: m.active ? '#4fc3f7' : '#ccc' }}>{m.name}</div>
-                    <div style={{ fontSize: 10, color: '#666' }}>{m.model}</div>
+                    <div style={{ fontSize: 12, color: m.active ? colors.accent : colors.textPrimary }}>{m.name}</div>
+                    <div style={{ fontSize: 10, color: colors.textMuted }}>{m.model}</div>
                   </div>
                 ))}
               </div>
@@ -1106,8 +1143,8 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
             fetchSessionsList()
             setShowSessionPicker(!showSessionPicker)
           }} style={{
-            padding: '4px 12px', background: '#1a1a2e', color: '#888',
-            border: '1px solid #333', borderRadius: 4, cursor: 'pointer', fontSize: 11,
+            padding: '4px 12px', background: colors.bgTertiary, color: colors.textSecondary,
+            border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 11,
           }}>
             Sessions
           </button>
@@ -1119,8 +1156,8 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
               setCurrentSessionId(null)
             }
           }} style={{
-            padding: '4px 12px', background: '#1a1a2e', color: '#888',
-            border: '1px solid #333', borderRadius: 4, cursor: 'pointer', fontSize: 11,
+            padding: '4px 12px', background: colors.bgTertiary, color: colors.textSecondary,
+            border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 11,
           }}>
             New
           </button>
@@ -1131,14 +1168,14 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
       {showSessionPicker && (
         <div style={{
           position: 'absolute', top: 48, right: 20, zIndex: 100,
-          background: '#141414', border: '1px solid #333', borderRadius: 8,
-          maxHeight: 300, overflow: 'auto', width: 340, boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
+          background: colors.bgCard, border: `1px solid ${colors.borderLight}`, borderRadius: 8,
+          maxHeight: 300, overflow: 'auto', width: 340, boxShadow: `0 8px 24px ${colors.shadow}`,
         }}>
-          <div style={{ padding: '8px 12px', borderBottom: '1px solid #222', fontSize: 12, color: '#888' }}>
+          <div style={{ padding: '8px 12px', borderBottom: `1px solid ${colors.border}`, fontSize: 12, color: colors.textSecondary }}>
             Load a session
           </div>
           {sessionsList.length === 0 && (
-            <div style={{ padding: 16, color: '#555', fontSize: 12, textAlign: 'center' }}>No sessions with messages</div>
+            <div style={{ padding: 16, color: colors.textMuted, fontSize: 12, textAlign: 'center' }}>No sessions with messages</div>
           )}
           {sessionsList.map(s => (
             <div
@@ -1150,14 +1187,14 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
                 }
               }}
               style={{
-                padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid #1a1a1a',
+                padding: '8px 12px', cursor: 'pointer', borderBottom: `1px solid ${colors.border}`,
                 fontSize: 12, transition: 'background 0.1s',
               }}
-              onMouseEnter={e => (e.currentTarget.style.background = '#1a1a2e')}
+              onMouseEnter={e => (e.currentTarget.style.background = colors.bgTertiary)}
               onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
             >
-              <div style={{ fontFamily: 'monospace', color: '#4fc3f7', fontSize: 11, marginBottom: 2 }}>{s.id}</div>
-              <div style={{ color: '#666', fontSize: 10 }}>
+              <div style={{ fontFamily: 'monospace', color: colors.accent, fontSize: 11, marginBottom: 2 }}>{s.id}</div>
+              <div style={{ color: colors.textMuted, fontSize: 10 }}>
                 {s.channel} &middot; {s.messageCount} msgs &middot; {new Date(s.updatedAt).toLocaleString()}
               </div>
             </div>
@@ -1169,44 +1206,44 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
       {heartbeat && (
         <div style={{
           padding: '8px 20px',
-          background: heartbeat.status === 'running' ? '#1a1520' : heartbeat.status === 'sent' ? '#1a1a2e' : heartbeat.status === 'failed' ? '#1a1515' : '#151a15',
-          borderBottom: `1px solid ${heartbeat.status === 'running' ? '#3a2a4a' : heartbeat.status === 'sent' ? '#2a2a4a' : heartbeat.status === 'failed' ? '#4a2a2a' : '#2a4a2a'}`,
+          background: colors.bgTertiary,
+          borderBottom: `1px solid ${colors.borderLight}`,
           display: 'flex', alignItems: 'center', gap: 12, fontSize: 12,
         }}>
           <span style={{
             display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
-            background: heartbeat.status === 'running' ? '#ce93d8' : heartbeat.status === 'sent' ? '#4fc3f7' : heartbeat.status === 'failed' ? '#f44' : '#81c784',
+            background: heartbeat.status === 'running' ? colors.heartbeat : heartbeat.status === 'sent' ? colors.accent : heartbeat.status === 'failed' ? colors.error : colors.success,
             animation: heartbeat.status === 'running' ? 'pulse 1.5s infinite' : 'none',
           }} />
-          <span style={{ color: '#ce93d8', fontWeight: 600, fontFamily: 'monospace' }}>Heartbeat</span>
+          <span style={{ color: colors.heartbeat, fontWeight: 600, fontFamily: 'monospace' }}>Heartbeat</span>
           {heartbeat.status === 'running' && !heartbeat.content && (
-            <span style={{ color: '#888' }}>Checking...</span>
+            <span style={{ color: colors.textSecondary }}>Checking...</span>
           )}
           {heartbeat.status === 'running' && heartbeat.content && (
-            <span style={{ color: '#ce93d8', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <span style={{ color: colors.heartbeat, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {heartbeat.content.slice(0, 200)}{heartbeat.content.length > 200 ? '...' : ''}
-              <span style={{ animation: 'blink 1s infinite', color: '#ce93d8' }}>|</span>
+              <span style={{ animation: 'blink 1s infinite', color: colors.heartbeat }}>|</span>
             </span>
           )}
           {heartbeat.status === 'ok-empty' && (
-            <span style={{ color: '#81c784' }}>All clear (empty response)</span>
+            <span style={{ color: colors.success }}>All clear (empty response)</span>
           )}
           {heartbeat.status === 'ok-token' && (
-            <span style={{ color: '#81c784' }}>All clear</span>
+            <span style={{ color: colors.success }}>All clear</span>
           )}
           {heartbeat.status === 'skipped' && (
-            <span style={{ color: '#888' }}>Skipped (empty checklist)</span>
+            <span style={{ color: colors.textSecondary }}>Skipped (empty checklist)</span>
           )}
           {heartbeat.status === 'sent' && (
-            <span style={{ color: '#4fc3f7', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <span style={{ color: colors.accent, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               Alert: {heartbeat.content.slice(0, 120)}{heartbeat.content.length > 120 ? '...' : ''}
             </span>
           )}
           {heartbeat.status === 'failed' && (
-            <span style={{ color: '#f44' }}>Failed</span>
+            <span style={{ color: colors.error }}>Failed</span>
           )}
           <button onClick={() => setHeartbeat(null)} style={{
-            background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: 14, marginLeft: 'auto', padding: '0 4px',
+            background: 'none', border: 'none', color: colors.textMuted, cursor: 'pointer', fontSize: 14, marginLeft: 'auto', padding: '0 4px',
           }}>x</button>
         </div>
       )}
@@ -1217,7 +1254,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           onClick={() => setHtmlPreview(null)}
           style={{
             position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-            background: 'rgba(0,0,0,0.8)', zIndex: 1000,
+            background: colors.bgOverlay, zIndex: 1000,
             display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
           }}
         >
@@ -1231,11 +1268,11 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
             }}
           >
             <div style={{
-              padding: '8px 16px', background: '#1a1a2e',
+              padding: '8px 16px', background: colors.bgTertiary,
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              borderBottom: '1px solid #333',
+              borderBottom: `1px solid ${colors.borderLight}`,
             }}>
-              <span style={{ fontSize: 13, color: '#4fc3f7', fontWeight: 600 }}>HTML Preview</span>
+              <span style={{ fontSize: 13, color: colors.accent, fontWeight: 600 }}>HTML Preview</span>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button
                   onClick={() => {
@@ -1243,8 +1280,8 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
                     if (w) { w.document.write(htmlPreview); w.document.close() }
                   }}
                   style={{
-                    padding: '3px 10px', background: '#2a2a4a', color: '#4fc3f7',
-                    border: '1px solid #4fc3f7', borderRadius: 4, cursor: 'pointer', fontSize: 11,
+                    padding: '3px 10px', background: colors.bgTertiary, color: colors.accent,
+                    border: `1px solid ${colors.accent}`, borderRadius: 4, cursor: 'pointer', fontSize: 11,
                   }}
                 >
                   Open in tab
@@ -1252,8 +1289,8 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
                 <button
                   onClick={() => setHtmlPreview(null)}
                   style={{
-                    padding: '3px 10px', background: '#2a1a1a', color: '#f44',
-                    border: '1px solid #f44', borderRadius: 4, cursor: 'pointer', fontSize: 11,
+                    padding: '3px 10px', background: colors.bgDanger, color: colors.error,
+                    border: `1px solid ${colors.borderDanger}`, borderRadius: 4, cursor: 'pointer', fontSize: 11,
                   }}
                 >
                   Close
@@ -1292,36 +1329,36 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
                   onClick={() => setExpandedHeartbeats(prev => ({ ...prev, [hbKey]: !prev[hbKey] }))}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
-                    padding: '6px 12px', background: '#1a1520', borderRadius: 6,
-                    border: '1px solid #2a2040', userSelect: 'none', width: '100%',
+                    padding: '6px 12px', background: colors.bgHover, borderRadius: 6,
+                    border: `1px solid ${colors.borderLight}`, userSelect: 'none', width: '100%',
                     boxSizing: 'border-box',
                   }}
                 >
                   <span style={{
-                    display: 'inline-block', fontSize: 9, color: '#888',
+                    display: 'inline-block', fontSize: 9, color: colors.textSecondary,
                     transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)',
                     transition: 'transform 0.15s',
                   }}>▶</span>
-                  <span style={{ fontSize: 12, color: '#ce93d8' }}>💜</span>
-                  <span style={{ fontSize: 12, color: '#ce93d8', fontFamily: 'monospace', fontWeight: 600 }}>{label}</span>
-                  <span style={{ fontSize: 10, color: '#555', marginLeft: 'auto' }}>{item.msgs.length} msg{item.msgs.length > 1 ? 's' : ''}</span>
+                  <span style={{ fontSize: 12, color: colors.heartbeat }}>💜</span>
+                  <span style={{ fontSize: 12, color: colors.heartbeat, fontFamily: 'monospace', fontWeight: 600 }}>{label}</span>
+                  <span style={{ fontSize: 10, color: colors.textMuted, marginLeft: 'auto' }}>{item.msgs.length} msg{item.msgs.length > 1 ? 's' : ''}</span>
                 </div>
                 {isOpen && (
                   <div style={{
                     marginTop: 4, padding: '8px 12px',
-                    background: '#0d0a12', borderRadius: '0 0 6px 6px',
-                    border: '1px solid #2a2040', borderTop: 'none',
+                    background: colors.bgPrimary, borderRadius: '0 0 6px 6px',
+                    border: `1px solid ${colors.borderLight}`, borderTop: 'none',
                   }}>
                     {item.msgs.map((m) => (
                       <div key={m.id} style={{
                         padding: '8px 12px', marginBottom: 6, borderRadius: 8,
-                        background: m.role === 'user' ? '#1a3a5c' : m.role === 'system' ? '#1a1a1a' : '#111a11',
-                        border: `1px solid ${m.role === 'user' ? '#2a5a8c' : m.role === 'system' ? '#333' : '#1a3a1a'}`,
+                        background: m.role === 'user' ? colors.accentMuted : m.role === 'system' ? colors.bgHover : colors.bgCard,
+                        border: `1px solid ${m.role === 'user' ? colors.borderFocus : m.role === 'system' ? colors.borderLight : colors.border}`,
                         fontSize: 13, lineHeight: 1.5, wordBreak: 'break-word',
                       }}>
-                        <div style={{ fontSize: 10, color: '#666', marginBottom: 4 }}>
+                        <div style={{ fontSize: 10, color: colors.textMuted, marginBottom: 4 }}>
                           {m.role === 'user' ? 'You' : m.role === 'assistant' ? 'AutoMate' : 'System'}
-                          <span style={{ marginLeft: 6, fontSize: 9, color: '#444' }}>
+                          <span style={{ marginLeft: 6, fontSize: 9, color: colors.textMuted }}>
                             {new Date(m.timestamp).toLocaleTimeString()}
                           </span>
                         </div>
@@ -1340,9 +1377,9 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           <div key={m.id} style={msgStyle(m.role)}>
             {/* Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <span style={{ fontSize: 10, color: '#666' }}>
+              <span style={{ fontSize: 10, color: colors.textMuted }}>
                 {m.role === 'user' ? 'You' : m.role === 'assistant' ? 'AutoMate' : 'System'}
-                <span style={{ marginLeft: 8, fontSize: 9, color: '#444' }}>
+                <span style={{ marginLeft: 8, fontSize: 9, color: colors.textMuted }}>
                   {new Date(m.timestamp).toLocaleTimeString()}
                 </span>
               </span>
@@ -1351,17 +1388,17 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
                 <div style={{ display: 'flex', gap: 4 }}>
                   {m.role === 'assistant' && (
                     <button onClick={() => copyMessage(m.content)} title="Copy" style={{
-                      background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 11, padding: '2px 4px',
+                      background: 'none', border: 'none', color: colors.textMuted, cursor: 'pointer', fontSize: 11, padding: '2px 4px',
                     }}>Copy</button>
                   )}
                   <button onClick={() => startEditMessage(m.id, m.content)} title="Edit" style={{
-                    background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 11, padding: '2px 4px',
+                    background: 'none', border: 'none', color: colors.textMuted, cursor: 'pointer', fontSize: 11, padding: '2px 4px',
                   }}>Edit</button>
                   <button onClick={() => retryMessage(m.id)} title="Retry" style={{
-                    background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 11, padding: '2px 4px',
+                    background: 'none', border: 'none', color: colors.textMuted, cursor: 'pointer', fontSize: 11, padding: '2px 4px',
                   }}>Retry</button>
                   <button onClick={() => deleteMessage(m.id)} title="Delete" style={{
-                    background: 'none', border: 'none', color: '#a55', cursor: 'pointer', fontSize: 11, padding: '2px 4px',
+                    background: 'none', border: 'none', color: colors.error, cursor: 'pointer', fontSize: 11, padding: '2px 4px',
                   }}>Del</button>
                 </div>
               )}
@@ -1375,19 +1412,19 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
                   onChange={e => setEditingContent(e.target.value)}
                   style={{
                     width: '100%', minHeight: 80, padding: 8,
-                    background: '#1a1a1a', border: '1px solid #4fc3f7', borderRadius: 4,
-                    color: '#e0e0e0', fontSize: 13, fontFamily: 'inherit', resize: 'vertical',
+                    background: colors.bgHover, border: `1px solid ${colors.accent}`, borderRadius: 4,
+                    color: colors.textPrimary, fontSize: 13, fontFamily: 'inherit', resize: 'vertical',
                   }}
                   autoFocus
                 />
                 <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                   <button onClick={saveEditMessage} style={{
-                    padding: '4px 12px', background: '#4fc3f7', color: '#000',
+                    padding: '4px 12px', background: colors.accent, color: colors.accentContrast,
                     border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600,
                   }}>Save</button>
                   <button onClick={cancelEdit} style={{
-                    padding: '4px 12px', background: '#333', color: '#888',
-                    border: '1px solid #444', borderRadius: 4, cursor: 'pointer', fontSize: 12,
+                    padding: '4px 12px', background: colors.borderLight, color: colors.textSecondary,
+                    border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12,
                   }}>Cancel</button>
                 </div>
               </div>
@@ -1407,7 +1444,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
                       alt={img.alt || img.filename || 'image'}
                       style={{
                         maxWidth: 400, maxHeight: 300, borderRadius: 6,
-                        border: '1px solid #333', cursor: 'pointer',
+                        border: `1px solid ${colors.borderLight}`, cursor: 'pointer',
                       }}
                       onClick={() => {
                         const src = img.base64 ? `data:${img.mimeType};base64,${img.base64}` : img.url
@@ -1415,7 +1452,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
                       }}
                     />
                     {img.filename && (
-                      <div style={{ fontSize: 10, color: '#666', marginTop: 2 }}>{img.filename}</div>
+                      <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 2 }}>{img.filename}</div>
                     )}
                   </div>
                 ))}
@@ -1436,12 +1473,12 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
                       setStreaming('')
                     }
                   }} style={{
-                    padding: '2px 8px', background: '#1a1a2e', color: '#888',
-                    border: '1px solid #2a2a2a', borderRadius: 10, cursor: 'pointer',
+                    padding: '2px 8px', background: colors.bgTertiary, color: colors.textSecondary,
+                    border: `1px solid ${colors.border}`, borderRadius: 10, cursor: 'pointer',
                     fontSize: 10, transition: 'all 0.15s',
                   }}
-                  onMouseEnter={e => { e.currentTarget.style.color = '#4fc3f7'; e.currentTarget.style.borderColor = '#4fc3f7' }}
-                  onMouseLeave={e => { e.currentTarget.style.color = '#888'; e.currentTarget.style.borderColor = '#2a2a2a' }}
+                  onMouseEnter={e => { e.currentTarget.style.color = colors.accent; e.currentTarget.style.borderColor = colors.accent }}
+                  onMouseLeave={e => { e.currentTarget.style.color = colors.textSecondary; e.currentTarget.style.borderColor = colors.border }}
                   >
                     {action}
                   </button>
@@ -1457,8 +1494,8 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
                     key={emoji}
                     onClick={() => toggleReaction(m.id, emoji)}
                     style={{
-                      background: m.reactions?.includes(emoji) ? '#1a2a3a' : 'transparent',
-                      border: m.reactions?.includes(emoji) ? '1px solid #4fc3f7' : '1px solid #333',
+                      background: m.reactions?.includes(emoji) ? colors.accentMuted : 'transparent',
+                      border: m.reactions?.includes(emoji) ? `1px solid ${colors.accent}` : `1px solid ${colors.borderLight}`,
                       borderRadius: 12, padding: '2px 6px', cursor: 'pointer', fontSize: 12,
                       opacity: m.reactions?.includes(emoji) ? 1 : 0.4,
                       transition: 'all 0.15s',
@@ -1476,16 +1513,16 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         {/* Streaming message — tool accordions render inline where [used tool: X] markers appear */}
         {(streaming || streamingToolCalls.length > 0) && (
           <div style={msgStyle('assistant')}>
-            <div style={{ fontSize: 10, color: '#666', marginBottom: 6 }}>AutoMate</div>
+            <div style={{ fontSize: 10, color: colors.textMuted, marginBottom: 6 }}>AutoMate</div>
             <div>{renderContentWithTools(streaming, streamingToolCalls, 'streaming')}</div>
-            <span style={{ animation: 'blink 1s infinite', color: '#4fc3f7' }}>|</span>
+            <span style={{ animation: 'blink 1s infinite', color: colors.accent }}>|</span>
           </div>
         )}
 
         {/* Typing indicator */}
         {typing && !streaming && streamingToolCalls.length === 0 && (
-          <div style={{ ...msgStyle('assistant'), color: '#666' }}>
-            <div style={{ fontSize: 10, color: '#666', marginBottom: 4 }}>AutoMate</div>
+          <div style={{ ...msgStyle('assistant'), color: colors.textMuted }}>
+            <div style={{ fontSize: 10, color: colors.textMuted, marginBottom: 4 }}>AutoMate</div>
             <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
               <span style={{ animation: 'bounce 1.4s infinite', animationDelay: '0s' }}>.</span>
               <span style={{ animation: 'bounce 1.4s infinite', animationDelay: '0.2s' }}>.</span>
@@ -1502,32 +1539,32 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
       {showSlashMenu && (
         <div style={{
           position: 'absolute', bottom: 70, left: 20, right: 20, zIndex: 50,
-          background: '#141414', border: '1px solid #333', borderRadius: 8,
-          maxHeight: 240, overflow: 'auto', boxShadow: '0 -4px 20px rgba(0,0,0,0.5)',
+          background: colors.bgCard, border: `1px solid ${colors.borderLight}`, borderRadius: 8,
+          maxHeight: 240, overflow: 'auto', boxShadow: `0 -4px 20px ${colors.shadow}`,
         }}>
           {SLASH_COMMANDS.filter(c => c.cmd.toLowerCase().includes(slashFilter)).map(c => (
             <div
               key={c.cmd}
               onClick={() => { setInput(c.cmd + ' '); setShowSlashMenu(false); inputRef.current?.focus() }}
               style={{
-                padding: '8px 14px', cursor: 'pointer', borderBottom: '1px solid #1a1a1a',
+                padding: '8px 14px', cursor: 'pointer', borderBottom: `1px solid ${colors.border}`,
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               }}
-              onMouseEnter={e => (e.currentTarget.style.background = '#1a1a2e')}
+              onMouseEnter={e => (e.currentTarget.style.background = colors.bgTertiary)}
               onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
             >
-              <span style={{ fontFamily: 'monospace', color: '#4fc3f7', fontSize: 13 }}>{c.cmd}</span>
-              <span style={{ fontSize: 11, color: '#666' }}>{c.desc}</span>
+              <span style={{ fontFamily: 'monospace', color: colors.accent, fontSize: 13 }}>{c.cmd}</span>
+              <span style={{ fontSize: 11, color: colors.textMuted }}>{c.desc}</span>
             </div>
           ))}
         </div>
       )}
 
       {/* Input area */}
-      <div style={{ padding: '12px 20px', borderTop: '1px solid #222' }}>
+      <div style={{ padding: '12px 20px', borderTop: `1px solid ${colors.border}` }}>
         {/* File upload indicator */}
         {uploading && (
-          <div style={{ fontSize: 11, color: '#4fc3f7', marginBottom: 6 }}>Uploading file...</div>
+          <div style={{ fontSize: 11, color: colors.accent, marginBottom: 6 }}>Uploading file...</div>
         )}
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -1536,8 +1573,8 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
             onClick={() => fileInputRef.current?.click()}
             title="Upload file"
             style={{
-              padding: '10px 12px', background: '#1a1a2e', color: '#888',
-              border: '1px solid #333', borderRadius: 6, cursor: 'pointer', fontSize: 16,
+              padding: '10px 12px', background: colors.bgTertiary, color: colors.textSecondary,
+              border: `1px solid ${colors.borderLight}`, borderRadius: 6, cursor: 'pointer', fontSize: 16,
             }}
           >
             +
@@ -1581,8 +1618,8 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
             }}
             placeholder="Type a message... (/new, /status, /model, /compact)"
             style={{
-              flex: 1, padding: '10px 14px', background: '#1a1a1a', border: '1px solid #333',
-              borderRadius: 6, color: '#e0e0e0', fontSize: 14, outline: 'none', fontFamily: 'inherit',
+              flex: 1, padding: '10px 14px', background: colors.bgHover, border: `1px solid ${colors.borderLight}`,
+              borderRadius: 6, color: colors.textPrimary, fontSize: 14, outline: 'none', fontFamily: 'inherit',
             }}
           />
           {(awaitingResponse || streaming) ? (
@@ -1593,7 +1630,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
                 }
               }}
               style={{
-                padding: '10px 20px', background: '#f44336', color: '#fff',
+                padding: '10px 20px', background: colors.error, color: '#fff',
                 border: 'none', borderRadius: 6, cursor: 'pointer',
                 fontWeight: 600, fontSize: 14, transition: 'all 0.15s',
               }}
@@ -1605,7 +1642,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
               onClick={send}
               disabled={!input.trim()}
               style={{
-                padding: '10px 20px', background: input.trim() ? '#4fc3f7' : '#333', color: input.trim() ? '#000' : '#666',
+                padding: '10px 20px', background: input.trim() ? colors.accent : colors.borderLight, color: input.trim() ? colors.accentContrast : colors.textMuted,
                 border: 'none', borderRadius: 6, cursor: input.trim() ? 'pointer' : 'default',
                 fontWeight: 600, fontSize: 14, transition: 'all 0.15s',
               }}
@@ -1625,7 +1662,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
     }}
     style={{
       position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-      background: 'rgba(0,0,0,0.7)', zIndex: 1100,
+      background: colors.bgOverlay, zIndex: 1100,
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       backdropFilter: 'blur(4px)',
     }}
@@ -1633,18 +1670,18 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
     <div
       onClick={e => e.stopPropagation()}
       style={{
-        background: '#111', border: '1px solid #333', borderRadius: 16,
+        background: colors.bgSecondary, border: `1px solid ${colors.borderLight}`, borderRadius: 16,
         padding: 0, width: '90%', maxWidth: 440, overflow: 'hidden',
-        boxShadow: '0 20px 60px rgba(0,0,0,0.6)',
+        boxShadow: `0 20px 60px ${colors.shadow}`,
       }}
     >
       <div style={{
-        padding: '20px 24px 12px', borderBottom: '1px solid #222',
+        padding: '20px 24px 12px', borderBottom: `1px solid ${colors.border}`,
       }}>
-        <div style={{ fontSize: 18, fontWeight: 700, color: '#e0e0e0', marginBottom: 4 }}>
+        <div style={{ fontSize: 18, fontWeight: 700, color: colors.textPrimary, marginBottom: 4 }}>
           Choose an Agent
         </div>
-        <div style={{ fontSize: 12, color: '#888' }}>
+        <div style={{ fontSize: 12, color: colors.textSecondary }}>
           Select which agent should handle this session, or dismiss to use default routing.
         </div>
       </div>
@@ -1661,43 +1698,43 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
               style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                 padding: '14px 16px', borderRadius: 10, cursor: 'pointer',
-                background: isSelected ? '#0d2137' : '#1a1a1a',
-                border: isSelected ? '1px solid #1a5276' : '1px solid #2a2a2a',
+                background: isSelected ? colors.accentMuted : colors.bgHover,
+                border: isSelected ? `1px solid ${colors.borderFocus}` : `1px solid ${colors.border}`,
                 transition: 'all 0.15s',
               }}
-              onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = '#1e1e1e' }}
-              onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = '#1a1a1a' }}
+              onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = colors.bgHover }}
+              onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = colors.bgHover }}
             >
               <div>
-                <div style={{ fontSize: 15, fontWeight: 600, color: isSelected ? '#4fc3f7' : '#e0e0e0' }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: isSelected ? colors.accent : colors.textPrimary }}>
                   {a.name}
                   {a.isDefault && (
                     <span style={{
-                      marginLeft: 8, fontSize: 10, color: '#81c784',
-                      background: '#1b3a1b', border: '1px solid #2d5a2d',
+                      marginLeft: 8, fontSize: 10, color: colors.success,
+                      background: colors.bgHover, border: `1px solid ${colors.borderLight}`,
                       borderRadius: 10, padding: '2px 8px', verticalAlign: 'middle',
                     }}>default</span>
                   )}
                 </div>
-                <div style={{ fontSize: 11, color: '#666', fontFamily: 'monospace', marginTop: 3 }}>
+                <div style={{ fontSize: 11, color: colors.textMuted, fontFamily: 'monospace', marginTop: 3 }}>
                   {a.model}
                 </div>
               </div>
               <div style={{
                 width: 20, height: 20, borderRadius: 10,
-                border: isSelected ? '2px solid #4fc3f7' : '2px solid #444',
-                background: isSelected ? '#4fc3f7' : 'transparent',
+                border: isSelected ? `2px solid ${colors.accent}` : `2px solid ${colors.borderLight}`,
+                background: isSelected ? colors.accent : 'transparent',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 transition: 'all 0.15s', flexShrink: 0,
               }}>
-                {isSelected && <div style={{ width: 8, height: 8, borderRadius: 4, background: '#000' }} />}
+                {isSelected && <div style={{ width: 8, height: 8, borderRadius: 4, background: colors.accentContrast }} />}
               </div>
             </div>
           )
         })}
       </div>
       <div style={{
-        padding: '12px 16px', borderTop: '1px solid #222',
+        padding: '12px 16px', borderTop: `1px solid ${colors.border}`,
         display: 'flex', justifyContent: 'flex-end', gap: 8,
       }}>
         <button
@@ -1706,8 +1743,8 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
             setShowAgentPicker(false)
           }}
           style={{
-            padding: '8px 18px', background: 'transparent', color: '#888',
-            border: '1px solid #333', borderRadius: 6, cursor: 'pointer',
+            padding: '8px 18px', background: 'transparent', color: colors.textSecondary,
+            border: `1px solid ${colors.borderLight}`, borderRadius: 6, cursor: 'pointer',
             fontSize: 12, fontWeight: 600,
           }}
         >
