@@ -373,6 +373,18 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
                 style={{ padding: '6px 12px', background: '#1a3a1c', color: '#81c784', border: '1px solid #2a5a2c', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
                 Export
               </button>
+              <button onClick={() => duplicateSession(selected.session.id)}
+                style={{ padding: '6px 12px', background: '#1a1a3a', color: '#b39ddb', border: '1px solid #2a2a6a', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
+                Duplicate
+              </button>
+              <button onClick={() => openJsonEditor(selected.session.id)}
+                style={{ padding: '6px 12px', background: '#2a2a1a', color: '#ffb74d', border: '1px solid #4a4a2a', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
+                Edit JSON
+              </button>
+              <button onClick={() => repairSession(selected.session.id)}
+                style={{ padding: '6px 12px', background: '#1a2a2a', color: '#80cbc4', border: '1px solid #2a4a4a', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
+                Repair
+              </button>
               <button onClick={() => deleteSession(selected.session.id)}
                 style={{ padding: '6px 12px', background: '#f44336', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
                 Delete
