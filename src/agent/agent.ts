@@ -54,6 +54,37 @@ export class Agent {
   // Per-session abort controllers for interrupt support
   private abortControllers: Map<string, AbortController> = new Map();
 
+  /**
+   * Sanitize tool_calls before saving to session: fix malformed JSON arguments
+   * that would cause "Invalid JSON format in tool call arguments" when replayed.
+   */
+  private sanitizeToolCalls(toolCalls: any[]): any[] {
+    return toolCalls.map(tc => {
+      if (!tc.function?.arguments) return tc;
+      const args = tc.function.arguments;
+      try {
+        JSON.parse(args);
+        return tc; // valid JSON, keep as-is
+      } catch {
+        // Try to repair truncated JSON: add missing closing braces/brackets
+        let repaired = args;
+        const opens = (repaired.match(/[{[]/g) || []).length;
+        const closes = (repaired.match(/[}\]]/g) || []).length;
+        const missing = opens - closes;
+        if (missing > 0) {
+          for (let i = 0; i < missing; i++) repaired += '}';
+          try {
+            JSON.parse(repaired);
+            return { ...tc, function: { ...tc.function, arguments: repaired } };
+          } catch { /* fall through */ }
+        }
+        // Cannot repair — replace with empty object to prevent session corruption
+        console.warn(`[agent] Sanitized malformed tool_call args for ${tc.function?.name}: ${args.slice(0, 100)}...`);
+        return { ...tc, function: { ...tc.function, arguments: '{}' } };
+      }
+    });
+  }
+
   constructor(config: Config, sessionManager: SessionManager) {
     this.config = config;
     this.llm = new LLMClient(config);
@@ -720,7 +751,7 @@ export class Agent {
           this.sessionManager.addMessage(sessionId, {
             role: 'assistant',
             content: content || null,
-            tool_calls: toolCalls,
+            tool_calls: this.sanitizeToolCalls(toolCalls),
           });
 
           // Execute tools in parallel for speed (using session view)
@@ -776,7 +807,7 @@ export class Agent {
           this.sessionManager.addMessage(sessionId, {
             role: 'assistant',
             content: msg.content,
-            tool_calls: msg.tool_calls,
+            tool_calls: this.sanitizeToolCalls(msg.tool_calls),
           });
 
           const results = await Promise.all(
@@ -1429,7 +1460,7 @@ export class Agent {
           this.sessionManager.addMessage(sessionId, {
             role: 'assistant',
             content: content || null,
-            tool_calls: toolCalls,
+            tool_calls: this.sanitizeToolCalls(toolCalls),
           });
 
           const results = await Promise.all(
@@ -1475,7 +1506,7 @@ export class Agent {
           this.sessionManager.addMessage(sessionId, {
             role: 'assistant',
             content: msg.content,
-            tool_calls: msg.tool_calls,
+            tool_calls: this.sanitizeToolCalls(msg.tool_calls),
           });
 
           const results = await Promise.all(

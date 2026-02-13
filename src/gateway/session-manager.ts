@@ -131,6 +131,28 @@ export class SessionManager {
     if (!session.metadata) session.metadata = {};
 
     // Sanitize tool pairs
+    // Sanitize malformed tool_call arguments (prevent "Invalid JSON format" errors on replay)
+    for (const m of session.messages) {
+      if (m.role === 'assistant' && m.tool_calls) {
+        for (const tc of m.tool_calls) {
+          if (tc.function?.arguments) {
+            try {
+              JSON.parse(tc.function.arguments);
+            } catch {
+              // Attempt repair
+              let repaired = tc.function.arguments;
+              const opens = (repaired.match(/[{[]/g) || []).length;
+              const closes = (repaired.match(/[}\]]/g) || []).length;
+              if (opens > closes) {
+                for (let i = 0; i < opens - closes; i++) repaired += '}';
+                try { JSON.parse(repaired); tc.function.arguments = repaired; continue; } catch {}
+              }
+              tc.function.arguments = '{}';
+            }
+          }
+        }
+      }
+    }
     this.sanitizeToolPairs(session);
   }
 

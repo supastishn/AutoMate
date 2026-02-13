@@ -586,18 +586,35 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           : msg.tool_calls
         pendingToolCallsRef.current = []
         setStreamingToolCalls([])
+        // Server sends mapped messages with serverIndex — use them to backfill indices
+        const serverMsgs: any[] = msg.messages || []
         // Use accumulated streaming content if available — msg.content only has the
         // final LLM response (after tool calls), so it would wipe earlier streamed text.
         setStreaming(prev => {
           // Keep [used tool: X] markers — renderContentWithTools replaces them with accordions
           const finalContent = (prev || msg.content || '').trim()
-          setMessages(msgs => [...msgs, {
-            id: makeId(),
-            role: 'assistant',
-            content: finalContent,
-            toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined,
-            timestamp: Date.now(),
-          }])
+          setMessages(msgs => {
+            const updated = [...msgs, {
+              id: makeId(),
+              role: 'assistant' as const,
+              content: finalContent,
+              toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined,
+              timestamp: Date.now(),
+            }]
+            // Backfill serverIndex: match client messages to server messages by role+position
+            // Walk server messages (non-system) and assign serverIndex to matching client messages
+            const serverNonSystem = serverMsgs.filter((sm: any) => sm.role !== 'system')
+            let si = 0
+            for (let ci = 0; ci < updated.length; ci++) {
+              if (updated[ci].role === 'system') continue
+              while (si < serverNonSystem.length && serverNonSystem[si].role !== updated[ci].role) si++
+              if (si < serverNonSystem.length && serverNonSystem[si].role === updated[ci].role) {
+                updated[ci] = { ...updated[ci], serverIndex: serverNonSystem[si].serverIndex }
+                si++
+              }
+            }
+            return updated
+          })
           return ''
         })
       }
