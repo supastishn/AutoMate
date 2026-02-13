@@ -308,8 +308,8 @@ const clearCompletedAgents = async () => {
           style={{
             padding: '8px 20px', fontSize: 13, fontWeight: folder === 'heartbeat' ? 600 : 400,
             background: 'transparent', border: 'none', cursor: 'pointer',
-            color: folder === 'heartbeat' ? '#e57373' : colors.textMuted,
-            borderBottom: folder === 'heartbeat' ? '2px solid #e57373' : '2px solid transparent',
+            color: folder === 'heartbeat' ? colors.error : colors.textMuted,
+            borderBottom: folder === 'heartbeat' ? `2px solid ${colors.error}` : '2px solid transparent',
             marginBottom: -1,
           }}
         >
@@ -320,8 +320,8 @@ const clearCompletedAgents = async () => {
           style={{
             padding: '8px 20px', fontSize: 13, fontWeight: folder === 'subagents' ? 600 : 400,
             background: 'transparent', border: 'none', cursor: 'pointer',
-            color: folder === 'subagents' ? '#b39ddb' : colors.textMuted,
-            borderBottom: folder === 'subagents' ? '2px solid #b39ddb' : '2px solid transparent',
+            color: folder === 'subagents' ? colors.subagent : colors.textMuted,
+            borderBottom: folder === 'subagents' ? `2px solid ${colors.subagent}` : '2px solid transparent',
             marginBottom: -1,
           }}
         >
@@ -335,7 +335,7 @@ const clearCompletedAgents = async () => {
           {subAgents.length > 0 && subAgents.some(a => a.status !== 'running') && (
             <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'flex-end' }}>
               <button onClick={clearCompletedAgents}
-                style={{ padding: '5px 14px', background: colors.bgHover, color: '#b39ddb', border: `1px solid ${colors.borderLight}`, borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
+                style={{ padding: '5px 14px', background: colors.bgHover, color: colors.subagent, border: `1px solid ${colors.borderLight}`, borderRadius: 6, cursor: 'pointer', fontSize: 12 }}>
                 Clear Completed
               </button>
             </div>
@@ -350,7 +350,7 @@ const clearCompletedAgents = async () => {
               {subAgents.map(a => {
                 const duration = ((a.endTime || Date.now()) - a.startTime) / 1000
                 const statusIcon = a.status === 'running' ? '\u23F3' : a.status === 'completed' ? '\u2705' : '\u274C'
-                const statusColor = a.status === 'running' ? colors.accent : a.status === 'completed' ? '#81c784' : a.status === 'timeout' ? '#ffb74d' : '#f44'
+                const statusColor = a.status === 'running' ? colors.accent : a.status === 'completed' ? colors.success : a.status === 'timeout' ? colors.warning : colors.error
                 const isExpanded = expandedAgent === a.id
                 return (
                   <div key={a.id} style={{ ...card, borderColor: a.status === 'running' ? colors.borderLight : colors.border }}
@@ -360,7 +360,7 @@ const clearCompletedAgents = async () => {
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, overflow: 'hidden' }}>
                         <span style={{ fontSize: 16 }}>{statusIcon}</span>
-                        <span style={{ fontWeight: 600, color: '#b39ddb', fontFamily: 'monospace', fontSize: 13 }}>{a.name}</span>
+                        <span style={{ fontWeight: 600, color: colors.subagent, fontFamily: 'monospace', fontSize: 13 }}>{a.name}</span>
                         <span style={{ fontSize: 10, color: colors.textMuted, fontFamily: 'monospace' }}>{a.id}</span>
                       </div>
                       <span style={{ fontSize: 11, color: statusColor, fontWeight: 600 }}>{a.status}</span>
@@ -377,13 +377,13 @@ const clearCompletedAgents = async () => {
                         {a.toolCalls.length > 0 && (
                           <div style={{ marginBottom: 8 }}>
                             <div style={{ fontSize: 10, color: colors.textMuted, marginBottom: 4 }}>Tools used:</div>
-                            <div style={{ fontSize: 11, color: '#b39ddb', fontFamily: 'monospace' }}>
+                            <div style={{ fontSize: 11, color: colors.subagent, fontFamily: 'monospace' }}>
                               {a.toolCalls.map(t => t.name).join(', ')}
                             </div>
                           </div>
                         )}
                         {a.error && (
-                          <div style={{ marginBottom: 8, padding: '6px 10px', background: colors.bgHover, borderRadius: 4, fontSize: 12, color: '#f44', fontFamily: 'monospace' }}>
+                          <div style={{ marginBottom: 8, padding: '6px 10px', background: colors.bgHover, borderRadius: 4, fontSize: 12, color: colors.error, fontFamily: 'monospace' }}>
                             {a.error}
                           </div>
                         )}
@@ -425,7 +425,7 @@ const clearCompletedAgents = async () => {
           </label>
         </div>
         {importStatus && (
-          <div style={{ marginTop: 8, fontSize: 12, color: importStatus.type === 'success' ? '#81c784' : '#f44' }}>
+          <div style={{ marginTop: 8, fontSize: 12, color: importStatus.type === 'success' ? colors.success : colors.error }}>
             {importStatus.message}
           </div>
         )}
@@ -465,27 +465,27 @@ const clearCompletedAgents = async () => {
                   )}
                   <button onClick={(e) => exportSession(s.id, e)}
                     title="Export session"
-                    style={{ padding: '2px 8px', background: colors.bgHover, color: '#81c784', border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
+                    style={{ padding: '2px 8px', background: colors.bgHover, color: colors.success, border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
                     Export
                   </button>
                   <button onClick={(e) => duplicateSession(s.id, e)}
                     title="Duplicate session"
-                    style={{ padding: '2px 8px', background: colors.bgHover, color: '#b39ddb', border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
+                    style={{ padding: '2px 8px', background: colors.bgHover, color: colors.subagent, border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
                     Dup
                   </button>
                   <button onClick={(e) => openJsonEditor(s.id, e)}
                     title="Edit raw JSON"
-                    style={{ padding: '2px 8px', background: colors.bgHover, color: '#ffb74d', border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
+                    style={{ padding: '2px 8px', background: colors.bgHover, color: colors.warning, border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
                     JSON
                   </button>
                   <button onClick={(e) => repairSession(s.id, e)}
                     title="Repair broken tool pairs"
-                    style={{ padding: '2px 8px', background: colors.bgHover, color: '#80cbc4', border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
+                    style={{ padding: '2px 8px', background: colors.bgHover, color: colors.info, border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
                     Repair
                   </button>
                   <button onClick={(e) => deleteSession(s.id, e)}
                     title="Delete session"
-                    style={{ padding: '2px 8px', background: colors.bgHover, color: '#f44', border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
+                    style={{ padding: '2px 8px', background: colors.bgHover, color: colors.error, border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
                     Del
                   </button>
                 </div>
@@ -514,23 +514,23 @@ const clearCompletedAgents = async () => {
                 </button>
               )}
               <button onClick={() => exportSession(selected.session.id)}
-                style={{ padding: '6px 12px', background: colors.bgHover, color: '#81c784', border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
+                style={{ padding: '6px 12px', background: colors.bgHover, color: colors.success, border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
                 Export
               </button>
               <button onClick={() => duplicateSession(selected.session.id)}
-                style={{ padding: '6px 12px', background: colors.bgHover, color: '#b39ddb', border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
+                style={{ padding: '6px 12px', background: colors.bgHover, color: colors.subagent, border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
                 Duplicate
               </button>
               <button onClick={() => openJsonEditor(selected.session.id)}
-                style={{ padding: '6px 12px', background: colors.bgHover, color: '#ffb74d', border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
+                style={{ padding: '6px 12px', background: colors.bgHover, color: colors.warning, border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
                 Edit JSON
               </button>
               <button onClick={() => repairSession(selected.session.id)}
-                style={{ padding: '6px 12px', background: colors.bgHover, color: '#80cbc4', border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
+                style={{ padding: '6px 12px', background: colors.bgHover, color: colors.info, border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
                 Repair
               </button>
               <button onClick={() => deleteSession(selected.session.id)}
-                style={{ padding: '6px 12px', background: '#f44336', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
+                style={{ padding: '6px 12px', background: colors.error, color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
                 Delete
               </button>
               <button onClick={() => setSelected(null)}
@@ -542,7 +542,7 @@ const clearCompletedAgents = async () => {
           <div style={{ maxHeight: 400, overflow: 'auto' }}>
             {(selected.session.messages || []).map((m: any, i: number) => (
               <div key={i} style={{ padding: 8, borderBottom: `1px solid ${colors.border}`, fontSize: 13, fontFamily: 'monospace' }}>
-                <span style={{ color: m.role === 'user' ? colors.accent : m.role === 'assistant' ? '#81c784' : m.role === 'tool' ? '#ffb74d' : colors.textSecondary, marginRight: 8 }}>
+                <span style={{ color: m.role === 'user' ? colors.accent : m.role === 'assistant' ? colors.success : m.role === 'tool' ? colors.warning : colors.textSecondary, marginRight: 8 }}>
                   [{m.role}]
                 </span>
                 <span style={{ color: colors.textPrimary }}>
@@ -588,7 +588,7 @@ const clearCompletedAgents = async () => {
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
               borderBottom: `1px solid ${colors.borderLight}`,
             }}>
-              <span style={{ fontSize: 13, color: '#ffb74d', fontWeight: 600, fontFamily: 'monospace' }}>
+              <span style={{ fontSize: 13, color: colors.warning, fontWeight: 600, fontFamily: 'monospace' }}>
                 Edit: {jsonEditor.sessionId}
               </span>
               <div style={{ display: 'flex', gap: 8 }}>
@@ -596,7 +596,7 @@ const clearCompletedAgents = async () => {
                   onClick={saveJsonEditor}
                   disabled={jsonSaving}
                   style={{
-                    padding: '4px 14px', background: colors.accent, color: '#000',
+                    padding: '4px 14px', background: colors.accent, color: colors.accentContrast,
                     border: 'none', borderRadius: 4, cursor: jsonSaving ? 'default' : 'pointer',
                     fontSize: 12, fontWeight: 600, opacity: jsonSaving ? 0.5 : 1,
                   }}
@@ -615,7 +615,7 @@ const clearCompletedAgents = async () => {
               </div>
             </div>
             {jsonError && (
-              <div style={{ padding: '6px 16px', background: colors.bgHover, color: '#f44', fontSize: 12, borderBottom: `1px solid ${colors.borderLight}` }}>
+              <div style={{ padding: '6px 16px', background: colors.bgHover, color: colors.error, fontSize: 12, borderBottom: `1px solid ${colors.borderLight}` }}>
                 {jsonError}
               </div>
             )}

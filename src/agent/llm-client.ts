@@ -326,24 +326,43 @@ export class LLMClient {
     const decoder = new TextDecoder();
     let buffer = '';
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith('data: ')) continue;
-        const data = trimmed.slice(6);
-        if (data === '[DONE]') return;
-        try {
-          yield JSON.parse(data) as StreamChunk;
-        } catch {
-          // skip malformed chunks
+    try {
+      while (true) {
+        // Check for abort before each read
+        if (signal?.aborted) {
+          reader.cancel();
+          return;
         }
+
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          // Check for abort while processing lines
+          if (signal?.aborted) {
+            reader.cancel();
+            return;
+          }
+
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+          const data = trimmed.slice(6);
+          if (data === '[DONE]') return;
+          try {
+            yield JSON.parse(data) as StreamChunk;
+          } catch {
+            // skip malformed chunks
+          }
+        }
+      }
+    } finally {
+      // Ensure reader is released on abort or normal completion
+      if (signal?.aborted) {
+        reader.cancel().catch(() => {});
       }
     }
   }

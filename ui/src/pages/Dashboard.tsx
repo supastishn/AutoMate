@@ -89,8 +89,8 @@ function makeStyles(colors: C) {
     display: 'inline-block', padding: '2px 8px', borderRadius: 12,
     fontSize: 11, margin: '2px 3px', background: colors.accentMuted, color: colors.accent,
   }
-  const pillGreen: React.CSSProperties = { ...pill, background: colors.bgHover, color: '#4caf50' }
-  const pillRed: React.CSSProperties = { ...pill, background: colors.bgHover, color: '#f44336' }
+  const pillGreen: React.CSSProperties = { ...pill, background: colors.bgHover, color: colors.success }
+  const pillRed: React.CSSProperties = { ...pill, background: colors.bgHover, color: colors.error }
   const mono: React.CSSProperties = { fontFamily: 'monospace', fontSize: 12, color: colors.textSecondary }
   const grid2: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }
   const grid3: React.CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }
@@ -113,7 +113,7 @@ function makeStyles(colors: C) {
       display: 'inline-block', padding: '2px 8px', borderRadius: 10,
       fontSize: 10, fontWeight: 600, textTransform: 'uppercase' as const,
       background: isOk ? colors.bgHover : isFail ? colors.bgHover : colors.accentMuted,
-      color: isOk ? '#4caf50' : isFail ? '#f44336' : colors.accent,
+      color: isOk ? colors.success : isFail ? colors.error : colors.accent,
     }
   }
 
@@ -137,13 +137,13 @@ function fmtBytes(b: number): string {
   return `${(b / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function statusColor(s: string): string {
+function statusColor(s: string, colors: Record<string, string>): string {
   switch (s) {
-    case 'online': return '#4caf50'
-    case 'busy': return '#ff9800'
+    case 'online': return colors.success
+    case 'busy': return colors.warning
     case 'idle': return '#ffeb3b'
-    case 'offline': return '#f44336'
-    default: return '#888'
+    case 'offline': return colors.error
+    default: return colors.textMuted
   }
 }
 
@@ -212,7 +212,7 @@ function HeartbeatModal({ entry, onClose, styles, colors }: { entry: HeartbeatLo
           <div style={{
             marginBottom: 16, padding: '12px 14px', borderRadius: 8,
             background: colors.bgHover, border: `1px solid ${colors.borderLight}`,
-            ...mono, color: '#f44336', lineHeight: 1.6,
+            ...mono, color: colors.error, lineHeight: 1.6,
           }}>
             {entry.error}
           </div>
@@ -315,7 +315,7 @@ export default function Dashboard() {
   }
 
   if (error) return (
-    <div style={{ padding: 40, color: '#f44336', textAlign: 'center' }}>
+    <div style={{ padding: 40, color: colors.error, textAlign: 'center' }}>
       <div style={{ fontSize: 20, marginBottom: 8 }}>{error}</div>
       <div style={{ fontSize: 12, color: colors.textSecondary }}>Retrying every 5s...</div>
     </div>
@@ -334,8 +334,8 @@ export default function Dashboard() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div style={{
             width: 8, height: 8, borderRadius: '50%',
-            background: statusColor(presence.status),
-            boxShadow: `0 0 6px ${statusColor(presence.status)}`,
+            background: statusColor(presence.status, colors),
+            boxShadow: `0 0 6px ${statusColor(presence.status, colors)}`,
           }} />
           <span style={{ fontSize: 13, color: colors.textSecondary, textTransform: 'capitalize' as const }}>
             {presence.status}{presence.typing ? ' (typing...)' : ''}
@@ -346,7 +346,7 @@ export default function Dashboard() {
       {/* ── Top Stats Row ──────────────────────────────────────────── */}
       <div style={grid4Style}>
         <StatCard label="UPTIME" value={fmtUptime(data.uptime)} />
-        <StatCard label="MODEL" value={data.model.split('/').pop() || data.model} color="#4fc3f7" />
+        <StatCard label="MODEL" value={data.model.split('/').pop() || data.model} color={colors.accent} />
         <StatCard label="SESSIONS" value={sessions.total} />
         <StatCard label="MESSAGES" value={sessions.totalMessages} />
       </div>
@@ -364,11 +364,11 @@ export default function Dashboard() {
             <div style={statLabel}>DEFERRED (ON-DEMAND)</div>
           </div>
           <div>
-            <div style={{ ...statNum, fontSize: 22, color: '#4caf50' }}>{tools.totalPromotions}</div>
+            <div style={{ ...statNum, fontSize: 22, color: colors.success }}>{tools.totalPromotions}</div>
             <div style={statLabel}>TOTAL LOADS</div>
           </div>
           <div>
-            <div style={{ ...statNum, fontSize: 22, color: '#ff9800' }}>{tools.totalDemotions}</div>
+            <div style={{ ...statNum, fontSize: 22, color: colors.warning }}>{tools.totalDemotions}</div>
             <div style={statLabel}>TOTAL UNLOADS</div>
           </div>
         </div>
@@ -446,7 +446,7 @@ export default function Dashboard() {
           <div style={sectionTitle}>Presence</div>
           <div style={mono}>
             <div style={{ marginBottom: 4 }}>
-              Status: <span style={{ color: statusColor(presence.status) }}>{presence.status}</span>
+              Status: <span style={{ color: statusColor(presence.status, colors) }}>{presence.status}</span>
             </div>
             <div style={{ marginBottom: 4 }}>Agent: {presence.agentId}</div>
             <div>Last active: {timeSince(presence.lastActivity)}</div>
@@ -461,7 +461,7 @@ export default function Dashboard() {
           <>
             <div style={grid3}>
               <div>
-                <div style={{ ...statNum, fontSize: 20, color: memory.indexEnabled ? '#4caf50' : '#f44336' }}>
+                <div style={{ ...statNum, fontSize: 20, color: memory.indexEnabled ? colors.success : colors.error }}>
                   {memory.indexEnabled ? 'Active' : 'Disabled'}
                 </div>
                 <div style={statLabel}>SEMANTIC INDEX</div>
@@ -484,7 +484,7 @@ export default function Dashboard() {
                     background: f.exists ? colors.bgHover : colors.bgHover,
                     border: `1px solid ${f.exists ? colors.borderLight : colors.border}`,
                   }}>
-                    <div style={{ color: f.exists ? '#4caf50' : colors.textMuted, marginBottom: 2 }}>{f.name}</div>
+                    <div style={{ color: f.exists ? colors.success : colors.textMuted, marginBottom: 2 }}>{f.name}</div>
                     <div style={{ fontSize: 10, color: colors.textMuted }}>
                       {f.exists ? fmtBytes(f.size) : 'not found'}
                     </div>
@@ -513,13 +513,13 @@ export default function Dashboard() {
           <div style={sectionTitle}>Plugins ({plugins.length})</div>
           {plugins.length > 0 ? plugins.map(p => (
             <div key={p.name} style={{ ...mono, marginBottom: 6 }}>
-              <div style={{ color: '#ff9800' }}>{p.name}</div>
+              <div style={{ color: colors.warning }}>{p.name}</div>
               <div style={{ fontSize: 10, color: colors.textMuted }}>
                 {p.summary.replace(/^Plugin tool:\s*/, '')}
               </div>
               {p.actions && (
                 <div style={{ marginTop: 2 }}>
-                  {p.actions.map(a => <span key={a} style={{ ...pill, fontSize: 9, background: colors.bgTertiary, color: '#9e9eff' }}>{a}</span>)}
+                  {p.actions.map(a => <span key={a} style={{ ...pill, fontSize: 9, background: colors.bgTertiary, color: colors.subagent }}>{a}</span>)}
                 </div>
               )}
             </div>
@@ -549,9 +549,9 @@ export default function Dashboard() {
               fontFamily: 'monospace',
               padding: '6px 10px',
               borderRadius: 4,
-              background: indexStatus.type === 'success' ? 'rgba(76,175,80,0.1)' : 'rgba(244,67,54,0.1)',
-              color: indexStatus.type === 'success' ? '#4caf50' : '#f44336',
-              border: `1px solid ${indexStatus.type === 'success' ? '#4caf50' : '#f44336'}`,
+              background: indexStatus.type === 'success' ? colors.successMuted : colors.errorMuted,
+              color: indexStatus.type === 'success' ? colors.success : colors.error,
+              border: `1px solid ${indexStatus.type === 'success' ? colors.success : colors.error}`,
             }}>
               {indexStatus.message}
             </div>
@@ -577,9 +577,9 @@ export default function Dashboard() {
               fontFamily: 'monospace',
               padding: '6px 10px',
               borderRadius: 4,
-              background: heartbeatStatus.type === 'success' ? 'rgba(76,175,80,0.1)' : 'rgba(244,67,54,0.1)',
-              color: heartbeatStatus.type === 'success' ? '#4caf50' : '#f44336',
-              border: `1px solid ${heartbeatStatus.type === 'success' ? '#4caf50' : '#f44336'}`,
+              background: heartbeatStatus.type === 'success' ? colors.successMuted : colors.errorMuted,
+              color: heartbeatStatus.type === 'success' ? colors.success : colors.error,
+              border: `1px solid ${heartbeatStatus.type === 'success' ? colors.success : colors.error}`,
             }}>
               {heartbeatStatus.message}
             </div>
@@ -626,7 +626,7 @@ export default function Dashboard() {
 
       {/* Heartbeat Detail Modal */}
       {selectedHeartbeat && (
-        <HeartbeatModal entry={selectedHeartbeat} onClose={() => setSelectedHeartbeat(null)} />
+        <HeartbeatModal entry={selectedHeartbeat} onClose={() => setSelectedHeartbeat(null)} styles={styles} colors={colors} />
       )}
     </div>
   )

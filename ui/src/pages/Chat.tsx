@@ -375,6 +375,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
   const fileInputRef = useRef<HTMLInputElement>(null)
   const msgIdRef = useRef(0)
   const awaitingResponseRef = useRef(false)
+  const currentSessionIdRef = useRef<string | null>(null)
   const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({})
   const [expandedHeartbeats, setExpandedHeartbeats] = useState<Record<string, boolean>>({})
   const pendingToolCallsRef = useRef<{ name: string; arguments?: string; result: string }[]>([])
@@ -494,6 +495,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
 
       if (msg.type === 'connected') {
         setCurrentSessionId(msg.session_id)
+        currentSessionIdRef.current = msg.session_id
         if (msg.context) setContextInfo(msg.context)
         // If the server is still processing this session (e.g. page refresh mid-stream),
         // show the thinking indicator and start polling for completion.
@@ -542,6 +544,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
       // Hide agent picker when loading an existing session
       setShowAgentPicker(false)
         setCurrentSessionId(msg.session_id)
+        currentSessionIdRef.current = msg.session_id
         if (msg.context) setContextInfo(msg.context)
         // Merge consecutive assistant messages into one: tool-call-only messages
         // get folded into the previous assistant message (tools belong to that turn).
@@ -700,6 +703,21 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
       // Forward data_update events to the shared event bus
       if (msg.type === 'data_update') {
         emitDataUpdate(msg.resource, msg.data)
+        // When sessions are updated externally (heartbeat, plugins, etc.),
+        // reload our current session to show new messages
+        if (msg.resource === 'sessions' && !awaitingResponseRef.current && currentSessionIdRef.current) {
+          // Use a small debounce to avoid spamming reloads
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            const ws = wsRef.current
+            const sessionId = currentSessionIdRef.current
+            // Only reload if we're not in the middle of a conversation
+            setTimeout(() => {
+              if (!awaitingResponseRef.current && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'load_session', session_id: sessionId }))
+              }
+            }, 300)
+          }
+        }
       }
       // Handle heartbeat activity events (live heartbeat streaming)
       if (msg.type === 'heartbeat_activity') {
@@ -770,6 +788,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
       // Handle messages_updated (after delete/edit)
       if (msg.type === 'messages_updated') {
         setCurrentSessionId(msg.session_id)
+        currentSessionIdRef.current = msg.session_id
         if (msg.context) setContextInfo(msg.context)
         const loaded: ChatMessage[] = (msg.messages || [])
           .filter((m: any) => m.role !== 'system')
@@ -1154,6 +1173,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
               setMessages([])
               setStreaming('')
               setCurrentSessionId(null)
+              currentSessionIdRef.current = null
             }
           }} style={{
             padding: '4px 12px', background: colors.bgTertiary, color: colors.textSecondary,
