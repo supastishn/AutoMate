@@ -859,14 +859,34 @@ this.app.post<{ Params: { id: string } }>('/api/sessions/:id/repair', async (req
       const all = this.router.getAllAgents();
       const defaultAgent = this.router.getDefaultAgent();
       return {
-        agents: all.map(m => ({
-          name: m.name,
-          channels: m.channels,
-          allowFrom: m.allowFrom,
-          isDefault: defaultAgent?.name === m.name,
-          model: m.agent.getConfig().agent.model,
-          sessionCount: m.sessionManager.listSessions().length,
-        })),
+        agents: all.map(m => {
+          const cfg = m.agent.getConfig();
+          const hb = m.heartbeatManager;
+          const skills = m.skillsLoader.listSkills?.() || [];
+          return {
+            name: m.name,
+            channels: m.channels,
+            allowFrom: m.allowFrom,
+            isDefault: defaultAgent?.name === m.name,
+            model: cfg.agent.model,
+            apiBase: cfg.agent.apiBase,
+            maxTokens: cfg.agent.maxTokens,
+            temperature: cfg.agent.temperature,
+            systemPrompt: cfg.agent.systemPrompt,
+            memoryDir: cfg.memory.directory,
+            sessionsDir: cfg.sessions.directory,
+            skillsDir: cfg.skills.directory,
+            sessionCount: m.sessionManager.listSessions().length,
+            skillCount: Array.isArray(skills) ? skills.length : 0,
+            tools: {
+              allow: cfg.tools.allow || [],
+              deny: cfg.tools.deny || [],
+            },
+            heartbeat: hb ? {
+              active: hb.isActive(),
+            } : null,
+          };
+        }),
         defaultAgent: defaultAgent?.name || null,
       };
     });
@@ -925,7 +945,67 @@ this.app.post<{ Params: { id: string } }>('/api/sessions/:id/repair', async (req
       return { ok: true };
     });
 
-    // ── Plugin Unload API ─────────────────────────────────────────────
+    // Get single agent detail
+    this.app.get<{ Params: { name: string } }>('/api/agents/:name', async (req, reply) => {
+      if (!this.router) return reply.code(400).send({ error: 'Multi-agent router not active' });
+      const m = this.router.getAgent(req.params.name);
+      if (!m) return reply.code(404).send({ error: `Agent "${req.params.name}" not found` });
+      const cfg = m.agent.getConfig();
+      const hb = m.heartbeatManager;
+      const skills = m.skillsLoader.listSkills?.() || [];
+      const defaultAgent = this.router.getDefaultAgent();
+      return {
+        name: m.name,
+        channels: m.channels,
+        allowFrom: m.allowFrom,
+        isDefault: defaultAgent?.name === m.name,
+        model: cfg.agent.model,
+        apiBase: cfg.agent.apiBase,
+        maxTokens: cfg.agent.maxTokens,
+        temperature: cfg.agent.temperature,
+        systemPrompt: cfg.agent.systemPrompt,
+        memoryDir: cfg.memory.directory,
+        sessionsDir: cfg.sessions.directory,
+        skillsDir: cfg.skills.directory,
+        sessionCount: m.sessionManager.listSessions().length,
+        skillCount: Array.isArray(skills) ? skills.length : 0,
+        tools: { allow: cfg.tools.allow || [], deny: cfg.tools.deny || [] },
+        heartbeat: hb ? { active: hb.isActive() } : null,
+        sessions: m.sessionManager.listSessions(),
+      };
+    });
+
+    // Update agent routing config (channels, allowFrom) and toggle heartbeat
+    this.app.put<{ Params: { name: string }; Body: { channels?: string[]; allowFrom?: string[]; heartbeat?: string } }>('/api/agents/:name', async (req, reply) => {
+      if (!this.router) return reply.code(400).send({ error: 'Multi-agent router not active' });
+      const m = this.router.getAgent(req.params.name);
+      if (!m) return reply.code(404).send({ error: `Agent "${req.params.name}" not found` });
+
+      const body = req.body;
+      const changes: string[] = [];
+
+      if (body.channels && Array.isArray(body.channels)) {
+        (m as any).channels = body.channels;
+        changes.push('channels');
+      }
+      if (body.allowFrom && Array.isArray(body.allowFrom)) {
+        (m as any).allowFrom = body.allowFrom;
+        changes.push('allowFrom');
+      }
+      if (body.heartbeat) {
+        const hb = m.heartbeatManager;
+        if (hb) {
+          if (body.heartbeat === 'on') { hb.start(); changes.push('heartbeat:on'); }
+          else if (body.heartbeat === 'off') { hb.stop(); changes.push('heartbeat:off'); }
+          else if (body.heartbeat === 'now') { hb.trigger().catch(() => {}); changes.push('heartbeat:triggered'); }
+        }
+      }
+
+      this.broadcastDataUpdate('agents');
+      return { ok: true, name: req.params.name, changes };
+    });
+
+// ── Plugin Unload API ─────────────────────────────────────────────
     this.app.post<{ Body: { name: string } }>('/api/plugins/unload', async (req, reply) => {
       const pm = this.agent.getPluginManager();
       if (!pm) return reply.code(400).send({ error: 'Plugin manager not available' });
