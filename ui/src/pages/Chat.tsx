@@ -356,6 +356,10 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
   const [currentModel, setCurrentModel] = useState('')
   const [models, setModels] = useState<{name: string; model: string; active: boolean}[]>([])
   const [showModelPicker, setShowModelPicker] = useState(false)
+  const [multiAgent, setMultiAgent] = useState(false)
+  const [agentsList, setAgentsList] = useState<{ name: string; isDefault: boolean; model: string }[]>([])
+  const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
+  const [showAgentPicker, setShowAgentPicker] = useState(false)
   const [showSlashMenu, setShowSlashMenu] = useState(false)
   const [slashFilter, setSlashFilter] = useState('')
   const [heartbeat, setHeartbeat] = useState<HeartbeatActivity | null>(null)
@@ -485,6 +489,15 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           awaitingResponseRef.current = true
           setTyping(true)
         }
+        // Multi-agent support: show agent picker on fresh sessions
+        if (msg.multiAgent && msg.agents?.length > 1) {
+          setMultiAgent(true)
+          setAgentsList(msg.agents)
+          // Show picker only for fresh sessions (no existing messages)
+          if (!msg.processing) {
+            setShowAgentPicker(true)
+          }
+        }
         setMessages(prev => [...prev, {
           id: makeId(),
           role: 'system',
@@ -493,6 +506,8 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         }])
       }
       if (msg.type === 'session_loaded') {
+      // Hide agent picker when loading an existing session
+      setShowAgentPicker(false)
         setCurrentSessionId(msg.session_id)
         if (msg.context) setContextInfo(msg.context)
         // Merge consecutive assistant messages into one: tool-call-only messages
@@ -761,8 +776,19 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
 
   const send = () => {
     if (!input.trim() || !wsRef.current) return
+    const trimmed = input.trim()
+
+    // If user resets session, clear agent selection and re-show picker
+    if ((trimmed === '/new' || trimmed === '/reset') && multiAgent) {
+      setSelectedAgent(null)
+      // Picker will re-show after the response completes
+      setTimeout(() => setShowAgentPicker(true), 300)
+    }
+
     setMessages(prev => [...prev, { id: makeId(), role: 'user', content: input, timestamp: Date.now() }])
-    wsRef.current.send(JSON.stringify({ type: 'message', content: input }))
+    const payload: any = { type: 'message', content: trimmed }
+    if (selectedAgent) payload.agent = selectedAgent
+    wsRef.current.send(JSON.stringify(payload))
     setInput('')
     setStreaming('')
     pendingToolCallsRef.current = []
@@ -987,6 +1013,19 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <div style={{ width: 8, height: 8, borderRadius: '50%', background: connected ? '#4caf50' : '#f44' }} />
           <span style={{ fontSize: 14, color: '#888' }}>{connected ? 'Connected' : 'Disconnected'}</span>
+          {multiAgent && (
+            <button
+              onClick={() => setShowAgentPicker(true)}
+              style={{
+                padding: '3px 10px', background: selectedAgent ? '#0d2137' : '#1a1a1a',
+                border: selectedAgent ? '1px solid #1a5276' : '1px solid #333',
+                borderRadius: 12, cursor: 'pointer', fontSize: 11, fontWeight: 600,
+                color: selectedAgent ? '#4fc3f7' : '#888', transition: 'all 0.15s',
+              }}
+            >
+              {selectedAgent ? `⚡ ${selectedAgent}` : '🤖 Pick Agent'}
+            </button>
+          )}
         </div>
         {contextInfo && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }} title={`${contextInfo.used.toLocaleString()} / ${contextInfo.limit.toLocaleString()} tokens`}>
@@ -1576,6 +1615,108 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           )}
         </div>
       </div>
+
+{/* Agent Picker Vignette — shown on new session when multi-agent is active */}
+{showAgentPicker && multiAgent && (
+  <div
+    onClick={() => {
+      // Clicking backdrop dismisses — defaults to normal routing
+      setShowAgentPicker(false)
+    }}
+    style={{
+      position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+      background: 'rgba(0,0,0,0.7)', zIndex: 1100,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      backdropFilter: 'blur(4px)',
+    }}
+  >
+    <div
+      onClick={e => e.stopPropagation()}
+      style={{
+        background: '#111', border: '1px solid #333', borderRadius: 16,
+        padding: 0, width: '90%', maxWidth: 440, overflow: 'hidden',
+        boxShadow: '0 20px 60px rgba(0,0,0,0.6)',
+      }}
+    >
+      <div style={{
+        padding: '20px 24px 12px', borderBottom: '1px solid #222',
+      }}>
+        <div style={{ fontSize: 18, fontWeight: 700, color: '#e0e0e0', marginBottom: 4 }}>
+          Choose an Agent
+        </div>
+        <div style={{ fontSize: 12, color: '#888' }}>
+          Select which agent should handle this session, or dismiss to use default routing.
+        </div>
+      </div>
+      <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 360, overflowY: 'auto' }}>
+        {agentsList.map(a => {
+          const isSelected = selectedAgent === a.name
+          return (
+            <div
+              key={a.name}
+              onClick={() => {
+                setSelectedAgent(a.name)
+                setShowAgentPicker(false)
+              }}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '14px 16px', borderRadius: 10, cursor: 'pointer',
+                background: isSelected ? '#0d2137' : '#1a1a1a',
+                border: isSelected ? '1px solid #1a5276' : '1px solid #2a2a2a',
+                transition: 'all 0.15s',
+              }}
+              onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = '#1e1e1e' }}
+              onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = '#1a1a1a' }}
+            >
+              <div>
+                <div style={{ fontSize: 15, fontWeight: 600, color: isSelected ? '#4fc3f7' : '#e0e0e0' }}>
+                  {a.name}
+                  {a.isDefault && (
+                    <span style={{
+                      marginLeft: 8, fontSize: 10, color: '#81c784',
+                      background: '#1b3a1b', border: '1px solid #2d5a2d',
+                      borderRadius: 10, padding: '2px 8px', verticalAlign: 'middle',
+                    }}>default</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 11, color: '#666', fontFamily: 'monospace', marginTop: 3 }}>
+                  {a.model}
+                </div>
+              </div>
+              <div style={{
+                width: 20, height: 20, borderRadius: 10,
+                border: isSelected ? '2px solid #4fc3f7' : '2px solid #444',
+                background: isSelected ? '#4fc3f7' : 'transparent',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                transition: 'all 0.15s', flexShrink: 0,
+              }}>
+                {isSelected && <div style={{ width: 8, height: 8, borderRadius: 4, background: '#000' }} />}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      <div style={{
+        padding: '12px 16px', borderTop: '1px solid #222',
+        display: 'flex', justifyContent: 'flex-end', gap: 8,
+      }}>
+        <button
+          onClick={() => {
+            setSelectedAgent(null)
+            setShowAgentPicker(false)
+          }}
+          style={{
+            padding: '8px 18px', background: 'transparent', color: '#888',
+            border: '1px solid #333', borderRadius: 6, cursor: 'pointer',
+            fontSize: 12, fontWeight: 600,
+          }}
+        >
+          Use Default
+        </button>
+      </div>
+    </div>
+  </div>
+)}
 
       <style>{`
         @keyframes blink { 0%, 50% { opacity: 1 } 51%, 100% { opacity: 0 } }

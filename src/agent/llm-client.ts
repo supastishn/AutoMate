@@ -51,6 +51,11 @@ export interface StreamChunk {
     };
     finish_reason: string | null;
   }[];
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
 }
 
 export interface ToolDef {
@@ -296,6 +301,7 @@ export class LLMClient {
       max_tokens: provider.maxTokens,
       temperature: provider.temperature,
       stream: true,
+      stream_options: { include_usage: true },
     };
     if (tools && tools.length > 0) {
       body.tools = tools;

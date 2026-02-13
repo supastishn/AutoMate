@@ -37,6 +37,18 @@ export interface AgentResponse {
 export type StreamCallback = (chunk: string) => void;
 export type ToolCallCallback = (toolCall: { name: string; arguments?: string; result: string }) => void;
 
+/** Default instructions injected into every compaction (manual /compact and auto-compact). */
+const COMPACT_TASK_DIRECTIVE = [
+  'IMPORTANT: You MUST include an additional section called "## Current Task & Repository Actions" placed right after "## Current Task State". This section must contain:',
+  '1. **Active Goal**: A clear, specific one-line statement of what the user is trying to accomplish right now.',
+  '2. **Remaining Steps**: A numbered checklist of concrete steps still needed to finish the current task (files to edit, commands to run, tests to pass, etc.).',
+  '3. **Modified / Key Files**: List every file that was created, edited, or is central to the current work, with a brief note on each.',
+  '4. **Repo Conventions & Patterns**: Any project-specific conventions, build commands, directory layout rules, or patterns discovered during the conversation.',
+  '5. **Blockers & Open Questions**: Anything unresolved that might block progress.',
+  '',
+  'Be extremely specific — include exact file paths, function names, shell commands, and error messages. The next assistant must be able to pick up and continue the work immediately without re-exploring the repository.',
+].join('\n');
+
 export class Agent {
   private llm: LLMClient;
   private tools: ToolRegistry;
@@ -93,6 +105,10 @@ export class Agent {
 
     // Wire LLM into session manager for summary-based auto-compaction
     this.sessionManager.setLLMClient(this.llm);
+    this.sessionManager.setDefaultCompactInstructions(COMPACT_TASK_DIRECTIVE);
+
+    // Wire overhead estimator so token estimates include system prompt + tool definitions
+    this.sessionManager.setOverheadEstimator((sid) => this._estimateOverhead(sid));
 
     // ── Core tools (always loaded — essential for every interaction) ──────
 
@@ -350,6 +366,22 @@ export class Agent {
     }
 
     return systemContent;
+  }
+
+  /** Estimate the token overhead (system prompt + tool definitions) for a session.
+   *  Called by session manager to produce accurate context-usage numbers. */
+  private _estimateOverhead(sessionId: string): number {
+    // System prompt size (includes skills, memory, catalog, environment)
+    const sessionView = this.tools.getSessionView(sessionId);
+    const systemContent = this._rebuildSystemContent(sessionView, sessionId);
+    const systemTokens = Math.ceil(systemContent.length / 4);
+
+    // Tool definitions JSON size
+    const toolDefs = sessionView.getToolDefs();
+    const toolDefsStr = JSON.stringify(toolDefs);
+    const toolDefsTokens = Math.ceil(toolDefsStr.length / 4);
+
+    return systemTokens + toolDefsTokens;
   }
 
   /** Build the tool catalog string for system prompt injection. */
@@ -945,7 +977,10 @@ export class Agent {
     
     // /compact [instructions]
     if (parts[0] === '/compact') {
-      const instructions = rawParts.slice(1).join(' ') || undefined;
+      const userNotes = rawParts.slice(1).join(' ').trim();
+      const instructions = userNotes
+        ? `${COMPACT_TASK_DIRECTIVE}\n\nUser notes: ${userNotes}`
+        : COMPACT_TASK_DIRECTIVE;
       return await this.sessionManager.compactWithSummary(sessionId, this.llm, instructions);
     }
 

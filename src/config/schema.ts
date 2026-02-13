@@ -167,7 +167,26 @@ export const ConfigSchema = z.object({
     directory: z.string().default('~/.automate/sessions'),
     contextLimit: z.number().default(120000),    // max tokens before auto-compact
     compactAt: z.number().default(0.8),          // trigger at this fraction of contextLimit
+    reserveTokens: z.number().default(20000),    // reserve tokens for response generation
     autoResetHour: z.number().default(-1),       // -1 = disabled, 0-23 = hour to reset daily
+    // Context pruning: trim tool results before they consume too much context
+    pruning: z.object({
+      enabled: z.boolean().default(true),
+      ttlMs: z.number().default(5 * 60 * 1000),           // 5 minute TTL for tool results
+      keepLastAssistants: z.number().default(3),          // protect last N assistant turns
+      softTrimRatio: z.number().default(0.3),             // start trimming at this % of context
+      hardClearRatio: z.number().default(0.5),            // clear tool results at this %
+      minPrunableChars: z.number().default(50000),        // only prune if >50K chars prunable
+      softTrim: z.object({
+        maxChars: z.number().default(4000),               // max chars to keep per tool result
+        headChars: z.number().default(1500),              // keep first N chars
+        tailChars: z.number().default(1500),              // keep last N chars
+      }).default({}),
+      hardClear: z.object({
+        enabled: z.boolean().default(true),
+        placeholder: z.string().default('[Old tool result content cleared]'),
+      }).default({}),
+    }).default({}),
   }).default({}),
   canvas: z.object({
     enabled: z.boolean().default(true),

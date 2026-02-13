@@ -157,7 +157,7 @@ const ALL_ACTIONS = [
   // Screenshots
   'screenshot', 'screenshot_full', 'screenshot_element',
   // Interaction - basic
-  'click', 'type', 'find', 'scroll', 'scroll_to', 'hover', 'double_click', 'right_click', 'drag',
+  'click', 'click_position', 'type', 'find', 'scroll', 'scroll_to', 'hover', 'double_click', 'right_click', 'drag',
   // Interaction - human-like (stealth)
   'human_click', 'human_type', 'human_scroll',
   // Page content
@@ -226,7 +226,8 @@ export const browserTools: Tool[] = [
       '',
       'NAVIGATION: navigate, back, forward, refresh',
       'SCREENSHOTS: screenshot, screenshot_full, screenshot_element',
-      'INTERACTION: click, type, find, scroll, scroll_to, hover, double_click, right_click, drag',
+      'INTERACTION: click, click_position, type, find, scroll, scroll_to, hover, double_click, right_click, drag',
+      '  click_position — click at exact viewport pixel coordinates (params: x, y)',
       'STEALTH INTERACTION: human_click, human_type, human_scroll — mimics natural human behavior.',
       '  human_type supports inline key commands in text: /enter, /tab, /escape, /backspace, /space, /up, /down, /left, /right',
       '  Example: "hello/enterworld" types "hello", presses Enter, types "world"',
@@ -269,6 +270,8 @@ export const browserTools: Tool[] = [
           description: `Action to perform: ${ALL_ACTIONS.join('|')}`,
         },
         url: { type: 'string', description: 'URL (for navigate, new_tab)' },
+        x: { type: 'number', description: 'X pixel coordinate in viewport (for click_position)' },
+        y: { type: 'number', description: 'Y pixel coordinate in viewport (for click_position)' },
         selector: { type: 'string', description: 'CSS/XPath selector (for click, type, find, hover, etc.)' },
         by: { type: 'string', description: 'Selector strategy: css|xpath|id|class|tag|name (default: css)' },
         text: { type: 'string', description: 'Text to type, search query, or visible text to match (for type, human_type, search_text, click_text, find_text, google_search, duckduckgo_search)' },
@@ -341,7 +344,7 @@ export const browserTools: Tool[] = [
 
       // Map all relevant params into the command
       const passthrough = [
-        'url', 'selector', 'by', 'text', 'exact', 'tag', 'max_depth', 'key', 'keys', 'direction', 'amount',
+        'url', 'x', 'y', 'selector', 'by', 'text', 'exact', 'tag', 'max_depth', 'key', 'keys', 'direction', 'amount',
         'script', 'data', 'value', 'index', 'timeout', 'condition', 'clear_first',
         'save_path', 'file_path', 'limit', 'target_selector', 'target_by',
         'frame', 'alert_action', 'alert_text', 'name', 'cookie_name', 'cookie_value',
