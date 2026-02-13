@@ -1254,7 +1254,7 @@ export class Agent {
     return 'Usage: /heartbeat [on|off|force|status|now]';
   }
 
-  /** Pre-compaction memory flush: silently save important context before compaction */
+  /** Pre-compaction memory flush: save important context before compaction via in-session message */
   private async preCompactionFlush(sessionId: string, messages: LLMMessage[]): Promise<void> {
     if (!this.memoryManager) return;
 
@@ -1271,29 +1271,30 @@ export class Agent {
 
     if (!recentContent || recentContent.length < 50) return;
 
-    // Try a silent LLM call to extract durable notes
+    // Send as a user message in the session so it's visible in chat
+    const flushPrompt = [
+      '[MEMORY FLUSH]',
+      '',
+      'Session context is about to be compacted. Extract ONLY durable, important facts worth remembering from the conversation above:',
+      'decisions made, user preferences learned, key outcomes, important context.',
+      'Save them to memory (use memory tool with action write/append). Be extremely concise.',
+      'If nothing notable, reply MEMORY_FLUSH_OK.',
+      '',
+      'Context being compacted:',
+      recentContent.slice(0, 4000),
+    ].join('\n');
+
     try {
-      const flushPrompt: LLMMessage[] = [
-        {
-          role: 'system',
-          content: 'You are a memory extraction assistant. The following conversation context is about to be compacted (lost). Extract ONLY durable, important facts worth remembering: decisions made, user preferences learned, key outcomes, important context. Be extremely concise. Output a short bullet list, or "NOTHING" if nothing is worth saving. Do NOT include conversation noise, greetings, or ephemeral details.',
-        },
-        {
-          role: 'user',
-          content: `Extract durable notes from this conversation context:\n\n${recentContent.slice(0, 4000)}`,
-        },
-      ];
+      const result = await this.processMessage(sessionId, flushPrompt);
+      const response = result.content?.trim();
 
-      const response = await this.llm.chat(flushPrompt);
-      const extracted = response.choices[0]?.message?.content?.trim();
-
-      if (extracted && extracted !== 'NOTHING' && extracted.length > 10) {
-        const date = new Date().toISOString().split('T')[0];
-        this.memoryManager.appendDailyLog(`[auto-saved before compaction]\n${extracted}`);
-        console.log(`[memory] Pre-compaction flush saved ${extracted.length} chars for session ${sessionId}`);
+      // Also save to daily log as backup
+      if (response && response !== 'MEMORY_FLUSH_OK' && response.length > 10) {
+        this.memoryManager.appendDailyLog(`[auto-saved before compaction]\n${response}`);
+        console.log(`[memory] Pre-compaction flush saved ${response.length} chars for session ${sessionId}`);
       }
     } catch (err) {
-      // Silent failure — don't break the user's flow
+      // Fallback: silent failure — don't break the user's flow
       console.error(`[memory] Pre-compaction flush failed: ${err}`);
     }
   }
