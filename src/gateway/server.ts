@@ -322,6 +322,34 @@ export class GatewayServer {
       return exportData;
     });
 
+// Update session messages directly (raw JSON edit)
+this.app.put<{ Params: { id: string }; Body: { messages: any[] } }>('/api/sessions/:id/messages', async (req, reply) => {
+  const session = this.sessionManager.getSession(req.params.id);
+  if (!session) return reply.code(404).send({ error: 'Session not found' });
+  const { messages } = req.body;
+  if (!Array.isArray(messages)) return reply.code(400).send({ error: 'messages must be an array' });
+  // Validate basic structure
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (!m.role || !['system', 'user', 'assistant', 'tool'].includes(m.role)) {
+      return reply.code(400).send({ error: `Invalid role at index ${i}: ${m.role}` });
+    }
+  }
+  session.messages = messages;
+  session.messageCount = messages.filter((m: any) => m.role === 'user' || m.role === 'assistant').length;
+  session.updatedAt = new Date().toISOString();
+  this.sessionManager.saveSession(req.params.id);
+  this.broadcastDataUpdate('sessions');
+  return { ok: true, messageCount: session.messageCount };
+});
+
+// Repair tool pairs in a session
+this.app.post<{ Params: { id: string } }>('/api/sessions/:id/repair', async (req, reply) => {
+  const removed = this.sessionManager.repairToolPairs(req.params.id);
+  if (removed > 0) this.broadcastDataUpdate('sessions');
+  return { ok: true, removed };
+});
+
     // Import session from JSON
     this.app.post<{ Body: { session: any } }>('/api/sessions/import', async (req, reply) => {
       try {
@@ -979,13 +1007,15 @@ export class GatewayServer {
               ? await this.router.processMessage(sessionId, content, onStream)
               : await this.agent.processMessage(sessionId, content, onStream, onToolCall);
 
-            // Send completion
+            // Send completion (include mapped messages so client gets fresh serverIndex values)
+            const updatedSession = this.sessionManager.getSession(sessionId);
             socket.send(JSON.stringify({
               type: 'response',
               content: result.content,
               tool_calls: result.toolCalls,
               usage: result.usage,
               context: this.getContextInfo(sessionId),
+              messages: updatedSession ? this.mapSessionMessages(updatedSession.messages) : [],
               done: true,
             }));
           }

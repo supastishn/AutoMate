@@ -23,6 +23,9 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
   const [folder, setFolder] = useState<'normal' | 'heartbeat'>('normal')
   const [mainSessionId, setMainSessionId] = useState<string | null>(null)
+  const [jsonEditor, setJsonEditor] = useState<{ sessionId: string; raw: string } | null>(null)
+  const [jsonError, setJsonError] = useState<string | null>(null)
+  const [jsonSaving, setJsonSaving] = useState(false)
 
   useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth < 768)
@@ -162,6 +165,63 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
     return `${Math.floor(s / 3600)}h ago`
   }
 
+  const openJsonEditor = async (id: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation()
+    try {
+      const r = await fetch(`/api/sessions/${encodeURIComponent(id)}`)
+      const data = await r.json() as any
+      if (data.session) {
+        setJsonEditor({ sessionId: id, raw: JSON.stringify(data.session.messages, null, 2) })
+        setJsonError(null)
+      }
+    } catch { /* ignore */ }
+  }
+
+  const saveJsonEditor = async () => {
+    if (!jsonEditor) return
+    setJsonError(null)
+    let parsed: any[]
+    try {
+      parsed = JSON.parse(jsonEditor.raw)
+      if (!Array.isArray(parsed)) throw new Error('Must be a JSON array')
+    } catch (err: any) {
+      setJsonError('Invalid JSON: ' + err.message)
+      return
+    }
+    setJsonSaving(true)
+    try {
+      const r = await fetch(`/api/sessions/${encodeURIComponent(jsonEditor.sessionId)}/messages`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: parsed }),
+      })
+      const data = await r.json() as any
+      if (r.ok && data.ok) {
+        setJsonEditor(null)
+        fetchSessions()
+        if (selected?.session?.id === jsonEditor.sessionId) viewSession(jsonEditor.sessionId)
+      } else {
+        setJsonError(data.error || 'Save failed')
+      }
+    } catch (err: any) {
+      setJsonError(err.message || 'Save failed')
+    } finally {
+      setJsonSaving(false)
+    }
+  }
+
+  const repairSession = async (id: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation()
+    try {
+      const r = await fetch(`/api/sessions/${encodeURIComponent(id)}/repair`, { method: 'POST' })
+      const data = await r.json() as any
+      if (data.ok) {
+        alert(data.removed > 0 ? `Repaired: removed ${data.removed} orphaned messages` : 'No issues found')
+        fetchSessions()
+      }
+    } catch { /* ignore */ }
+  }
+
   const isHeartbeat = (s: Session) => s.id.startsWith('heartbeat:') || s.channel === 'heartbeat'
   const filtered = sessions.filter(s => folder === 'heartbeat' ? isHeartbeat(s) : !isHeartbeat(s))
   const heartbeatCount = sessions.filter(isHeartbeat).length
@@ -271,6 +331,16 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
                     style={{ padding: '2px 8px', background: '#1a1a2a', color: '#b39ddb', border: '1px solid #2a2a4a', borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
                     Dup
                   </button>
+                  <button onClick={(e) => openJsonEditor(s.id, e)}
+                    title="Edit raw JSON"
+                    style={{ padding: '2px 8px', background: '#2a2a1a', color: '#ffb74d', border: '1px solid #4a4a2a', borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
+                    JSON
+                  </button>
+                  <button onClick={(e) => repairSession(s.id, e)}
+                    title="Repair broken tool pairs"
+                    style={{ padding: '2px 8px', background: '#1a2a2a', color: '#80cbc4', border: '1px solid #2a4a4a', borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
+                    Repair
+                  </button>
                   <button onClick={(e) => deleteSession(s.id, e)}
                     title="Delete session"
                     style={{ padding: '2px 8px', background: '#2a1a1a', color: '#f44', border: '1px solid #4a2a2a', borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
@@ -334,6 +404,76 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
                 )}
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* JSON Editor Modal */}
+      {jsonEditor && (
+        <div
+          onClick={() => setJsonEditor(null)}
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,0.8)', zIndex: 1000,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              width: '90%', maxWidth: 900, height: '80%',
+              background: '#141414', borderRadius: 12, overflow: 'hidden',
+              display: 'flex', flexDirection: 'column',
+              border: '1px solid #333', boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+            }}
+          >
+            <div style={{
+              padding: '10px 16px', background: '#1a1a2e',
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              borderBottom: '1px solid #333',
+            }}>
+              <span style={{ fontSize: 13, color: '#ffb74d', fontWeight: 600, fontFamily: 'monospace' }}>
+                Edit: {jsonEditor.sessionId}
+              </span>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  onClick={saveJsonEditor}
+                  disabled={jsonSaving}
+                  style={{
+                    padding: '4px 14px', background: '#4fc3f7', color: '#000',
+                    border: 'none', borderRadius: 4, cursor: jsonSaving ? 'default' : 'pointer',
+                    fontSize: 12, fontWeight: 600, opacity: jsonSaving ? 0.5 : 1,
+                  }}
+                >
+                  {jsonSaving ? 'Saving...' : 'Save'}
+                </button>
+                <button
+                  onClick={() => setJsonEditor(null)}
+                  style={{
+                    padding: '4px 14px', background: '#333', color: '#ccc',
+                    border: '1px solid #444', borderRadius: 4, cursor: 'pointer', fontSize: 12,
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+            {jsonError && (
+              <div style={{ padding: '6px 16px', background: '#2a1a1a', color: '#f44', fontSize: 12, borderBottom: '1px solid #333' }}>
+                {jsonError}
+              </div>
+            )}
+            <textarea
+              value={jsonEditor.raw}
+              onChange={e => setJsonEditor({ ...jsonEditor, raw: e.target.value })}
+              spellCheck={false}
+              style={{
+                flex: 1, padding: 16, background: '#0a0a0a', color: '#e0e0e0',
+                border: 'none', resize: 'none', outline: 'none',
+                fontFamily: '"Fira Code", "JetBrains Mono", monospace', fontSize: 12,
+                lineHeight: 1.6,
+              }}
+            />
           </div>
         </div>
       )}
