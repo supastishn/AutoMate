@@ -13,6 +13,7 @@ const Plugins = lazy(() => import('./pages/Plugins'))
 const Agents = lazy(() => import('./pages/Agents'))
 const Settings = lazy(() => import('./pages/Settings'))
 const Doctor = lazy(() => import('./pages/Doctor'))
+const Models = lazy(() => import('./pages/Models'))
 
 function LoadingFallback() {
   const colors = useColors()
@@ -23,7 +24,7 @@ function LoadingFallback() {
   )
 }
 
-const tabs = ['Dashboard', 'Chat', 'Canvas', 'Sessions', 'Skills', 'ClawHub', 'Cron', 'Memory', 'Plugins', 'Agents', 'Settings', 'Doctor'] as const
+const tabs = ['Dashboard', 'Chat', 'Canvas', 'Sessions', 'Skills', 'ClawHub', 'Cron', 'Memory', 'Plugins', 'Agents', 'Models', 'Settings', 'Doctor'] as const
 type Tab = typeof tabs[number]
 
 const tabIcons: Record<Tab, string> = {
@@ -37,6 +38,7 @@ const tabIcons: Record<Tab, string> = {
   Memory: '\u{1F9E0}',
   Plugins: '\u{1F50C}',
   Agents: '\u{1F916}',
+  Models: '\u{1F9EA}',
   Settings: '\u2699\uFE0F',
   Doctor: '\u{1FA7A}',
 }
@@ -159,6 +161,7 @@ export default function App() {
           {tab === 'Memory' && <Memory />}
           {tab === 'Plugins' && <Plugins />}
           {tab === 'Agents' && <Agents />}
+          {tab === 'Models' && <Models />}
           {tab === 'Doctor' && <Doctor />}
         </Suspense>
       </div>

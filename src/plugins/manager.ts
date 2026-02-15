@@ -92,7 +92,7 @@ export class PluginManager {
   private eventBus: Map<string, Set<(...args: any[]) => void>> = new Map();
 
   // Core service refs (set externally)
-  private coreServices: { memory?: any; sessions?: any; scheduler?: any; agent?: any } = {};
+  private coreServices: { memory?: any; sessions?: any; scheduler?: any; agent?: any; sendToSession?: (sessionId: string, payload: Record<string, unknown>) => void; broadcastToAll?: (payload: Record<string, unknown>) => void } = {};
 
   // Hot-reload watcher
   private watcher: FSWatcher | null = null;
@@ -108,7 +108,13 @@ export class PluginManager {
   // ── Core service injection ──────────────────────────────────────────
 
   setCoreServices(memory?: any, sessions?: any, scheduler?: any, agent?: any): void {
-    this.coreServices = { memory, sessions, scheduler, agent };
+    this.coreServices = { ...this.coreServices, memory, sessions, scheduler, agent };
+  }
+
+  /** Wire gateway broadcast functions (called after gateway is created) */
+  setGatewayBroadcast(sendToSession: (sessionId: string, payload: Record<string, unknown>) => void, broadcastToAll: (payload: Record<string, unknown>) => void): void {
+    this.coreServices.sendToSession = sendToSession;
+    this.coreServices.broadcastToAll = broadcastToAll;
   }
 
   // ── Event bus ───────────────────────────────────────────────────────

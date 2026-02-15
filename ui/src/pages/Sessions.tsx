@@ -39,6 +39,8 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
   const [subAgents, setSubAgents] = useState<SubAgent[]>([])
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null)
   const subAgentPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [pruneModal, setPruneModal] = useState<{ sessionId: string } | null>(null)
+  const [pruneCount, setPruneCount] = useState('20')
 
   useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth < 768)
@@ -73,6 +75,15 @@ const fetchSubAgents = async () => {
 const clearCompletedAgents = async () => {
   try {
     await fetch('/api/subagents/clear', { method: 'POST' })
+    fetchSubAgents()
+  } catch { /* ignore */ }
+}
+
+const killSubAgent = async (id: string, e?: React.MouseEvent) => {
+  if (e) e.stopPropagation()
+  if (!confirm(`Kill subagent "${id}"?`)) return
+  try {
+    await fetch(`/api/subagents/${encodeURIComponent(id)}/kill`, { method: 'POST' })
     fetchSubAgents()
   } catch { /* ignore */ }
 }
@@ -204,20 +215,36 @@ const clearCompletedAgents = async () => {
     return `${Math.floor(s / 3600)}h ago`
   }
 
-  const openJsonEditor = async (id: string, e?: React.MouseEvent) => {
+  const [jsonMode, setJsonMode] = useState<'messages' | 'full'>('messages')
+
+  const openJsonEditor = async (id: string, e?: React.MouseEvent, mode: 'messages' | 'full' = 'messages') => {
     if (e) e.stopPropagation()
+    setJsonMode(mode)
     try {
-      const r = await fetch(`/api/sessions/${encodeURIComponent(id)}`)
-      const data = await r.json() as any
-      if (data.session) {
-        setJsonEditor({ sessionId: id, raw: JSON.stringify(data.session.messages, null, 2) })
-        setJsonError(null)
+      if (mode === 'full') {
+        const r = await fetch(`/api/sessions/${encodeURIComponent(id)}/context`)
+        const data = await r.json() as any
+        if (data.systemPrompt) {
+          setJsonEditor({ sessionId: id, raw: JSON.stringify(data, null, 2) })
+          setJsonError(null)
+        }
+      } else {
+        const r = await fetch(`/api/sessions/${encodeURIComponent(id)}`)
+        const data = await r.json() as any
+        if (data.session) {
+          setJsonEditor({ sessionId: id, raw: JSON.stringify(data.session.messages, null, 2) })
+          setJsonError(null)
+        }
       }
     } catch { /* ignore */ }
   }
 
   const saveJsonEditor = async () => {
     if (!jsonEditor) return
+    if (jsonMode === 'full') {
+      setJsonError('Full context view is read-only')
+      return
+    }
     setJsonError(null)
     let parsed: any[]
     try {
@@ -261,10 +288,35 @@ const clearCompletedAgents = async () => {
     } catch { /* ignore */ }
   }
 
-  const isHeartbeat = (s: Session) => s.id.startsWith('heartbeat:') || s.channel === 'heartbeat'
-  const filtered = sessions.filter(s => folder === 'heartbeat' ? isHeartbeat(s) : !isHeartbeat(s))
+  const pruneToolResults = async () => {
+    if (!pruneModal) return
+    const count = parseInt(pruneCount) || 20
+    try {
+      const r = await fetch(`/api/sessions/${encodeURIComponent(pruneModal.sessionId)}/prune-tools`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ count }),
+      })
+      const data = await r.json() as any
+      if (data.ok) {
+        alert(`Pruned ${data.pruned} tool results`)
+        setPruneModal(null)
+        fetchSessions()
+        if (selected?.session?.id === pruneModal.sessionId) viewSession(pruneModal.sessionId)
+      }
+    } catch { /* ignore */ }
+  }
+
+  const isHeartbeat = (s: Session) => s.id?.startsWith('heartbeat:') || s.channel === 'heartbeat'
+  const isSubagent = (s: Session) => s.id?.startsWith('subagent:') || s.channel === 'subagent'
+  const filtered = sessions.filter(s => {
+    if (folder === 'heartbeat') return isHeartbeat(s)
+    if (folder === 'subagents') return isSubagent(s)
+    return !isHeartbeat(s) && !isSubagent(s)
+  })
   const heartbeatCount = sessions.filter(isHeartbeat).length
-  const normalCount = sessions.length - heartbeatCount
+  const subagentSessionCount = sessions.filter(isSubagent).length
+  const normalCount = sessions.length - heartbeatCount - subagentSessionCount
 
   const card: React.CSSProperties = {
     background: colors.bgCard, border: `1px solid ${colors.border}`, borderRadius: 8, padding: 16, cursor: 'pointer',
@@ -325,7 +377,7 @@ const clearCompletedAgents = async () => {
             marginBottom: -1,
           }}
         >
-          SubAgents{subAgents.length > 0 ? ` (${subAgents.length})` : ''}
+          SubAgents ({subagentSessionCount + subAgents.length})
         </button>
       </div>
 
@@ -340,76 +392,136 @@ const clearCompletedAgents = async () => {
               </button>
             </div>
           )}
-          {subAgents.length === 0 ? (
+
+          {/* Running/completed sub-agents from API */}
+          {subAgents.length > 0 && (
+            <>
+              <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 8, fontWeight: 600 }}>Running Agents</div>
+              <div style={{ ...gridStyle, marginBottom: 20 }}>
+                {subAgents.map(a => {
+                  const duration = ((a.endTime || Date.now()) - a.startTime) / 1000
+                  const statusIcon = a.status === 'running' ? '\u23F3' : a.status === 'completed' ? '\u2705' : '\u274C'
+                  const statusColor = a.status === 'running' ? colors.accent : a.status === 'completed' ? colors.success : a.status === 'timeout' ? colors.warning : colors.error
+                  const isExpanded = expandedAgent === a.id
+                  return (
+                    <div key={a.id} style={{ ...card, borderColor: a.status === 'running' ? colors.borderLight : colors.border }}
+                      onClick={() => setExpandedAgent(isExpanded ? null : a.id)}
+                      onMouseEnter={e => (e.currentTarget.style.borderColor = '#b39ddb')}
+                      onMouseLeave={e => (e.currentTarget.style.borderColor = a.status === 'running' ? colors.borderLight : colors.border)}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, overflow: 'hidden' }}>
+                          <span style={{ fontSize: 16 }}>{statusIcon}</span>
+                          <span style={{ fontWeight: 600, color: colors.subagent, fontFamily: 'monospace', fontSize: 13 }}>{a.name}</span>
+                          <span style={{ fontSize: 10, color: colors.textMuted, fontFamily: 'monospace' }}>{a.id}</span>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          {a.status === 'running' && (
+                            <button onClick={(e) => killSubAgent(a.id, e)}
+                              title="Kill subagent"
+                              style={{ padding: '2px 8px', background: colors.bgHover, color: colors.error, border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
+                              Kill
+                            </button>
+                          )}
+                          <span style={{ fontSize: 11, color: statusColor, fontWeight: 600 }}>{a.status}</span>
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 12, color: colors.textSecondary, marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>
+                        {a.task}
+                      </div>
+                      <div style={{ display: 'flex', gap: 16, fontSize: 11, color: colors.textMuted }}>
+                        <span>Duration: {duration < 60 ? `${duration.toFixed(1)}s` : `${(duration / 60).toFixed(1)}m`}</span>
+                        {a.toolCalls.length > 0 && <span>Tools: {a.toolCalls.length}</span>}
+                      </div>
+                      {isExpanded && (
+                        <div style={{ marginTop: 10, borderTop: `1px solid ${colors.border}`, paddingTop: 10 }}>
+                          {a.toolCalls.length > 0 && (
+                            <div style={{ marginBottom: 8 }}>
+                              <div style={{ fontSize: 10, color: colors.textMuted, marginBottom: 4 }}>Tools used:</div>
+                              <div style={{ fontSize: 11, color: colors.subagent, fontFamily: 'monospace' }}>
+                                {a.toolCalls.map(t => t.name).join(', ')}
+                              </div>
+                            </div>
+                          )}
+                          {a.error && (
+                            <div style={{ marginBottom: 8, padding: '6px 10px', background: colors.bgHover, borderRadius: 4, fontSize: 12, color: colors.error, fontFamily: 'monospace' }}>
+                              {a.error}
+                            </div>
+                          )}
+                          {a.output && (
+                            <div>
+                              <div style={{ fontSize: 10, color: colors.textMuted, marginBottom: 4 }}>Output:</div>
+                              <pre style={{
+                                margin: 0, padding: '8px 10px', background: colors.bgPrimary, borderRadius: 4,
+                                fontSize: 11, color: colors.textPrimary, fontFamily: '"Fira Code", "JetBrains Mono", monospace',
+                                whiteSpace: 'pre-wrap', wordBreak: 'break-all' as const,
+                                maxHeight: 200, overflow: 'auto',
+                              }}>
+                                {a.output}
+                              </pre>
+                            </div>
+                          )}
+                          {a.status === 'running' && (
+                            <div style={{ fontSize: 11, color: colors.accent, fontStyle: 'italic', marginTop: 4 }}>
+                              {'\u23F3'} Still running… poll again later.
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </>
+          )}
+
+          {/* Subagent sessions */}
+          {filtered.length > 0 && (
+            <>
+              <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 8, fontWeight: 600 }}>Session History</div>
+              <div style={gridStyle}>
+                {filtered.map(s => (
+                  <div key={s.id} style={card} onClick={() => viewSession(s.id)}
+                    onMouseEnter={e => (e.currentTarget.style.borderColor = colors.subagent)}
+                    onMouseLeave={e => (e.currentTarget.style.borderColor = colors.border)}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, overflow: 'hidden' }}>
+                        <span style={{ fontSize: 14 }}>{'\u{1F916}'}</span>
+                        <div style={{ fontSize: 13, fontFamily: 'monospace', color: colors.subagent, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.id}</div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 4, marginLeft: 8 }}>
+                        {onOpenInChat && (
+                          <button onClick={(e) => { e.stopPropagation(); onOpenInChat(s.id) }}
+                            title="Open in Chat"
+                            style={{ padding: '2px 8px', background: colors.bgHover, color: colors.accent, border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
+                            Chat
+                          </button>
+                        )}
+                        <button onClick={(e) => exportSession(s.id, e)}
+                          title="Export session"
+                          style={{ padding: '2px 8px', background: colors.bgHover, color: colors.success, border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
+                          Export
+                        </button>
+                        <button onClick={(e) => deleteSession(s.id, e)}
+                          title="Delete session"
+                          style={{ padding: '2px 8px', background: colors.bgHover, color: colors.error, border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
+                          Del
+                        </button>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 16, fontSize: 12, color: colors.textSecondary, flexWrap: 'wrap' as const }}>
+                      <span>Messages: {s.messageCount}</span>
+                      <span>Updated: {ago(s.updatedAt)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {subAgents.length === 0 && filtered.length === 0 && (
             <div style={{ color: colors.textMuted, padding: 40, textAlign: 'center' as const }}>
               <div style={{ fontSize: 32, marginBottom: 8, opacity: 0.3 }}>{'\u{1F916}'}</div>
-              No background sub-agents
-            </div>
-          ) : (
-            <div style={gridStyle}>
-              {subAgents.map(a => {
-                const duration = ((a.endTime || Date.now()) - a.startTime) / 1000
-                const statusIcon = a.status === 'running' ? '\u23F3' : a.status === 'completed' ? '\u2705' : '\u274C'
-                const statusColor = a.status === 'running' ? colors.accent : a.status === 'completed' ? colors.success : a.status === 'timeout' ? colors.warning : colors.error
-                const isExpanded = expandedAgent === a.id
-                return (
-                  <div key={a.id} style={{ ...card, borderColor: a.status === 'running' ? colors.borderLight : colors.border }}
-                    onClick={() => setExpandedAgent(isExpanded ? null : a.id)}
-                    onMouseEnter={e => (e.currentTarget.style.borderColor = '#b39ddb')}
-                    onMouseLeave={e => (e.currentTarget.style.borderColor = a.status === 'running' ? colors.borderLight : colors.border)}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, overflow: 'hidden' }}>
-                        <span style={{ fontSize: 16 }}>{statusIcon}</span>
-                        <span style={{ fontWeight: 600, color: colors.subagent, fontFamily: 'monospace', fontSize: 13 }}>{a.name}</span>
-                        <span style={{ fontSize: 10, color: colors.textMuted, fontFamily: 'monospace' }}>{a.id}</span>
-                      </div>
-                      <span style={{ fontSize: 11, color: statusColor, fontWeight: 600 }}>{a.status}</span>
-                    </div>
-                    <div style={{ fontSize: 12, color: colors.textSecondary, marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>
-                      {a.task}
-                    </div>
-                    <div style={{ display: 'flex', gap: 16, fontSize: 11, color: colors.textMuted }}>
-                      <span>Duration: {duration < 60 ? `${duration.toFixed(1)}s` : `${(duration / 60).toFixed(1)}m`}</span>
-                      {a.toolCalls.length > 0 && <span>Tools: {a.toolCalls.length}</span>}
-                    </div>
-                    {isExpanded && (
-                      <div style={{ marginTop: 10, borderTop: `1px solid ${colors.border}`, paddingTop: 10 }}>
-                        {a.toolCalls.length > 0 && (
-                          <div style={{ marginBottom: 8 }}>
-                            <div style={{ fontSize: 10, color: colors.textMuted, marginBottom: 4 }}>Tools used:</div>
-                            <div style={{ fontSize: 11, color: colors.subagent, fontFamily: 'monospace' }}>
-                              {a.toolCalls.map(t => t.name).join(', ')}
-                            </div>
-                          </div>
-                        )}
-                        {a.error && (
-                          <div style={{ marginBottom: 8, padding: '6px 10px', background: colors.bgHover, borderRadius: 4, fontSize: 12, color: colors.error, fontFamily: 'monospace' }}>
-                            {a.error}
-                          </div>
-                        )}
-                        {a.output && (
-                          <div>
-                            <div style={{ fontSize: 10, color: colors.textMuted, marginBottom: 4 }}>Output:</div>
-                            <pre style={{
-                              margin: 0, padding: '8px 10px', background: colors.bgPrimary, borderRadius: 4,
-                              fontSize: 11, color: colors.textPrimary, fontFamily: '"Fira Code", "JetBrains Mono", monospace',
-                              whiteSpace: 'pre-wrap', wordBreak: 'break-all' as const,
-                              maxHeight: 200, overflow: 'auto',
-                            }}>
-                              {a.output}
-                            </pre>
-                          </div>
-                        )}
-                        {a.status === 'running' && (
-                          <div style={{ fontSize: 11, color: colors.accent, fontStyle: 'italic', marginTop: 4 }}>
-                            {'\u23F3'} Still running… poll again later.
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
+              No sub-agents or subagent sessions
             </div>
           )}
         </>
@@ -483,6 +595,11 @@ const clearCompletedAgents = async () => {
                     style={{ padding: '2px 8px', background: colors.bgHover, color: colors.info, border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
                     Repair
                   </button>
+                  <button onClick={(e) => { e.stopPropagation(); setPruneModal({ sessionId: s.id }) }}
+                    title="Prune first X tool results"
+                    style={{ padding: '2px 8px', background: colors.bgHover, color: colors.warning, border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
+                    Prune
+                  </button>
                   <button onClick={(e) => deleteSession(s.id, e)}
                     title="Delete session"
                     style={{ padding: '2px 8px', background: colors.bgHover, color: colors.error, border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 10 }}>
@@ -528,6 +645,10 @@ const clearCompletedAgents = async () => {
               <button onClick={() => repairSession(selected.session.id)}
                 style={{ padding: '6px 12px', background: colors.bgHover, color: colors.info, border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
                 Repair
+              </button>
+              <button onClick={() => setPruneModal({ sessionId: selected.session.id })}
+                style={{ padding: '6px 12px', background: colors.bgHover, color: colors.warning, border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
+                Prune Tools
               </button>
               <button onClick={() => deleteSession(selected.session.id)}
                 style={{ padding: '6px 12px', background: colors.error, color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
@@ -588,21 +709,49 @@ const clearCompletedAgents = async () => {
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
               borderBottom: `1px solid ${colors.borderLight}`,
             }}>
-              <span style={{ fontSize: 13, color: colors.warning, fontWeight: 600, fontFamily: 'monospace' }}>
-                Edit: {jsonEditor.sessionId}
-              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <span style={{ fontSize: 13, color: colors.warning, fontWeight: 600, fontFamily: 'monospace' }}>
+                  {jsonMode === 'full' ? 'Context' : 'Edit'}: {jsonEditor.sessionId}
+                </span>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <button
+                    onClick={() => openJsonEditor(jsonEditor.sessionId, undefined, 'messages')}
+                    style={{
+                      padding: '3px 10px', fontSize: 11,
+                      background: jsonMode === 'messages' ? colors.accent : colors.bgHover,
+                      color: jsonMode === 'messages' ? colors.accentContrast : colors.textSecondary,
+                      border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer',
+                    }}
+                  >
+                    Messages
+                  </button>
+                  <button
+                    onClick={() => openJsonEditor(jsonEditor.sessionId, undefined, 'full')}
+                    style={{
+                      padding: '3px 10px', fontSize: 11,
+                      background: jsonMode === 'full' ? colors.accent : colors.bgHover,
+                      color: jsonMode === 'full' ? colors.accentContrast : colors.textSecondary,
+                      border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer',
+                    }}
+                  >
+                    Full Context
+                  </button>
+                </div>
+              </div>
               <div style={{ display: 'flex', gap: 8 }}>
-                <button
-                  onClick={saveJsonEditor}
-                  disabled={jsonSaving}
-                  style={{
-                    padding: '4px 14px', background: colors.accent, color: colors.accentContrast,
-                    border: 'none', borderRadius: 4, cursor: jsonSaving ? 'default' : 'pointer',
-                    fontSize: 12, fontWeight: 600, opacity: jsonSaving ? 0.5 : 1,
-                  }}
-                >
-                  {jsonSaving ? 'Saving...' : 'Save'}
-                </button>
+                {jsonMode === 'messages' && (
+                  <button
+                    onClick={saveJsonEditor}
+                    disabled={jsonSaving}
+                    style={{
+                      padding: '4px 14px', background: colors.accent, color: colors.accentContrast,
+                      border: 'none', borderRadius: 4, cursor: jsonSaving ? 'default' : 'pointer',
+                      fontSize: 12, fontWeight: 600, opacity: jsonSaving ? 0.5 : 1,
+                    }}
+                  >
+                    {jsonSaving ? 'Saving...' : 'Save'}
+                  </button>
+                )}
                 <button
                   onClick={() => setJsonEditor(null)}
                   style={{
@@ -610,7 +759,7 @@ const clearCompletedAgents = async () => {
                     border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12,
                   }}
                 >
-                  Cancel
+                  Close
                 </button>
               </div>
             </div>
@@ -621,15 +770,85 @@ const clearCompletedAgents = async () => {
             )}
             <textarea
               value={jsonEditor.raw}
-              onChange={e => setJsonEditor({ ...jsonEditor, raw: e.target.value })}
+              onChange={e => jsonMode === 'messages' && setJsonEditor({ ...jsonEditor, raw: e.target.value })}
+              readOnly={jsonMode === 'full'}
               spellCheck={false}
               style={{
-                flex: 1, padding: 16, background: colors.bgPrimary, color: colors.textPrimary,
+                flex: 1, padding: 16, background: jsonMode === 'full' ? colors.bgTertiary : colors.bgPrimary, color: colors.textPrimary,
                 border: 'none', resize: 'none', outline: 'none',
                 fontFamily: '"Fira Code", "JetBrains Mono", monospace', fontSize: 12,
                 lineHeight: 1.6,
+                cursor: jsonMode === 'full' ? 'default' : 'text',
               }}
             />
+          </div>
+        </div>
+      )}
+
+      {/* Prune Tools Modal */}
+      {pruneModal && (
+        <div
+          onClick={() => setPruneModal(null)}
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: colors.bgOverlay, zIndex: 1000,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              width: '90%', maxWidth: 400,
+              background: colors.bgCard, borderRadius: 12, overflow: 'hidden',
+              border: `1px solid ${colors.borderLight}`, boxShadow: `0 20px 60px ${colors.shadow}`,
+            }}
+          >
+            <div style={{
+              padding: '12px 16px', background: colors.bgTertiary,
+              borderBottom: `1px solid ${colors.borderLight}`,
+            }}>
+              <span style={{ fontSize: 14, color: colors.warning, fontWeight: 600 }}>Prune Tool Results</span>
+            </div>
+            <div style={{ padding: 16 }}>
+              <p style={{ fontSize: 12, color: colors.textSecondary, marginBottom: 12 }}>
+                Replace the first X tool results with [PRUNED] to reduce context size.
+              </p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+                <label style={{ fontSize: 12, color: colors.textSecondary }}>Number to prune:</label>
+                <input
+                  type="number"
+                  value={pruneCount}
+                  onChange={e => setPruneCount(e.target.value)}
+                  min={1}
+                  style={{
+                    width: 80, padding: '6px 10px',
+                    background: colors.bgPrimary, color: colors.textPrimary,
+                    border: `1px solid ${colors.borderLight}`, borderRadius: 4,
+                    fontSize: 13, fontFamily: 'monospace',
+                  }}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button
+                  onClick={() => setPruneModal(null)}
+                  style={{
+                    padding: '6px 14px', background: colors.borderLight, color: colors.textPrimary,
+                    border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12,
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={pruneToolResults}
+                  style={{
+                    padding: '6px 14px', background: colors.warning, color: '#000',
+                    border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                  }}
+                >
+                  Prune
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

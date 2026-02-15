@@ -3,7 +3,7 @@ import { LLMClient, type LLMMessage, type StreamChunk } from './llm-client.js';
 import { ToolRegistry, type ToolContext, type Tool, type SessionToolView, type ToolRegistryStats } from './tool-registry.js';
 import { bashTool } from './tools/bash.js';
 import { readFileTool, writeFileTool, editFileTool, applyPatchTool, hashlineEditTool } from './tools/files.js';
-import { browserTools, setBrowserConfig } from './tools/browser.js';
+import { browserTools, setBrowserConfig, setBrowserImageBroadcaster } from './tools/browser.js';
 import { sessionTools, setSessionManager, setAgent } from './tools/sessions.js';
 import { memoryTools, setMemoryManager } from './tools/memory.js';
 import { webTools } from './tools/web.js';
@@ -13,7 +13,8 @@ import { processTools } from './tools/process.js';
 import { canvasTools, setCanvasBroadcaster } from '../canvas/canvas-manager.js';
 import { clawHubTools, setClawHubConfig } from '../clawhub/registry.js';
 import { skillBuilderTools, setSkillBuilderConfig } from './tools/skill-builder.js';
-import { subAgentTools, setSubAgentSpawner, isSubAgentFinished, consumeSubAgentFinish } from './tools/subagent.js';
+import { subAgentTools, setSubAgentSpawner, setSubAgentNotifier, isSubAgentFinished, consumeSubAgentFinish } from './tools/subagent.js';
+import { skillTools, setSkillsLoader as setSkillToolLoader, getSessionSkillsInjection } from './tools/skills.js';
 import { sharedMemoryTools, setSharedMemoryDir } from './tools/shared-memory.js';
 import { pluginTools, setPluginManager, setPluginReloadCallback } from '../plugins/manager.js';
 import { ttsTools, setTTSConfig } from './tools/tts.js';
@@ -60,11 +61,14 @@ export class Agent {
   private pluginManager: PluginManager | null = null;
   private scheduler: Scheduler | null = null;
   private processing: Set<string> = new Set();
-  private messageQueue: Map<string, { message: string; onStream?: StreamCallback; resolve: Function; reject: Function }[]> = new Map();
+  private messageQueue: Map<string, { message: string; onStream?: StreamCallback; onToolCall?: ToolCallCallback; resolve: Function; reject: Function }[]> = new Map();
+  // Per-session pending injections: messages to inject after tool results (at safe points)
+  private pendingInjections: Map<string, { role: 'user' | 'system'; content: string }[]> = new Map();
   // Per-session elevated permissions: sessionId -> elevated state
   private elevatedSessions: Set<string> = new Set();
   // Per-session abort controllers for interrupt support
   private abortControllers: Map<string, AbortController> = new Map();
+  private sendToSessionFn: ((sessionId: string, payload: Record<string, unknown>) => void) | null = null;
 
   /**
    * Sanitize tool_calls before saving to session: fix malformed JSON arguments
@@ -241,6 +245,11 @@ export class Agent {
       this.tools.registerDeferred({ tool, summary });
     }
 
+    // Skill management (list, load, unload, show skills)
+    for (const tool of skillTools) {
+      this.tools.register(tool);
+    }
+
     // Shared memory
     for (const tool of sharedMemoryTools) {
       this.tools.registerDeferred({
@@ -350,12 +359,25 @@ export class Agent {
       systemContent += toolCatalog;
     }
 
-    // Inject skills (hot-reloaded)
+    // Inject skill catalog (list available skills)
     if (this.skillsLoader) {
       this.skillsLoader.reloadIfChanged();
-      const skillsPrompt = this.skillsLoader.getSystemPromptInjection();
-      if (skillsPrompt) {
-        systemContent += skillsPrompt;
+      const allSkills = this.skillsLoader.listSkills();
+      if (allSkills.length > 0) {
+        systemContent += '\n\n# Available Skills\n';
+        systemContent += 'Use `skill action=list` to see all skills, `skill action=load name="..."` to load one.\n\n';
+        for (const s of allSkills) {
+          const emoji = s.metadata?.emoji || '';
+          systemContent += `- ${emoji} **${s.name}**: ${s.description.slice(0, 80)}\n`;
+        }
+      }
+    }
+
+    // Inject loaded skills for this session
+    if (sessionId) {
+      const sessionSkillsPrompt = getSessionSkillsInjection(sessionId);
+      if (sessionSkillsPrompt) {
+        systemContent += sessionSkillsPrompt;
       }
     }
 
@@ -368,6 +390,87 @@ export class Agent {
     }
 
     return systemContent;
+  }
+
+  /** Build a lightweight power steering prompt (system prompt + environment, NO memory/skills/catalog).
+   *  Used to periodically re-anchor the model in long conversations. */
+  private _buildPowerSteeringPrompt(): string {
+    let content = '[SYSTEM REMINDER]\n\n';
+    content += this.config.agent.systemPrompt;
+
+    // Add current environment context
+    const now = new Date();
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    const dateStr = `${days[now.getDay()]}, ${months[now.getMonth()]} ${now.getDate()}, ${now.getFullYear()}`;
+    const timeStr = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+
+    content += `\n\nCurrent time: ${dateStr}, ${timeStr}`;
+    content += '\n\nStay focused on the user\'s current task. Use tools efficiently. Be concise.';
+
+    return content;
+  }
+
+  /** Inject power steering messages into a message array if needed.
+   *  Returns the modified array with steering messages inserted.
+   *  IMPORTANT: Only injects at safe points to avoid breaking tool_call/tool_result pairs. */
+  private _applyPowerSteering(messages: LLMMessage[]): LLMMessage[] {
+    const ps = (this.config.agent as any).powerSteering;
+    if (!ps?.enabled || !ps.interval || ps.interval <= 0) {
+      return messages;
+    }
+
+    const interval = ps.interval;
+    const role = ps.role || 'system';
+    const steeringContent = this._buildPowerSteeringPrompt();
+
+    // Find positions where we should inject (every N messages, not counting the first system message)
+    const result: LLMMessage[] = [];
+    let msgCount = 0;
+
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      result.push(msg);
+
+      // Don't count the initial system message
+      if (msg.role !== 'system' || msgCount > 0) {
+        msgCount++;
+      }
+
+      // Check if this is a safe injection point:
+      // - NOT after an assistant message with tool_calls (tool results must follow immediately)
+      // - After tool results: only safe if the NEXT message is NOT another tool result
+      // - Safe after: user messages, assistant messages without tool_calls, last tool result in sequence
+      const hasToolCalls = msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0;
+      const isToolResult = msg.role === 'tool';
+      const nextMsg = messages[i + 1];
+      const nextIsToolResult = nextMsg?.role === 'tool';
+
+      // Safe if: not after tool_calls, and if it's a tool result only when next is NOT a tool result
+      const isSafePoint = !hasToolCalls && (!isToolResult || !nextIsToolResult);
+
+      // Inject power steering after every interval messages, but only at safe points
+      if (msgCount > 0 && msgCount % interval === 0 && isSafePoint) {
+        if (role === 'both') {
+          // Maximum effect: inject as both system AND user message
+          result.push({
+            role: 'system',
+            content: steeringContent,
+          });
+          result.push({
+            role: 'user',
+            content: '[SYSTEM INSTRUCTION - ACKNOWLEDGE AND FOLLOW]\n\n' + steeringContent,
+          });
+        } else {
+          result.push({
+            role: role as 'system' | 'user',
+            content: steeringContent,
+          });
+        }
+      }
+    }
+
+    return result;
   }
 
   /** Estimate the token overhead (system prompt + tool definitions) for a session.
@@ -401,8 +504,9 @@ export class Agent {
     return [
       '',
       '## Additional Tools',
-      'The following tools are available but not yet loaded. To use one, call `load_tool` with its name.',
-      'You can also call `list_tools` to see all available and loaded tools. Use `unload_tool` to free up tools you no longer need.',
+      'The following tools are available but NOT YET LOADED. You MUST call `load_tool` with the tool name BEFORE you can use any of these.',
+      'IMPORTANT: If you want to use any tool from this list, FIRST call load_tool, THEN call the tool. Do not just describe what you would do — actually call the tools.',
+      'Use `list_tools` to see all available and loaded tools. Use `unload_tool` to free up tools you no longer need.',
       '',
       ...lines,
       '',
@@ -525,6 +629,7 @@ export class Agent {
     this.skillsLoader = loader;
     setClawHubConfig(this.config.skills.directory, loader);
     setSkillBuilderConfig(this.config.skills.directory, loader);
+    setSkillToolLoader(loader);  // Wire skill tool for on-demand loading
   }
 
   /** Get list of currently loaded skills (for API/UI) */
@@ -541,9 +646,40 @@ export class Agent {
     this.presenceManager = pm;
   }
 
+  /** Wire in sendToSession so agent can stream responses for automated notifications (subagent, heartbeat, etc.) */
+  setSendToSession(fn: (sessionId: string, payload: Record<string, unknown>) => void): void {
+    this.sendToSessionFn = fn;
+  }
+
+  /** Create stream/toolCall callbacks for a given session using sendToSession */
+  private makeStreamCallbacks(sessionId: string): { onStream?: StreamCallback; onToolCall?: ToolCallCallback } {
+    if (!this.sendToSessionFn) return {};
+    const sendFn = this.sendToSessionFn;
+    return {
+      onStream: (chunk: string) => sendFn(sessionId, { type: 'stream', content: chunk }),
+      onToolCall: (tc: { name: string; arguments?: string; result: string }) => sendFn(sessionId, { type: 'tool_call', name: tc.name, arguments: tc.arguments, result: tc.result }),
+    };
+  }
+
   /** Expose session manager for external use (e.g. Discord /session command) */
   getSessionManager(): SessionManager {
     return this.sessionManager;
+  }
+
+  /** Update config at runtime (called by config watcher for live reload) */
+  updateConfig(newConfig: Config): void {
+    // Update agent config fields that can be hot-reloaded
+    this.config.agent.systemPrompt = newConfig.agent.systemPrompt;
+    this.config.agent.temperature = newConfig.agent.temperature;
+    this.config.agent.maxTokens = newConfig.agent.maxTokens;
+    this.config.agent.thinkingLevel = newConfig.agent.thinkingLevel;
+    (this.config.agent as any).powerSteering = (newConfig.agent as any).powerSteering;
+
+    // Update LLM client settings
+    this.llm.updateSettings({
+      temperature: newConfig.agent.temperature,
+      maxTokens: newConfig.agent.maxTokens,
+    });
   }
 
   /** Wire in the plugin manager */
@@ -563,7 +699,7 @@ export class Agent {
     const currentPluginToolNames = new Set(this.pluginManager.getAllTools().map(t => t.name));
     // Remove stale dynamic tools no longer provided by any plugin
     for (const entry of this.tools.getGlobalDeferredCatalog()) {
-      if (entry.summary.startsWith('Plugin tool:') && !currentPluginToolNames.has(entry.tool.name)) {
+      if (entry.summary?.startsWith('Plugin tool:') && !currentPluginToolNames.has(entry.tool.name)) {
         this.tools.removeDynamic(entry.tool.name);
       }
     }
@@ -577,8 +713,10 @@ export class Agent {
   /** Wire sub-agent spawner into the subagent tools */
   private _wireSubAgentSpawner(): void {
     setSubAgentSpawner(async (opts) => {
-      const sessionId = `subagent:${opts.name}:${Date.now()}`;
+      // Use existing session if resuming, otherwise create new
+      const sessionId = opts.resumeSessionId || `subagent:${opts.name}:${Date.now()}`;
       const startTime = Date.now();
+      const isResume = !!opts.resumeSessionId;
 
       // Inherit promoted tools from parent session (so subagents get plugin tools etc.)
       if (opts.parentSessionId) {
@@ -596,7 +734,10 @@ export class Agent {
         ? `${opts.systemPrompt}\n\nYou are a sub-agent named "${opts.name}". You have access to all tools (already loaded — no need to call load_tool). When you are DONE with your task, you MUST call the subagent_finish tool with your final result. Do NOT just respond with text — always finish by calling subagent_finish.`
         : `You are a sub-agent named "${opts.name}". You have access to all tools (already loaded — no need to call load_tool). When you are DONE with your task, you MUST call the subagent_finish tool with your final result. Do NOT just respond with text — always finish by calling subagent_finish.`;
 
-      const taskWithPrompt = `[System: ${subPrompt}]\n\n${opts.task}`;
+      // For resume, add context about the restart
+      const taskWithPrompt = isResume
+        ? `[System: ${subPrompt}]\n\n${opts.task}`
+        : `[System: ${subPrompt}]\n\n${opts.task}`;
 
       try {
         const result = await Promise.race([
@@ -621,11 +762,23 @@ export class Agent {
           duration: Date.now() - startTime,
         };
       } catch (err) {
-        const isTimeout = (err as Error).message === 'timeout';
-        // Clean up
-        consumeSubAgentFinish(sessionId);
+        // Check if subagent_finish was already called before the error
+        // (e.g. LLM call after finish tool might fail, but the work is done)
+        const finishResult = consumeSubAgentFinish(sessionId);
         this.tools.clearSessionView(sessionId);
 
+        if (finishResult) {
+          return {
+            agentId: sessionId,
+            name: opts.name,
+            status: 'completed' as const,
+            output: finishResult,
+            toolCalls: [],
+            duration: Date.now() - startTime,
+          };
+        }
+
+        const isTimeout = (err as Error).message === 'timeout';
         return {
           agentId: sessionId,
           name: opts.name,
@@ -635,6 +788,18 @@ export class Agent {
           duration: Date.now() - startTime,
         };
       }
+    });
+
+    // Wire notifier so parallel sub-agents message the parent session when done
+    setSubAgentNotifier((parentSessionId: string, message: string) => {
+      const { onStream, onToolCall } = this.makeStreamCallbacks(parentSessionId);
+      this.processMessage(parentSessionId, message, onStream, onToolCall).then(result => {
+        if (this.sendToSessionFn && result?.content) {
+          this.sendToSessionFn(parentSessionId, { type: 'response', content: result.content, done: true });
+        }
+      }).catch((err) => {
+        console.error(`[subagent-notifier] Failed to notify parent session ${parentSessionId}:`, err);
+      });
     });
   }
 
@@ -652,6 +817,45 @@ export class Agent {
     const view = this.tools.getSessionView(sessionId);
     const result = view.promote(toolName);
     return result.promoted;
+  }
+
+  /**
+   * Queue a message injection to be inserted at the next safe point (after tool results).
+   * This allows adding context or instructions mid-processing without breaking tool_call/tool_result pairs.
+   */
+  queueInjection(sessionId: string, content: string, role: 'user' | 'system' = 'user'): void {
+    if (!this.pendingInjections.has(sessionId)) {
+      this.pendingInjections.set(sessionId, []);
+    }
+    this.pendingInjections.get(sessionId)!.push({ role, content });
+  }
+
+  /**
+   * Process any pending injections for a session (called after tool results are added).
+   * Returns the number of injections processed.
+   */
+  private _processPendingInjections(sessionId: string): number {
+    const injections = this.pendingInjections.get(sessionId);
+    if (!injections || injections.length === 0) return 0;
+
+    let count = 0;
+    for (const injection of injections) {
+      this.sessionManager.addMessage(sessionId, {
+        role: injection.role,
+        content: injection.content,
+      });
+      count++;
+    }
+    this.pendingInjections.delete(sessionId);
+    return count;
+  }
+
+  /**
+   * Check if there are pending injections for a session.
+   */
+  hasPendingInjections(sessionId: string): boolean {
+    const injections = this.pendingInjections.get(sessionId);
+    return !!(injections && injections.length > 0);
   }
 
   async processMessage(
@@ -672,7 +876,7 @@ export class Agent {
         if (!this.messageQueue.has(sessionId)) {
           this.messageQueue.set(sessionId, []);
         }
-        this.messageQueue.get(sessionId)!.push({ message: userMessage, onStream, resolve, reject });
+        this.messageQueue.get(sessionId)!.push({ message: userMessage, onStream, onToolCall, resolve, reject });
       });
     }
 
@@ -714,7 +918,7 @@ export class Agent {
         }
         const next = queue.shift()!;
         try {
-          const r = await this._processMessage(sessionId, next.message, next.onStream);
+          const r = await this._processMessage(sessionId, next.message, next.onStream, ac.signal, next.onToolCall);
           next.resolve(r);
         } catch (e) {
           next.reject(e);
@@ -722,6 +926,16 @@ export class Agent {
       }
 
       return result;
+    } catch (error) {
+      // If first message fails, reject all queued messages too
+      const queue = this.messageQueue.get(sessionId);
+      if (queue) {
+        for (const item of queue) {
+          item.reject(error);
+        }
+        this.messageQueue.delete(sessionId);
+      }
+      throw error;
     } finally {
       this.processing.delete(sessionId);
       this.abortControllers.delete(sessionId);
@@ -741,8 +955,14 @@ export class Agent {
     if (ac) {
       ac.abort();
       this.abortControllers.delete(sessionId);
-      // Clear the message queue so queued messages don't fire
-      this.messageQueue.delete(sessionId);
+      // Reject all queued messages so their promises don't hang
+      const queue = this.messageQueue.get(sessionId);
+      if (queue) {
+        for (const item of queue) {
+          item.reject(new Error('Session interrupted'));
+        }
+        this.messageQueue.delete(sessionId);
+      }
       return true;
     }
     return false;
@@ -774,19 +994,32 @@ export class Agent {
 
     const toolCallResults: { name: string; result: string; arguments?: string }[] = [];
     const isElevated = this.elevatedSessions.has(sessionId);
-    const ctx: ToolContext = { sessionId, workdir: process.cwd(), elevated: isElevated };
+    const ctx: ToolContext = { sessionId, workdir: process.cwd(), elevated: isElevated, signal };
 
     let iterations = 0;
     const maxIterations = 50; // safety limit
 
     while (iterations < maxIterations) {
+      // Check if abort was requested
+      if (signal?.aborted) {
+        this.sessionManager.saveSession(sessionId);
+        return { content: '(interrupted)', toolCalls: toolCallResults };
+      }
+
       iterations++;
 
       // Rebuild tool defs each iteration using session view (load/unload may change set)
       const toolDefs = sessionView.getToolDefs();
       // Rebuild system prompt too (catalog shrinks/grows as tools are loaded/unloaded)
       systemMessage.content = this._rebuildSystemContent(sessionView, sessionId);
-      const messages: LLMMessage[] = [systemMessage, ...this.sessionManager.getMessages(sessionId)];
+      // Auto-repair tool pairs before getting messages (prevents "tool_use without tool_result" API errors)
+      this.sessionManager.repairToolPairs(sessionId);
+      // Get messages and prune old tool outputs to save context
+      const rawMessages = this.sessionManager.getMessages(sessionId);
+      const prunedMessages = this.sessionManager.pruneOldToolOutputs(rawMessages, 50);
+      // Apply power steering (periodic system prompt re-injection)
+      const steeredMessages = this._applyPowerSteering([systemMessage, ...prunedMessages]);
+      const messages: LLMMessage[] = steeredMessages;
 
       if (onStream) {
         // Streaming mode
@@ -826,13 +1059,33 @@ export class Agent {
             })
           );
 
-          // Add tool results
+          // Add tool results - process pending injections after EACH result (safe point)
           for (const { id, result } of results) {
             this.sessionManager.addMessage(sessionId, {
               role: 'tool',
               content: result.error ? `Error: ${result.error}\n${result.output}` : result.output,
               tool_call_id: id,
             });
+            // Process any pending injections after each tool result (safe point)
+            this._processPendingInjections(sessionId);
+          }
+
+          // Track tool calls for memory reminder
+          for (const tc of toolCalls) {
+            const { shouldRemind } = this.sessionManager.trackToolCall(sessionId, tc.function.name);
+            if (shouldRemind) {
+              // Inject memory reminder as a system message
+              this.sessionManager.addMessage(sessionId, {
+                role: 'user',
+                content: '[SYSTEM REMINDER] You have made 100+ tool calls without using memory tools. Commit every important fact, decision, file path, and ongoing task to memory in their proper tier (MEMORY.md for core facts, memory/topic.md for detailed topics, logs/ for daily progress).',
+              });
+            }
+          }
+
+          // Check if abort was requested after tool execution
+          if (signal?.aborted) {
+            this.sessionManager.saveSession(sessionId);
+            return { content: '(interrupted during tool execution)', toolCalls: toolCallResults };
           }
 
           // Continue the loop for the next LLM call
@@ -861,7 +1114,14 @@ export class Agent {
       } else {
         // Non-streaming mode
         const response = await this.llm.chat(messages, toolDefs, undefined, signal);
-        const choice = response.choices[0];
+        const choice = response.choices?.[0];
+        if (!choice) {
+          // API returned empty choices — if subagent_finish was called, that's fine
+          if (sessionId.startsWith('subagent:') && isSubAgentFinished(sessionId)) {
+            return { content: '', toolCalls: toolCallResults };
+          }
+          throw new Error('LLM returned empty choices');
+        }
         const msg = choice.message;
 
         // Store actual API-reported token usage for accurate context tracking
@@ -904,6 +1164,26 @@ export class Agent {
               content: result.error ? `Error: ${result.error}\n${result.output}` : result.output,
               tool_call_id: id,
             });
+            // Process any pending injections after each tool result (safe point)
+            // Queue is cleared after first injection, so subsequent results won't re-inject
+            this._processPendingInjections(sessionId);
+          }
+
+          // Track tool calls for memory reminder
+          for (const tc of msg.tool_calls) {
+            const { shouldRemind } = this.sessionManager.trackToolCall(sessionId, tc.function.name);
+            if (shouldRemind) {
+              this.sessionManager.addMessage(sessionId, {
+                role: 'user',
+                content: '[SYSTEM REMINDER] You have made 100+ tool calls without using memory tools. Commit every important fact, decision, file path, and ongoing task to memory in their proper tier (MEMORY.md for core facts, memory/topic.md for detailed topics, logs/ for daily progress).',
+              });
+            }
+          }
+
+          // Check if abort was requested after tool execution
+          if (signal?.aborted) {
+            this.sessionManager.saveSession(sessionId);
+            return { content: '(interrupted during tool execution)', toolCalls: toolCallResults };
           }
 
           continue;
@@ -1257,12 +1537,23 @@ export class Agent {
       for (const f of files) {
         const content = this.memoryManager.getIdentityFile(f);
         if (content) {
-          lines.push(`    ${f}: ~${Math.ceil(content.length / 4)} tokens`);
+          const extra = f === 'MEMORY.md' ? ' (Tier 1 — core)' : '';
+          lines.push(`    ${f}${extra}: ~${Math.ceil(content.length / 4)} tokens`);
         }
       }
-      const recentLogs = this.memoryManager.getRecentDailyLogs();
-      if (recentLogs) {
-        lines.push(`    Daily logs: ~${Math.ceil(recentLogs.length / 4)} tokens`);
+      const tier2Files = this.memoryManager.listTier2();
+      if (tier2Files.length > 0) {
+        const totalSize = tier2Files.reduce((sum, f) => sum + f.size, 0);
+        lines.push(`    Tier 2 topics: ${tier2Files.length} files, ~${Math.ceil(totalSize / 4)} tokens (on-demand, NOT injected)`);
+      }
+      const recentLogDates = this.memoryManager.getRecentLogDates(3);
+      if (recentLogDates.length > 0) {
+        lines.push(`    Daily logs: ${recentLogDates.length} recent (Tier 2, on-demand)`);
+      }
+      const archiveFiles = this.memoryManager.listArchive();
+      if (archiveFiles.length > 0) {
+        const totalSize = archiveFiles.reduce((sum, f) => sum + f.size, 0);
+        lines.push(`    Archive: ${archiveFiles.length} files, ~${Math.ceil(totalSize / 4)} tokens (cold storage, on-demand)`);
       }
     }
 
@@ -1414,7 +1705,8 @@ export class Agent {
     ].join('\n');
 
     try {
-      const result = await this.processMessage(sessionId, flushPrompt);
+      const { onStream, onToolCall } = this.makeStreamCallbacks(sessionId);
+      const result = await this.processMessage(sessionId, flushPrompt, onStream, onToolCall);
       const response = result.content?.trim();
 
       // Also save to daily log as backup
@@ -1435,6 +1727,7 @@ export class Agent {
 
   /** Check if a session is automated (heartbeat, cron, plugin channels) vs interactive webchat */
   private isAutomatedSession(sessionId: string): boolean {
+    if (!sessionId) return false;
     // Automated session patterns:
     // - heartbeat sessions: webchat:heartbeat, webchat:heartbeat:agentName
     // - cron sessions: cron:*, webchat:cron:*
@@ -1500,6 +1793,8 @@ export class Agent {
     }
 
     const systemMessage: LLMMessage = { role: 'system', content: systemContent };
+    // Auto-repair tool pairs before getting messages
+    this.sessionManager.repairToolPairs(sessionId);
     const messages: LLMMessage[] = [systemMessage, ...this.sessionManager.getMessages(sessionId)];
 
     if (onStream) {
@@ -1566,6 +1861,8 @@ export class Agent {
 
     while (iterations < maxIterations) {
       iterations++;
+      // Auto-repair tool pairs before getting messages
+      this.sessionManager.repairToolPairs(sessionId);
       const messages: LLMMessage[] = [systemMessage, ...this.sessionManager.getMessages(sessionId)];
 
       if (onStream) {

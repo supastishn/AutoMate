@@ -21,6 +21,91 @@ const DEFAULT_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 const HEARTBEAT_OK_TOKEN = 'HEARTBEAT_OK';
 const ACK_MAX_CHARS = 200; // responses under this length containing HEARTBEAT_OK are treated as acks
 
+// ── Randomized Heartbeat Prompts ─────────────────────────────────────────────
+// 5 base templates with synonym maps for variety and natural language variation
+
+const SYNONYMS = {
+  read: ['read', 'review', 'examine', 'check', 'inspect', 'look at', 'go through', 'scan', 'peruse', 'study'],
+  following: ['following', 'below', 'subsequent', 'next', 'attached', 'included', 'provided', 'given'],
+  checklist: ['checklist', 'list', 'items', 'tasks', 'reminders', 'notes', 'instructions', 'guidelines', 'points', 'agenda'],
+  follow: ['follow', 'adhere to', 'comply with', 'execute', 'carry out', 'perform', 'act on', 'implement', 'fulfill', 'observe'],
+  strictly: ['strictly', 'exactly', 'precisely', 'carefully', 'thoroughly', 'diligently', 'rigorously', 'meticulously', 'faithfully', 'closely'],
+  infer: ['infer', 'assume', 'guess', 'presume', 'suppose', 'deduce', 'speculate', 'imagine', 'conjecture', 'surmise'],
+  repeat: ['repeat', 'rehash', 'revisit', 'bring up', 'reference', 'mention', 'cite', 'recall', 'reiterate', 'return to'],
+  old: ['old', 'previous', 'prior', 'past', 'earlier', 'former', 'preceding', 'historical', 'archived', 'outdated'],
+  tasks: ['tasks', 'work', 'items', 'jobs', 'actions', 'activities', 'duties', 'assignments', 'responsibilities', 'chores'],
+  chats: ['chats', 'conversations', 'sessions', 'messages', 'exchanges', 'discussions', 'dialogues', 'communications', 'interactions', 'talks'],
+  nothing: ['nothing', 'no items', 'no tasks', 'nothing urgent', 'no action needed', 'all clear', 'no updates', 'no changes', 'nothing pending', 'no issues'],
+  attention: ['attention', 'action', 'focus', 'handling', 'addressing', 'response', 'intervention', 'work', 'effort', 'consideration'],
+  reply: ['reply', 'respond', 'answer', 'say', 'output', 'return', 'state', 'indicate', 'report', 'communicate'],
+  check: ['check', 'verification', 'review', 'assessment', 'inspection', 'audit', 'examination', 'evaluation', 'scan', 'analysis'],
+  periodic: ['periodic', 'scheduled', 'routine', 'regular', 'timed', 'recurring', 'cyclic', 'interval', 'automatic', 'systematic'],
+  status: ['status', 'state', 'condition', 'situation', 'progress', 'update', 'report', 'overview', 'summary', 'snapshot'],
+  needs: ['needs', 'requires', 'demands', 'warrants', 'calls for', 'necessitates', 'involves', 'entails', 'expects', 'wants'],
+  your: ['your', 'the', 'this', 'our', 'the assigned', 'the current', 'the active', 'the specified', 'the designated', 'the relevant'],
+  do_not: ['do not', 'don\'t', 'avoid', 'refrain from', 'skip', 'never', 'please don\'t', 'make sure not to', 'be careful not to', 'ensure you don\'t'],
+  look: ['look', 'glance', 'peek', 'take a look', 'have a look', 'browse', 'skim', 'survey', 'review', 'observe'],
+};
+
+const HEARTBEAT_TEMPLATES = [
+  // Template 1: Standard check
+  {
+    template: '[HEARTBEAT {check}]\n\n{read} the {following} {checklist}. {follow} it {strictly}. {do_not} {infer} or {repeat} {old} {tasks} from {chats}.\nIf {nothing} {needs} {attention}, {reply} {token}.',
+    vars: ['check', 'read', 'following', 'checklist', 'follow', 'strictly', 'do_not', 'infer', 'repeat', 'old', 'tasks', 'chats', 'nothing', 'needs', 'attention', 'reply'],
+  },
+  // Template 2: Status review
+  {
+    template: '[{periodic} {status} {check}]\n\nPlease {read} {your} {checklist} below. {follow} each item {strictly}.\n{do_not} {repeat} or {infer} anything from {old} {chats}.\nIf there\'s {nothing} requiring {attention}, simply {reply} {token}.',
+    vars: ['periodic', 'status', 'check', 'read', 'your', 'checklist', 'follow', 'strictly', 'do_not', 'repeat', 'infer', 'old', 'chats', 'nothing', 'attention', 'reply'],
+  },
+  // Template 3: Quick scan
+  {
+    template: '[AUTOMATED {check}]\n\n{look} at the {following} {checklist} and {follow} any pending {tasks} {strictly}.\n{do_not} {infer} {tasks} or {repeat} items from {old} {chats}.\n{nothing} to do? {reply} {token}.',
+    vars: ['check', 'look', 'following', 'checklist', 'follow', 'tasks', 'strictly', 'do_not', 'infer', 'repeat', 'old', 'chats', 'nothing', 'reply'],
+  },
+  // Template 4: Formal review
+  {
+    template: '[SCHEDULED {status} {check}]\n\nThis is a {periodic} {check}. {read} the {checklist} below {strictly}.\nImportant: {do_not} {infer} new {tasks} or {repeat} completed work from {old} {chats}.\nIf {nothing} {needs} {your} {attention}, {reply} with {token}.',
+    vars: ['status', 'check', 'periodic', 'read', 'checklist', 'strictly', 'do_not', 'infer', 'tasks', 'repeat', 'old', 'chats', 'nothing', 'needs', 'your', 'attention', 'reply'],
+  },
+  // Template 5: Brief check
+  {
+    template: '[{check}]\n\n{read} below. {follow} {strictly}. No {old} {tasks} from {chats}.\nAll clear? {reply} {token}.',
+    vars: ['check', 'read', 'follow', 'strictly', 'old', 'tasks', 'chats', 'reply'],
+  },
+];
+
+/** Pick a random element from an array */
+function randomPick<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+/** Generate a randomized heartbeat prompt */
+function generateHeartbeatPrompt(heartbeatContent: string): string {
+  const template = randomPick(HEARTBEAT_TEMPLATES);
+
+  let prompt = template.template;
+
+  // Replace each variable with a random synonym
+  for (const varName of template.vars) {
+    const synonymList = SYNONYMS[varName as keyof typeof SYNONYMS];
+    if (synonymList) {
+      const synonym = randomPick(synonymList);
+      // Capitalize first letter if it's at start of sentence
+      const regex = new RegExp(`\\{${varName}\\}`, 'g');
+      prompt = prompt.replace(regex, synonym);
+    }
+  }
+
+  // Replace {token} with the actual token
+  prompt = prompt.replace(/\{token\}/g, HEARTBEAT_OK_TOKEN);
+
+  // Append the actual content
+  prompt += '\n\n---\n' + heartbeatContent + '\n---';
+
+  return prompt;
+}
+
 /** Build a unique cron job name for an agent's heartbeat. */
 export function heartbeatJobName(agentName?: string): string {
   return agentName ? `${HEARTBEAT_JOB_PREFIX}:${agentName}` : HEARTBEAT_JOB_PREFIX;
@@ -162,7 +247,7 @@ export class HeartbeatManager {
   }
 
   /** Start the heartbeat system. Creates a cron job if one doesn't exist. */
-  start(intervalMs?: number, force?: boolean): void {
+  start(intervalMs?: number, jitterMs?: number, force?: boolean): void {
     const interval = intervalMs || DEFAULT_INTERVAL_MS;
 
     const existing = this.scheduler.listJobs().find(j => j.name === this.jobName);
@@ -181,7 +266,7 @@ export class HeartbeatManager {
     this.scheduler.addJob(
       this.jobName,
       this.jobName, // prompt = job name so we can route it back
-      { type: 'interval', every: interval },
+      { type: 'interval', every: interval, jitter: jitterMs },
     );
 
     this.enabled = true;
@@ -199,6 +284,31 @@ export class HeartbeatManager {
   /** Check if heartbeat is active. */
   isActive(): boolean {
     return this.enabled;
+  }
+
+  /** Update the heartbeat interval and jitter (recreates the cron job). */
+  updateInterval(intervalMs: number, jitterMs?: number): void {
+    const existing = this.scheduler.listJobs().find(j => j.name === this.jobName);
+    if (existing) {
+      // Check if interval and jitter actually changed
+      if (existing.schedule?.every === intervalMs && existing.schedule?.jitter === jitterMs) {
+        return; // No change needed
+      }
+      this.scheduler.removeJob(existing.id);
+    }
+
+    this.scheduler.addJob(
+      this.jobName,
+      this.jobName,
+      { type: 'interval', every: intervalMs, jitter: jitterMs },
+    );
+    this.enabled = true;
+  }
+
+  /** Get current interval in milliseconds (or null if no job). */
+  getInterval(): number | null {
+    const job = this.scheduler.listJobs().find(j => j.name === this.jobName);
+    return job?.schedule?.every ?? null;
   }
 
   /**
@@ -240,17 +350,8 @@ export class HeartbeatManager {
     const sessionBefore = sm.getSession(sessionId);
     const updatedAtBefore = sessionBefore?.updatedAt;
 
-    // Build heartbeat prompt — openclaw-style: follow strictly, don't hallucinate
-    const prompt = [
-      '[HEARTBEAT CHECK]',
-      '',
-      'Read the following checklist. Follow it strictly. Do not infer or repeat old tasks from prior chats.',
-      `If nothing needs attention, reply ${HEARTBEAT_OK_TOKEN}.`,
-      '',
-      '---',
-      heartbeatContent,
-      '---',
-    ].join('\n');
+    // Build randomized heartbeat prompt for variety and to avoid pattern detection
+    const prompt = generateHeartbeatPrompt(heartbeatContent);
 
     const tag = this.agentName ? `heartbeat:${this.agentName}` : 'heartbeat';
     console.log(`[${tag}] Triggering in session ${sessionId}`);
@@ -396,6 +497,7 @@ export function wireHeartbeat(
   autoStart: boolean = true,
   agentName?: string,
   intervalMs?: number,
+  jitterMs?: number,
 ): HeartbeatManager {
   const sessionTarget = agentName
     ? `webchat:heartbeat:${agentName}`
@@ -403,13 +505,13 @@ export function wireHeartbeat(
   const hb = new HeartbeatManager(memoryManager, agent, scheduler, sessionTarget, agentName);
 
   if (autoStart) {
-    hb.start(intervalMs);
+    hb.start(intervalMs, jitterMs);
   } else {
     // Check if job was already enabled from a previous run
     const jobName = heartbeatJobName(agentName);
     const existing = scheduler.listJobs().find(j => j.name === jobName);
     if (existing?.enabled) {
-      hb.start(intervalMs);
+      hb.start(intervalMs, jitterMs);
     }
   }
 

@@ -8,38 +8,33 @@ import type { MemoryManager } from '../memory/manager.js';
 import { pruneContextMessages, type PruningSettings, type PruneStats, DEFAULT_PRUNING_SETTINGS } from './context-pruner.js';
 
 /** System prompt for conversation summarization */
-const SUMMARY_SYSTEM_PROMPT = `You are a conversation summarizer creating a detailed context document. This summary will REPLACE the entire conversation history, so you must preserve all information needed to continue seamlessly.
+const SUMMARY_SYSTEM_PROMPT = `You are a conversation summarizer. Create an EXTREMELY CONCISE summary that captures ONLY what's needed to continue the conversation.
 
-Create a comprehensive summary with these sections:
+TARGET: Under 2000 words. Be ruthless about brevity.
 
-## Session Overview
-Brief description of what the user is working on and the current status.
+Format:
+## Status
+One sentence: what's happening RIGHT NOW.
 
-## Key Context & Facts
-- Important technical details, file paths, variable names, configurations
-- Domain-specific information established during the conversation
-- Any constraints, requirements, or specifications mentioned
+## Active Task
+- Current goal (1 line)
+- Next steps (bullet list, max 5 items)
+- Blockers if any
 
-## Decisions Made
-- Choices the user made and their reasoning
-- Approaches selected or rejected
-- Trade-offs discussed
+## Key Facts
+Only include facts that will be needed going forward. Skip anything already completed or no longer relevant.
+- File paths currently being worked on
+- Important decisions made
+- User preferences that affect ongoing work
 
-## Current Task State
-- What was being worked on when this summary was created
-- Any in-progress work or pending items
-- Next steps that were planned or discussed
+## Do NOT Include
+- Completed tasks (unless needed for context)
+- Failed attempts that were resolved
+- Conversational back-and-forth
+- Explanations of why things were done
+- Code snippets unless actively being modified
 
-## User Preferences & Instructions
-- Communication style preferences
-- Workflow preferences
-- Standing instructions or recurring requests
-- Things the user asked to remember
-
-## Important Code/Data
-If any specific code snippets, commands, or data structures were central to the conversation, include them verbatim.
-
-Be thorough and detailed. Include specific names, paths, and technical details. The assistant reading this summary should be able to continue the conversation as if they had full context.`;
+Be terse. Use fragments. Skip articles. The goal is MINIMUM tokens while preserving ability to continue work.`;
 
 export interface Session {
   id: string;
@@ -68,6 +63,8 @@ export class SessionManager {
   private defaultCompactInstructions: string | null = null; // default instructions for all compactions
   private overheadEstimator: ((sessionId: string) => number) | null = null; // callback to get system prompt + tool defs overhead
   private sessionTokens: Map<string, { prompt: number; completion: number; total: number; msgCountAtSnapshot: number }> = new Map(); // actual API-reported token counts per session
+  private toolCallsSinceMemory: Map<string, number> = new Map(); // track tool calls since last memory tool use
+  private memoryReminderSent: Map<string, boolean> = new Map(); // prevent duplicate reminders
 
   constructor(config: Config) {
     this.config = config;
@@ -101,6 +98,7 @@ export class SessionManager {
   }
 
   private sessionPath(id: string): string {
+    if (!id) throw new Error('sessionPath called with undefined/null id');
     // Sanitize session ID for filesystem (replace colons with underscores)
     const safeName = id.replace(/[:/\\?*"<>|]/g, '_');
     return join(this.dir, `${safeName}.json`);
@@ -113,6 +111,11 @@ export class SessionManager {
       try {
         const raw = readFileSync(join(this.dir, file), 'utf-8');
         const data = JSON.parse(raw) as Session;
+        // Skip sessions with missing/invalid id
+        if (!data.id) {
+          console.warn(`[session] Skipping session file ${file} - missing id`);
+          continue;
+        }
         // Repair any corrupted session data
         this.repairSession(data);
         this.sessions.set(data.id, data);
@@ -167,6 +170,16 @@ export class SessionManager {
     if (!session.createdAt) session.createdAt = new Date().toISOString();
     if (!session.updatedAt) session.updatedAt = new Date().toISOString();
     if (!session.metadata) session.metadata = {};
+
+    // Remove blank/empty messages that can break the API
+    session.messages = session.messages.filter(m => {
+      // Keep assistant messages with tool_calls even if content is null/empty
+      if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) return true;
+      // Keep tool messages (they have tool_call_id)
+      if (m.role === 'tool') return true;
+      // For user/system messages, require non-empty content
+      return m.content && m.content.trim().length > 0;
+    });
 
     // Sanitize tool pairs
     // Sanitize malformed tool_call arguments (prevent "Invalid JSON format" errors on replay)
@@ -280,7 +293,8 @@ export class SessionManager {
 
   /** Store actual API-reported token usage for a session.
    *  Called after each LLM API call with the usage data from the response.
-   *  prompt_tokens includes the full context (system prompt + tools + messages). */
+   *  prompt_tokens includes the full context (system prompt + tools + messages).
+   *  Also triggers auto-compact check since we now have accurate token counts. */
   setSessionTokens(sessionId: string, usage: { promptTokens: number; completionTokens: number; totalTokens: number }): void {
     const session = this.sessions.get(sessionId);
     this.sessionTokens.set(sessionId, {
@@ -289,6 +303,28 @@ export class SessionManager {
       total: usage.totalTokens,
       msgCountAtSnapshot: session ? session.messages.length : 0,
     });
+
+    // Auto-compact check using ACTUAL API-reported tokens
+    if (session && !this.compactingSessions.has(sessionId)) {
+      const tokenLimit = this.config.sessions.contextLimit;
+      const reserveTokens = (this.config.sessions as any).reserveTokens || 20000;
+      const compactAtRatio = this.config.sessions.compactAt;
+      const threshold = Math.floor((tokenLimit - reserveTokens) * compactAtRatio);
+      const currentTokens = usage.promptTokens; // Use actual API value
+      const percent = Math.round((currentTokens / tokenLimit) * 100);
+
+      if (percent >= 50) {
+        console.log(`[session] ${sessionId}: ${percent}% context (${currentTokens}/${tokenLimit} tokens, threshold=${threshold})`);
+      }
+
+      if (currentTokens > threshold) {
+        console.log(`[session] Auto-compact triggered for ${sessionId}: ${currentTokens} > ${threshold} (${percent}%)`);
+        this.compactingSessions.add(sessionId);
+        this.compactWithSummary(sessionId, this.llm || undefined, this.defaultCompactInstructions || undefined)
+          .catch(err => console.error(`[session] Auto-compact failed for ${sessionId}:`, err))
+          .finally(() => this.compactingSessions.delete(sessionId));
+      }
+    }
   }
 
   addMessage(sessionId: string, message: LLMMessage): void {
@@ -300,19 +336,62 @@ export class SessionManager {
 
     // Queue session for transcript indexing (debounced)
     this.queueTranscriptIndex(sessionId);
+  }
 
-    // Auto-compact if estimated tokens exceed threshold (contextLimit - reserveTokens)
-    const tokenLimit = this.config.sessions.contextLimit;
-    const reserveTokens = (this.config.sessions as any).reserveTokens || 20000;
-    const compactAtRatio = this.config.sessions.compactAt;
-    const threshold = Math.floor((tokenLimit - reserveTokens) * compactAtRatio);
-    const currentTokens = this.estimateTokensWithOverhead(sessionId, session.messages);
-    if (currentTokens > threshold && !this.compactingSessions.has(sessionId)) {
-      this.compactingSessions.add(sessionId);
-      this.compactWithSummary(sessionId, this.llm || undefined, this.defaultCompactInstructions || undefined)
-        .catch(err => console.error(`[session] Auto-compact failed for ${sessionId}:`, err))
-        .finally(() => this.compactingSessions.delete(sessionId));
+  /**
+   * Track a tool call for memory reminder purposes.
+   * Call this after each tool execution.
+   * Returns true if a memory reminder should be injected.
+   */
+  trackToolCall(sessionId: string, toolName: string): { shouldRemind: boolean } {
+    const memoryTools = ['memory', 'memory_read', 'memory_write', 'memory_search', 'memory_list'];
+    const isMemoryTool = memoryTools.some(mt => toolName.toLowerCase().includes(mt.toLowerCase()));
+
+    if (isMemoryTool) {
+      // Reset counter when memory tool is used
+      this.toolCallsSinceMemory.set(sessionId, 0);
+      this.memoryReminderSent.set(sessionId, false);
+      return { shouldRemind: false };
     }
+
+    const count = (this.toolCallsSinceMemory.get(sessionId) || 0) + 1;
+    this.toolCallsSinceMemory.set(sessionId, count);
+
+    // After 100 tool calls without memory, remind once
+    if (count >= 100 && !this.memoryReminderSent.get(sessionId)) {
+      this.memoryReminderSent.set(sessionId, true);
+      return { shouldRemind: true };
+    }
+
+    return { shouldRemind: false };
+  }
+
+  /**
+   * Prune old tool outputs - keep only the N most recent, replace others with placeholder.
+   * This runs before sending messages to the LLM.
+   */
+  pruneOldToolOutputs(messages: LLMMessage[], keepRecent: number = 50): LLMMessage[] {
+    // Find all tool result indices
+    const toolIndices: number[] = [];
+    for (let i = 0; i < messages.length; i++) {
+      if (messages[i].role === 'tool') {
+        toolIndices.push(i);
+      }
+    }
+
+    // If we have more than keepRecent tool results, prune the older ones
+    if (toolIndices.length <= keepRecent) {
+      return messages;
+    }
+
+    const indicesToPrune = new Set(toolIndices.slice(0, toolIndices.length - keepRecent));
+
+    return messages.map((m, i) => {
+      if (indicesToPrune.has(i) && m.role === 'tool') {
+        return { ...m, content: '[OUTPUT REMOVED]' };
+      }
+      return m;
+    });
   }
 
   /** Queue a session for transcript indexing (debounced to avoid excessive indexing) */
@@ -468,50 +547,74 @@ export class SessionManager {
 
   /**
    * Remove orphaned tool_call / tool_result messages after compaction.
-   * - Remove any `tool` role message whose `tool_call_id` doesn't match
-   *   a `tool_calls[].id` in a preceding `assistant` message.
-   * - Remove any `assistant` message with `tool_calls` that has NO
-   *   corresponding `tool` result following it.
+   * The API requires that each tool_result IMMEDIATELY follows an assistant message
+   * containing the matching tool_use. This method enforces that strict ordering.
+   * IMPORTANT: ALL tool_calls in an assistant message must have matching results.
    */
   private sanitizeToolPairs(session: Session): void {
     const messages = session.messages;
+    const result: LLMMessage[] = [];
+    let lastAssistantToolCallIds = new Set<string>();
 
-    // Pass 1: collect all tool_call IDs from assistant messages
-    const assistantToolCallIds = new Set<string>();
-    for (const m of messages) {
-      if (m.role === 'assistant' && m.tool_calls) {
-        for (const tc of m.tool_calls) {
-          assistantToolCallIds.add(tc.id);
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+
+      if (m.role === 'assistant') {
+        // Check if this assistant message has tool_calls
+        if (m.tool_calls && m.tool_calls.length > 0) {
+          // Look ahead to see if ALL tool_calls have matching tool results
+          const toolCallIds = new Set(m.tool_calls.map(tc => tc.id));
+          const foundResultIds = new Set<string>();
+
+          for (let j = i + 1; j < messages.length; j++) {
+            const next = messages[j];
+            if (next.role === 'tool' && next.tool_call_id && toolCallIds.has(next.tool_call_id)) {
+              foundResultIds.add(next.tool_call_id);
+            }
+            // Stop looking if we hit another non-tool message
+            if (next.role !== 'tool') break;
+          }
+
+          // ALL tool_calls must have matching results, not just one
+          const allHaveResults = toolCallIds.size === foundResultIds.size;
+
+          if (allHaveResults) {
+            result.push(m);
+            lastAssistantToolCallIds = toolCallIds;
+          } else {
+            // Skip this assistant message - missing tool results
+            const missing = [...toolCallIds].filter(id => !foundResultIds.has(id));
+            const missingNames = m.tool_calls
+              .filter(tc => missing.includes(tc.id))
+              .map(tc => tc.function?.name || tc.id);
+            console.log(`[session] Removed assistant with incomplete tool results. Missing: ${missingNames.join(', ')}`);
+          }
+        } else {
+          // Regular assistant message without tool_calls
+          result.push(m);
+          lastAssistantToolCallIds = new Set();
         }
+      } else if (m.role === 'tool') {
+        // Only keep tool results that match the immediately preceding assistant's tool_calls
+        if (m.tool_call_id && lastAssistantToolCallIds.has(m.tool_call_id)) {
+          result.push(m);
+        } else {
+          console.log(`[session] Removed orphaned tool result: ${m.tool_call_id}`);
+        }
+      } else {
+        // User or system message - reset tool tracking
+        result.push(m);
+        lastAssistantToolCallIds = new Set();
       }
     }
 
-    // Pass 2: collect all tool_call_ids from tool result messages
-    const toolResultIds = new Set<string>();
-    for (const m of messages) {
-      if (m.role === 'tool' && m.tool_call_id) {
-        toolResultIds.add(m.tool_call_id);
-      }
-    }
-
-    // Filter: remove orphaned tool results and orphaned assistant tool_calls
-    session.messages = messages.filter(m => {
-      // Remove tool results with no matching assistant tool_call
-      if (m.role === 'tool' && m.tool_call_id) {
-        if (!assistantToolCallIds.has(m.tool_call_id)) return false;
-      }
-      // Remove assistant messages with tool_calls but no matching tool results
-      if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
-        const hasAnyResult = m.tool_calls.some(tc => toolResultIds.has(tc.id));
-        if (!hasAnyResult) return false;
-      }
-      return true;
-    });
+    session.messages = result;
   }
 
   /**
    * Repair broken tool pairs in a session (public method for manual repair).
-   * Returns number of messages removed.
+   * Also replaces empty assistant messages with "[content deleted]".
+   * Returns number of messages fixed.
    */
   repairToolPairs(sessionId: string): number {
     const session = this.sessions.get(sessionId);
@@ -519,10 +622,20 @@ export class SessionManager {
     const before = session.messages.length;
     this.sanitizeToolPairs(session);
     const removed = before - session.messages.length;
-    if (removed > 0) {
+
+    // Also fix empty assistant messages
+    let fixed = 0;
+    for (const m of session.messages) {
+      if (m.role === 'assistant' && (!m.content || m.content.trim() === '') && (!m.tool_calls || m.tool_calls.length === 0)) {
+        m.content = '[content deleted]';
+        fixed++;
+      }
+    }
+
+    if (removed > 0 || fixed > 0) {
       this.saveSession(sessionId);
     }
-    return removed;
+    return removed + fixed;
   }
 
   /**
@@ -601,8 +714,8 @@ export class SessionManager {
       }
     }
 
-    // Keep only system messages, delete everything else, insert summary
-    const systemMsgs = session.messages.filter(m => m.role === 'system');
+    // Keep only system messages with actual content, delete everything else, insert summary
+    const systemMsgs = session.messages.filter(m => m.role === 'system' && m.content && m.content.trim().length > 0);
     session.messages = [
       ...systemMsgs,
       {
@@ -626,11 +739,12 @@ export class SessionManager {
     messages: LLMMessage[],
     instructions?: string,
   ): Promise<string> {
+    // Only include user and assistant messages, skip tool results (they're verbose)
     const conversationText = messages
-      .filter(m => m.content)
+      .filter(m => m.content && (m.role === 'user' || m.role === 'assistant'))
       .map(m => {
-        const role = m.role === 'assistant' ? 'Assistant' : m.role === 'user' ? 'User' : 'Tool';
-        return `[${role}] ${(m.content || '').slice(0, 500)}`;
+        const role = m.role === 'assistant' ? 'A' : 'U';
+        return `[${role}] ${(m.content || '').slice(0, 200)}`;
       })
       .join('\n');
 
@@ -638,7 +752,7 @@ export class SessionManager {
       { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
       {
         role: 'user',
-        content: `Create a detailed summary of this conversation:\n\n${conversationText}${instructions ? `\n\nAdditional context: ${instructions}` : ''}`,
+        content: `Summarize this conversation in UNDER 2000 WORDS:\n\n${conversationText}${instructions ? `\n\nFocus on: ${instructions}` : ''}`,
       },
     ];
 
@@ -658,29 +772,29 @@ export class SessionManager {
   ): Promise<string> {
     // Split messages into 2-3 parts by token count
     const parts = this.splitMessagesByTokens(messages, contextTokens * 0.3);
-    
+
     if (parts.length <= 1) {
       return this.singleStageSummarize(client, messages, instructions);
     }
 
     console.log(`[session] Multi-stage summarization: ${parts.length} parts`);
 
-    // Summarize each part
+    // Summarize each part - only user/assistant, skip tool results
     const partialSummaries: string[] = [];
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
       const partText = part
-        .filter(m => m.content)
+        .filter(m => m.content && (m.role === 'user' || m.role === 'assistant'))
         .map(m => {
-          const role = m.role === 'assistant' ? 'Assistant' : m.role === 'user' ? 'User' : 'Tool';
-          return `[${role}] ${(m.content || '').slice(0, 300)}`;
+          const role = m.role === 'assistant' ? 'A' : 'U';
+          return `[${role}] ${(m.content || '').slice(0, 150)}`;
         })
         .join('\n');
 
       const prompt: LLMMessage[] = [
         {
           role: 'system',
-          content: `You are summarizing part ${i + 1} of ${parts.length} of a conversation. Create a detailed summary preserving all important context, decisions, and technical details. This partial summary will be merged with others.`,
+          content: `Summarize part ${i + 1}/${parts.length} in MAX 500 words. Only include: current task, key decisions, next steps. Be terse.`,
         },
         { role: 'user', content: partText },
       ];
@@ -689,11 +803,10 @@ export class SessionManager {
         const response = await client.chat(prompt);
         const partSummary = response.choices[0]?.message?.content?.trim() || '';
         if (partSummary) {
-          partialSummaries.push(`### Part ${i + 1}\n${partSummary}`);
+          partialSummaries.push(partSummary);
         }
       } catch (err) {
         console.warn(`[session] Failed to summarize part ${i + 1}: ${err}`);
-        // Continue with other parts
       }
     }
 
@@ -701,17 +814,17 @@ export class SessionManager {
       throw new Error('All partial summaries failed');
     }
 
-    // Merge summaries into cohesive whole
+    // Merge summaries - keep it concise
     const mergePrompt: LLMMessage[] = [
       { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
       {
         role: 'user',
-        content: `Merge these partial summaries into a single cohesive summary. Preserve all decisions, TODOs, open questions, and technical details:\n\n${partialSummaries.join('\n\n')}${instructions ? `\n\nAdditional context: ${instructions}` : ''}`,
+        content: `Merge into ONE summary under 2000 words. Remove duplicates, keep only current/active items:\n\n${partialSummaries.join('\n---\n')}${instructions ? `\n\nFocus: ${instructions}` : ''}`,
       },
     ];
 
     const mergeResponse = await client.chat(mergePrompt);
-    return mergeResponse.choices[0]?.message?.content?.trim() || partialSummaries.join('\n\n');
+    return mergeResponse.choices[0]?.message?.content?.trim() || partialSummaries.join('\n');
   }
 
   /**
@@ -810,39 +923,40 @@ export class SessionManager {
     return { read, modified };
   }
 
-  /** Estimate tokens for an arbitrary array of messages (content only, no overhead) */
+  /** Estimate tokens for an arbitrary array of messages (content only, no overhead).
+   *  Uses a conservative 3.2 chars/token ratio (more accurate than 4 chars/token). */
   private estimateTokensForMessages(messages: LLMMessage[]): number {
     let chars = 0;
     for (const m of messages) {
       if (m.content) chars += m.content.length;
-      if (m.tool_calls) chars += JSON.stringify(m.tool_calls).length;
-      // Per-message overhead: role, name, tool_call_id framing ≈ 4 tokens each
-      chars += 16;
+      if (m.tool_calls) {
+        // Tool calls have significant overhead in API format
+        chars += JSON.stringify(m.tool_calls).length;
+        // Add extra for tool call metadata (function framing, etc.)
+        chars += m.tool_calls.length * 50;
+      }
+      // Per-message overhead: role, name, tool_call_id framing ≈ 8 tokens each
+      chars += 32;
     }
-    return Math.ceil(chars / 4);
+    // Use 3.2 chars per token (more conservative than 4, accounts for special tokens)
+    return Math.ceil(chars / 3.2);
   }
 
   /** Get token count for a session.
-   *  Uses actual API-reported prompt_tokens when available (adjusted for messages added since the snapshot).
+   *  Uses actual API-reported prompt_tokens when available.
    *  Falls back to character-based estimate + overhead when no API data exists. */
-  private estimateTokensWithOverhead(sessionId: string, messages: LLMMessage[]): number {
+  estimateTokens(sessionId: string): number {
     const snapshot = this.sessionTokens.get(sessionId);
     if (snapshot && snapshot.prompt > 0) {
-      // Use real API value, plus estimate for any messages added after the snapshot
-      const newMsgs = messages.slice(snapshot.msgCountAtSnapshot);
-      const delta = newMsgs.length > 0 ? this.estimateTokensForMessages(newMsgs) : 0;
-      return snapshot.prompt + snapshot.completion + delta;
+      // Use actual API-reported prompt_tokens directly
+      // This is the most accurate value - it's what the API actually counted
+      return snapshot.prompt;
     }
-    // Fallback: character-based estimate + overhead
+    // Fallback: character-based estimate + overhead (only for sessions without API calls yet)
+    const messages = this.getMessages(sessionId);
     const msgTokens = this.estimateTokensForMessages(messages);
     const overhead = this.overheadEstimator ? this.overheadEstimator(sessionId) : 0;
     return msgTokens + overhead;
-  }
-
-  /** Get token count for a session (uses real API values when available). */
-  estimateTokens(sessionId: string): number {
-    const messages = this.getMessages(sessionId);
-    return this.estimateTokensWithOverhead(sessionId, messages);
   }
 
   getMessages(sessionId: string): LLMMessage[] {
@@ -951,6 +1065,7 @@ export class SessionManager {
 
   saveAll(): void {
     for (const [id] of this.sessions) {
+      if (!id) continue; // skip any corrupted entries with undefined id
       this.saveSession(id);
     }
     // Final transcript index flush

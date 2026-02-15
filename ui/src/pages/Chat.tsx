@@ -24,6 +24,7 @@ interface ChatMessage {
   reactions?: string[]
   timestamp: number
   serverIndex?: number  // Index in server-side messages array
+  isPowerSteering?: boolean  // True for power steering system messages
 }
 
 // Simple markdown renderer (no external dep runtime - we parse ourselves)
@@ -355,6 +356,16 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
   const [sessionsList, setSessionsList] = useState<{ id: string; channel: string; messageCount: number; updatedAt: string }[]>([])
   const [showSessionPicker, setShowSessionPicker] = useState(false)
   const [contextInfo, setContextInfo] = useState<{ used: number; limit: number; percent: number } | null>(null)
+  const [contextBreakdown, setContextBreakdown] = useState<{
+    systemPrompt: number; toolDefinitions: number; userMessages: number;
+    assistantMessages: number; toolResults: number; total: number; limit: number;
+    details?: {
+      systemPrompt: { name: string; tokens: number }[];
+      tools: { name: string; tokens: number }[];
+    };
+  } | null>(null)
+  const [showContextBreakdown, setShowContextBreakdown] = useState(false)
+  const [expandedBreakdown, setExpandedBreakdown] = useState<string | null>(null)
   const [elevated, setElevated] = useState(false)
   const [currentModel, setCurrentModel] = useState('')
   const [models, setModels] = useState<{name: string; model: string; active: boolean}[]>([])
@@ -380,9 +391,14 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
   const [expandedHeartbeats, setExpandedHeartbeats] = useState<Record<string, boolean>>({})
   const pendingToolCallsRef = useRef<{ name: string; arguments?: string; result: string }[]>([])
   const processingPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const messagePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const lastMessageCountRef = useRef<number>(0)
+  const lastMessageHashRef = useRef<string>('')
   const [streamingToolCalls, setStreamingToolCalls] = useState<{ name: string; arguments?: string; result: string }[]>([])
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
   const [editingContent, setEditingContent] = useState('')
+  const [promptQueue, setPromptQueue] = useState<string[]>([])
+  const promptQueueRef = useRef<string[]>([])
   const makeId = () => `msg_${++msgIdRef.current}_${Date.now()}`
 
   /** Stop the processing-recovery poll if running. */
@@ -392,6 +408,76 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
       processingPollRef.current = null
     }
   }
+
+  /** Poll for new messages from automated sources (heartbeat, plugins, etc.) */
+  const startMessagePoll = () => {
+    if (messagePollRef.current) return // Already polling
+    messagePollRef.current = setInterval(async () => {
+      const sessionId = currentSessionIdRef.current
+      if (!sessionId || awaitingResponseRef.current) return // Skip if no session or already waiting for response
+
+      try {
+        const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`)
+        const data = await r.json() as any
+        if (!data.session) return
+
+        const serverMsgs = data.session.messages || []
+        const serverMsgCount = serverMsgs.length
+        // Simple hash: last message role + content length + first 50 chars
+        const lastMsg = serverMsgs[serverMsgs.length - 1]
+        const serverHash = lastMsg ? `${lastMsg.role}:${(lastMsg.content || '').length}:${(lastMsg.content || '').slice(0, 50)}` : ''
+
+        // Reload if count changed OR last message changed
+        if (serverMsgCount !== lastMessageCountRef.current || serverHash !== lastMessageHashRef.current) {
+          lastMessageCountRef.current = serverMsgCount
+          lastMessageHashRef.current = serverHash
+          // Reload session via WebSocket
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({ type: 'load_session', session_id: sessionId }))
+          }
+        }
+      } catch { /* ignore */ }
+    }, 5000) // Poll every 5 seconds
+  }
+
+  const stopMessagePoll = () => {
+    if (messagePollRef.current) {
+      clearInterval(messagePollRef.current)
+      messagePollRef.current = null
+    }
+  }
+
+  // Keep ref in sync with state for use in WebSocket callback
+  useEffect(() => {
+    promptQueueRef.current = promptQueue
+  }, [promptQueue])
+
+  // Track injected messages waiting to appear in correct position
+  const [injectedPrompts, setInjectedPrompts] = useState<string[]>([])
+
+  /** Send the next queued prompt if any exist - injects into current conversation */
+  const sendNextQueuedPrompt = useCallback(() => {
+    const queue = promptQueueRef.current
+    if (queue.length === 0 || !wsRef.current) return
+
+    // Take the first prompt from the queue
+    const prompt = queue[0]
+    const remaining = queue.slice(1)
+
+    // Update state and ref
+    setPromptQueue(remaining)
+    promptQueueRef.current = remaining
+
+    // Track as injected (will show as indicator, not in messages list)
+    // The server will include it in the correct position when response completes
+    setInjectedPrompts(prev => [...prev, prompt])
+
+    // Send as 'inject' type - this adds to session without triggering new response
+    // The current processing loop will see it in its next iteration
+    wsRef.current.send(JSON.stringify({ type: 'inject', content: prompt }))
+
+    // DON'T clear streaming state - let the current response continue displaying
+  }, [selectedAgent])
 
   /** Render markdown content with tool accordions inline where [used tool: X] markers appear */
   const renderContentWithTools = (
@@ -431,7 +517,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
 
   useEffect(() => {
     connect()
-    return () => { stopProcessingPoll(); wsRef.current?.close() }
+    return () => { stopProcessingPoll(); stopMessagePoll(); wsRef.current?.close() }
   }, [])
 
   useEffect(() => {
@@ -539,6 +625,10 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           content: `Connected. Session: ${msg.session_id}`,
           timestamp: Date.now(),
         }])
+        // Start polling for automated messages (heartbeat, plugins)
+        lastMessageCountRef.current = 0
+        lastMessageHashRef.current = ''
+        startMessagePoll()
       }
       if (msg.type === 'session_loaded') {
       // Hide agent picker when loading an existing session
@@ -548,10 +638,24 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         if (msg.context) setContextInfo(msg.context)
         // Merge consecutive assistant messages into one: tool-call-only messages
         // get folded into the previous assistant message (tools belong to that turn).
-        const rawMsgs = (msg.messages || []).filter((m: any) => m.role !== 'system')
+        // Keep power steering messages (isPowerSteering: true) but filter other system messages
+        const rawMsgs = (msg.messages || []).filter((m: any) => m.role !== 'system' || m.isPowerSteering)
         const merged: ChatMessage[] = []
 
         for (const m of rawMsgs) {
+          // Handle power steering messages
+          if (m.isPowerSteering) {
+            merged.push({
+              id: makeId(),
+              role: 'system',
+              content: m.content || '',
+              timestamp: Date.now(),
+              serverIndex: m.serverIndex,
+              isPowerSteering: true,
+            })
+            continue
+          }
+
           if (m.role === 'assistant') {
             const toolCalls = m.tool_calls
               ? m.tool_calls.map((tc: any) => ({ name: tc.name, result: tc.result || '', arguments: tc.arguments || '' }))
@@ -605,6 +709,11 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           { id: makeId(), role: 'system', content: `Loaded session: ${msg.session_id}`, timestamp: Date.now() },
           ...merged,
         ])
+        // Track message count and hash for automated message detection
+        const loadedMsgs = msg.messages || []
+        const lastLoadedMsg = loadedMsgs[loadedMsgs.length - 1]
+        lastMessageCountRef.current = loadedMsgs.length
+        lastMessageHashRef.current = lastLoadedMsg ? `${lastLoadedMsg.role}:${(lastLoadedMsg.content || '').length}:${(lastLoadedMsg.content || '').slice(0, 50)}` : ''
         setStreaming('')
       }
       if (msg.type === 'typing') {
@@ -621,10 +730,19 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
       }
       // Tool call completed during streaming — accumulate for the final message
       // Also update state so tool calls render live in the streaming bubble
+      // If there's a queued prompt, send it after a short delay to let the tool result settle
       if (msg.type === 'tool_call') {
         const tc = { name: msg.name, arguments: msg.arguments, result: msg.result || '' }
         pendingToolCallsRef.current.push(tc)
         setStreamingToolCalls(prev => [...prev, tc])
+
+        // Check for queued prompt and send it after tool call
+        if (promptQueueRef.current.length > 0) {
+          // Small delay to let the current tool result settle
+          setTimeout(() => {
+            sendNextQueuedPrompt()
+          }, 100)
+        }
       }
       if (msg.type === 'response') {
         stopProcessingPoll()
@@ -638,35 +756,62 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           : msg.tool_calls
         pendingToolCallsRef.current = []
         setStreamingToolCalls([])
+        // Clear injected prompts - they're now in the server's message list
+        setInjectedPrompts([])
         // Server sends mapped messages with serverIndex — use them to backfill indices
         const serverMsgs: any[] = msg.messages || []
+        // Update message count and hash for automated message polling
+        const lastServerMsg = serverMsgs[serverMsgs.length - 1]
+        lastMessageCountRef.current = serverMsgs.length
+        lastMessageHashRef.current = lastServerMsg ? `${lastServerMsg.role}:${(lastServerMsg.content || '').length}:${(lastServerMsg.content || '').slice(0, 50)}` : ''
         // Use accumulated streaming content if available — msg.content only has the
         // final LLM response (after tool calls), so it would wipe earlier streamed text.
         setStreaming(prev => {
           // Keep [used tool: X] markers — renderContentWithTools replaces them with accordions
           const finalContent = (prev || msg.content || '').trim()
-          setMessages(msgs => {
-            const updated = [...msgs, {
-              id: makeId(),
-              role: 'assistant' as const,
-              content: finalContent,
-              toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined,
-              timestamp: Date.now(),
-            }]
-            // Backfill serverIndex: match client messages to server messages by role+position
-            // Walk server messages (non-system) and assign serverIndex to matching client messages
-            const serverNonSystem = serverMsgs.filter((sm: any) => sm.role !== 'system')
-            let si = 0
-            for (let ci = 0; ci < updated.length; ci++) {
-              if (updated[ci].role === 'system') continue
-              while (si < serverNonSystem.length && serverNonSystem[si].role !== updated[ci].role) si++
-              if (si < serverNonSystem.length && serverNonSystem[si].role === updated[ci].role) {
-                updated[ci] = { ...updated[ci], serverIndex: serverNonSystem[si].serverIndex }
-                si++
+
+          // If server sent messages, rebuild from server list to get correct ordering
+          // (important when messages were injected mid-conversation)
+          if (serverMsgs.length > 0) {
+            // Convert server messages to client format, adding the final assistant response
+            // Keep power steering messages but skip other system messages
+            const rebuilt: Message[] = serverMsgs
+              .filter((sm: any) => sm.role !== 'system' || sm.isPowerSteering)
+              .map((sm: any) => ({
+                id: makeId(),
+                role: sm.role as 'user' | 'assistant' | 'tool' | 'system',
+                content: sm.content || '',
+                toolCalls: sm.tool_calls,
+                serverIndex: sm.serverIndex,
+                timestamp: Date.now(),
+                isPowerSteering: sm.isPowerSteering,
+              }))
+
+            // Check if the last message is already the assistant response we're about to add
+            const lastMsg = rebuilt[rebuilt.length - 1]
+            if (lastMsg && lastMsg.role === 'assistant') {
+              // Update the last assistant message with streaming content and tool calls
+              rebuilt[rebuilt.length - 1] = {
+                ...lastMsg,
+                content: finalContent || lastMsg.content,
+                toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : lastMsg.toolCalls,
               }
             }
-            return updated
-          })
+
+            setMessages(rebuilt)
+          } else {
+            // Fallback: append to existing messages (no server list available)
+            setMessages(msgs => {
+              const updated = [...msgs, {
+                id: makeId(),
+                role: 'assistant' as const,
+                content: finalContent,
+                toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined,
+                timestamp: Date.now(),
+              }]
+              return updated
+            })
+          }
           return ''
         })
       }
@@ -785,18 +930,30 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           }]
         })
       }
+      // Handle context breakdown response
+      if (msg.type === 'context_breakdown') {
+        setContextBreakdown(msg.breakdown)
+        setShowContextBreakdown(true)
+      }
+      // Handle injected message confirmation (queued prompts)
+      if (msg.type === 'injected') {
+        // Message was injected into session - the current processing loop will see it
+        // Visual update already happened in sendNextQueuedPrompt
+        console.log('[chat] Injected queued prompt into session')
+      }
       // Handle messages_updated (after delete/edit)
       if (msg.type === 'messages_updated') {
         setCurrentSessionId(msg.session_id)
         currentSessionIdRef.current = msg.session_id
         if (msg.context) setContextInfo(msg.context)
         const loaded: ChatMessage[] = (msg.messages || [])
-          .filter((m: any) => m.role !== 'system')
+          .filter((m: any) => m.role !== 'system' || m.isPowerSteering)
           .map((m: any) => ({
             id: makeId(),
-            role: m.role as 'user' | 'assistant',
+            role: m.role as 'user' | 'assistant' | 'system',
             content: m.content || '',
             toolCalls: m.tool_calls?.map((tc: any) => ({ name: tc.name, arguments: tc.arguments, result: tc.result || '' })),
+            isPowerSteering: m.isPowerSteering,
             timestamp: Date.now(),
             serverIndex: m.serverIndex,
           }))
@@ -813,12 +970,13 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         if (msg.context) setContextInfo(msg.context)
         // Reload all messages from server
         const loaded: ChatMessage[] = (msg.messages || [])
-          .filter((m: any) => m.role !== 'system')
+          .filter((m: any) => m.role !== 'system' || m.isPowerSteering)
           .map((m: any) => ({
             id: makeId(),
-            role: m.role as 'user' | 'assistant',
+            role: m.role as 'user' | 'assistant' | 'system',
             content: m.content || '',
             toolCalls: m.tool_calls?.map((tc: any) => ({ name: tc.name, arguments: tc.arguments, result: tc.result || '' })),
+            isPowerSteering: m.isPowerSteering,
             timestamp: Date.now(),
             serverIndex: m.serverIndex,
           }))
@@ -1084,7 +1242,15 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           )}
         </div>
         {contextInfo && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }} title={`${contextInfo.used.toLocaleString()} / ${contextInfo.limit.toLocaleString()} tokens`}>
+          <div
+            onClick={() => {
+              if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({ type: 'get_context_breakdown' }))
+              }
+            }}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
+            title={`${contextInfo.used.toLocaleString()} / ${contextInfo.limit.toLocaleString()} tokens - Click for breakdown`}
+          >
             <div style={{
               width: 80, height: 6, background: colors.bgTertiary, borderRadius: 3, overflow: 'hidden',
             }}>
@@ -1097,6 +1263,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
             <span style={{ fontSize: 10, color: contextInfo.percent > 80 ? colors.error : colors.textMuted, fontFamily: 'monospace' }}>
               {contextInfo.percent}%
             </span>
+            <span style={{ fontSize: 10, color: colors.textMuted }}>i</span>
           </div>
         )}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -1327,6 +1494,163 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         </div>
       )}
 
+      {/* Context Breakdown Modal */}
+      {showContextBreakdown && contextBreakdown && (
+        <div
+          onClick={() => { setShowContextBreakdown(false); setExpandedBreakdown(null) }}
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: colors.bgOverlay, zIndex: 1000,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              width: '90%', maxWidth: 450, maxHeight: '80vh',
+              background: colors.bgCard, borderRadius: 12, overflow: 'hidden',
+              boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+              display: 'flex', flexDirection: 'column',
+            }}
+          >
+            <div style={{
+              padding: '12px 16px', background: colors.bgTertiary,
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              borderBottom: `1px solid ${colors.borderLight}`,
+            }}>
+              <span style={{ fontSize: 14, color: colors.textPrimary, fontWeight: 600 }}>Context Breakdown</span>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <button
+                  onClick={() => {
+                    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                      wsRef.current.send(JSON.stringify({ type: 'get_context_breakdown' }))
+                    }
+                  }}
+                  style={{
+                    background: 'none', border: 'none', color: colors.accent,
+                    cursor: 'pointer', fontSize: 12, padding: '2px 6px',
+                  }}
+                  title="Refresh"
+                >
+                  ↻
+                </button>
+                <button
+                  onClick={() => { setShowContextBreakdown(false); setExpandedBreakdown(null) }}
+                  style={{
+                    background: 'none', border: 'none', color: colors.textMuted,
+                    cursor: 'pointer', fontSize: 16, padding: '0 4px',
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+            <div style={{ padding: 16, overflowY: 'auto', flex: 1 }}>
+              {/* Total usage bar */}
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <span style={{ fontSize: 11, color: colors.textSecondary }}>Total Usage</span>
+                  <span style={{ fontSize: 11, color: colors.textMuted, fontFamily: 'monospace' }}>
+                    {contextBreakdown.total.toLocaleString()} / {contextBreakdown.limit.toLocaleString()}
+                  </span>
+                </div>
+                <div style={{ height: 8, background: colors.bgTertiary, borderRadius: 4, overflow: 'hidden' }}>
+                  <div style={{
+                    width: `${Math.min((contextBreakdown.total / contextBreakdown.limit) * 100, 100)}%`,
+                    height: '100%', borderRadius: 4,
+                    background: (contextBreakdown.total / contextBreakdown.limit) > 0.8 ? colors.error
+                      : (contextBreakdown.total / contextBreakdown.limit) > 0.5 ? colors.warning : colors.success,
+                  }} />
+                </div>
+              </div>
+
+              {/* Category breakdown */}
+              {[
+                { key: 'systemPrompt', label: 'System Prompt', value: contextBreakdown.systemPrompt, color: colors.accent, expandable: true },
+                { key: 'toolDefinitions', label: 'Tool Definitions', value: contextBreakdown.toolDefinitions, color: colors.warning, expandable: true },
+                { key: 'userMessages', label: 'User Messages', value: contextBreakdown.userMessages, color: colors.success, expandable: false },
+                { key: 'assistantMessages', label: 'Assistant Messages', value: contextBreakdown.assistantMessages, color: colors.heartbeat, expandable: false },
+                { key: 'toolResults', label: 'Tool Results', value: contextBreakdown.toolResults, color: colors.error, expandable: false },
+              ].map(item => {
+                const percent = contextBreakdown.total > 0 ? (item.value / contextBreakdown.total) * 100 : 0
+                const isExpanded = expandedBreakdown === item.key
+                const details = item.key === 'systemPrompt' ? contextBreakdown.details?.systemPrompt
+                  : item.key === 'toolDefinitions' ? contextBreakdown.details?.tools
+                  : null
+                return (
+                  <div key={item.label} style={{ marginBottom: 10 }}>
+                    <div
+                      onClick={() => item.expandable && details && setExpandedBreakdown(isExpanded ? null : item.key)}
+                      style={{
+                        display: 'flex', justifyContent: 'space-between', marginBottom: 2,
+                        cursor: item.expandable && details ? 'pointer' : 'default',
+                        padding: '2px 0',
+                      }}
+                    >
+                      <span style={{ fontSize: 11, color: colors.textSecondary, display: 'flex', alignItems: 'center', gap: 4 }}>
+                        {item.expandable && details && (
+                          <span style={{ fontSize: 8, color: colors.textMuted }}>{isExpanded ? '▼' : '▶'}</span>
+                        )}
+                        {item.label}
+                        {item.expandable && details && (
+                          <span style={{ fontSize: 9, color: colors.textMuted }}>({details.length})</span>
+                        )}
+                      </span>
+                      <span style={{ fontSize: 11, color: colors.textMuted, fontFamily: 'monospace' }}>
+                        {item.value.toLocaleString()} ({percent.toFixed(1)}%)
+                      </span>
+                    </div>
+                    <div style={{ height: 6, background: colors.bgTertiary, borderRadius: 3, overflow: 'hidden' }}>
+                      <div style={{
+                        width: `${percent}%`,
+                        height: '100%', borderRadius: 3,
+                        background: item.color,
+                        transition: 'width 0.3s',
+                      }} />
+                    </div>
+                    {/* Expanded details */}
+                    {isExpanded && details && (
+                      <div style={{
+                        marginTop: 6, padding: 8, background: colors.bgTertiary, borderRadius: 6,
+                        maxHeight: 200, overflowY: 'auto',
+                      }}>
+                        {details.sort((a, b) => b.tokens - a.tokens).map((d, i) => (
+                          <div key={i} style={{
+                            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                            padding: '3px 0', borderBottom: i < details.length - 1 ? `1px solid ${colors.borderLight}` : 'none',
+                          }}>
+                            <span style={{
+                              fontSize: 10, color: colors.textSecondary,
+                              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                              maxWidth: '70%',
+                            }}>
+                              {d.name}
+                            </span>
+                            <span style={{ fontSize: 10, color: colors.textMuted, fontFamily: 'monospace' }}>
+                              {d.tokens.toLocaleString()}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+
+              {/* Tips */}
+              <div style={{ marginTop: 16, padding: 10, background: colors.bgHover, borderRadius: 6, fontSize: 11, color: colors.textSecondary }}>
+                <strong style={{ color: colors.textPrimary }}>Tips:</strong>
+                <ul style={{ margin: '6px 0 0 0', paddingLeft: 16 }}>
+                  <li>Click System Prompt or Tool Definitions to see file breakdown</li>
+                  <li>Use <code style={{ background: colors.bgTertiary, padding: '1px 4px', borderRadius: 2 }}>/compact</code> to summarize and reduce context</li>
+                  <li>Tool results often take the most space</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Messages */}
       <div
         onClick={e => {
@@ -1391,8 +1715,48 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
             )
           }
 
-          // ---- Normal message ----
+          // ---- Power Steering accordion ----
           const m = item.msg
+          if (m.isPowerSteering) {
+            const psKey = `ps_${itemIdx}_${m.id}`
+            const isOpen = expandedTools[psKey] || false
+            return (
+              <div key={m.id} style={{ width: '100%', marginBottom: 6, alignSelf: 'stretch' }}>
+                <div
+                  onClick={() => setExpandedTools(prev => ({ ...prev, [psKey]: !prev[psKey] }))}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
+                    padding: '6px 12px', background: colors.bgWarning, borderRadius: 6,
+                    border: `1px solid ${colors.warning}33`, userSelect: 'none', width: '100%',
+                    boxSizing: 'border-box',
+                  }}
+                >
+                  <span style={{
+                    display: 'inline-block', fontSize: 9, color: colors.warning,
+                    transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)',
+                    transition: 'transform 0.15s',
+                  }}>▶</span>
+                  <span style={{ fontSize: 12 }}>⚡</span>
+                  <span style={{ fontSize: 12, color: colors.warning, fontWeight: 600 }}>Power Steering</span>
+                  <span style={{ fontSize: 10, color: colors.textMuted, marginLeft: 'auto' }}>System re-anchor</span>
+                </div>
+                {isOpen && (
+                  <div style={{
+                    marginTop: 4, padding: '12px 16px',
+                    background: colors.bgCard, borderRadius: '0 0 6px 6px',
+                    border: `1px solid ${colors.warning}33`, borderTop: 'none',
+                    fontSize: 12, color: colors.textSecondary, fontFamily: 'monospace',
+                    whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.5,
+                    maxHeight: 300, overflow: 'auto',
+                  }}>
+                    {m.content}
+                  </div>
+                )}
+              </div>
+            )
+          }
+
+          // ---- Normal message ----
           return (
           <div key={m.id} style={msgStyle(m.role)}>
             {/* Header */}
@@ -1539,6 +1903,21 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           </div>
         )}
 
+        {/* Injected prompts indicator - shown after streaming, before they're synced */}
+        {injectedPrompts.length > 0 && (
+          <>
+            {injectedPrompts.map((prompt, i) => (
+              <div key={`injected-${i}`} style={msgStyle('user')}>
+                <div style={{ fontSize: 10, color: colors.textMuted, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span>You</span>
+                  <span style={{ fontSize: 9, color: colors.accent, background: colors.bgHover, padding: '1px 6px', borderRadius: 4 }}>injected</span>
+                </div>
+                <div style={{ whiteSpace: 'pre-wrap' }}>{prompt}</div>
+              </div>
+            ))}
+          </>
+        )}
+
         {/* Typing indicator */}
         {typing && !streaming && streamingToolCalls.length === 0 && (
           <div style={{ ...msgStyle('assistant'), color: colors.textMuted }}>
@@ -1582,6 +1961,68 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
 
       {/* Input area */}
       <div style={{ padding: '12px 20px', borderTop: `1px solid ${colors.border}` }}>
+        {/* Queued prompts indicator */}
+        {promptQueue.length > 0 && (
+          <div style={{
+            marginBottom: 8, borderRadius: 6, overflow: 'hidden',
+            border: `1px solid ${colors.warning}`,
+          }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '6px 12px', background: colors.warning, color: '#000',
+            }}>
+              <span style={{ fontSize: 12, fontWeight: 600 }}>
+                ⏳ {promptQueue.length} prompt{promptQueue.length > 1 ? 's' : ''} queued
+              </span>
+              <button
+                onClick={() => setPromptQueue([])}
+                style={{
+                  background: 'rgba(0,0,0,0.2)', border: 'none', color: '#000',
+                  cursor: 'pointer', fontSize: 11, padding: '2px 8px', borderRadius: 4,
+                  fontWeight: 600,
+                }}
+                title="Clear all queued prompts"
+              >
+                Clear all
+              </button>
+            </div>
+            <div style={{ background: colors.bgTertiary, maxHeight: 120, overflowY: 'auto' }}>
+              {promptQueue.map((prompt, idx) => (
+                <div
+                  key={idx}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    padding: '6px 12px',
+                    borderBottom: idx < promptQueue.length - 1 ? `1px solid ${colors.border}` : 'none',
+                  }}
+                >
+                  <span style={{
+                    fontSize: 10, color: colors.textMuted, fontWeight: 600,
+                    minWidth: 18,
+                  }}>
+                    #{idx + 1}
+                  </span>
+                  <span style={{
+                    flex: 1, fontSize: 12, color: colors.textSecondary,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>
+                    {prompt.length > 50 ? prompt.slice(0, 50) + '...' : prompt}
+                  </span>
+                  <button
+                    onClick={() => setPromptQueue(prev => prev.filter((_, i) => i !== idx))}
+                    style={{
+                      background: 'none', border: 'none', color: colors.error,
+                      cursor: 'pointer', fontSize: 12, padding: '0 4px',
+                    }}
+                    title="Remove this prompt"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         {/* File upload indicator */}
         {uploading && (
           <div style={{ fontSize: 11, color: colors.accent, marginBottom: 6 }}>Uploading file...</div>
@@ -1643,20 +2084,59 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
             }}
           />
           {(awaitingResponse || streaming) ? (
-            <button
-              onClick={() => {
-                if (wsRef.current) {
-                  wsRef.current.send(JSON.stringify({ type: 'interrupt' }))
-                }
-              }}
-              style={{
-                padding: '10px 20px', background: colors.error, color: '#fff',
-                border: 'none', borderRadius: 6, cursor: 'pointer',
-                fontWeight: 600, fontSize: 14, transition: 'all 0.15s',
-              }}
-            >
-              Stop
-            </button>
+            <div style={{ display: 'flex', borderRadius: 6, overflow: 'hidden' }}>
+              {/* Interrupt button */}
+              <button
+                onClick={() => {
+                  if (wsRef.current) {
+                    wsRef.current.send(JSON.stringify({ type: 'interrupt' }))
+                  }
+                }}
+                style={{
+                  padding: '10px 14px', background: colors.error, color: '#fff',
+                  border: 'none', cursor: 'pointer',
+                  fontWeight: 600, fontSize: 14, transition: 'all 0.15s',
+                  borderRight: `1px solid rgba(255,255,255,0.2)`,
+                }}
+                title="Stop the current response"
+              >
+                Stop
+              </button>
+              {/* Queue button */}
+              <button
+                onClick={() => {
+                  if (input.trim()) {
+                    setPromptQueue(prev => [...prev, input.trim()])
+                    setInput('')
+                    inputRef.current?.focus()
+                  }
+                }}
+                disabled={!input.trim()}
+                style={{
+                  padding: '10px 14px',
+                  background: input.trim() ? colors.warning : colors.bgTertiary,
+                  color: input.trim() ? '#000' : colors.textMuted,
+                  border: 'none', cursor: input.trim() ? 'pointer' : 'default',
+                  fontWeight: 600, fontSize: 14, transition: 'all 0.15s',
+                  opacity: input.trim() ? 1 : 0.5,
+                  position: 'relative',
+                }}
+                title="Queue this prompt to send after the next tool call"
+              >
+                Queue
+                {promptQueue.length > 0 && (
+                  <span style={{
+                    position: 'absolute', top: -6, right: -6,
+                    background: colors.accent, color: colors.accentContrast,
+                    borderRadius: '50%', width: 18, height: 18,
+                    fontSize: 10, fontWeight: 700,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    {promptQueue.length}
+                  </span>
+                )}
+              </button>
+            </div>
           ) : (
             <button
               onClick={send}

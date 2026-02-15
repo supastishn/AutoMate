@@ -604,58 +604,42 @@ def _build_stealth_js(profile):
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
-def start(config=None):
-    """Start the browser with full stealth configuration.
-
-    Config options (all optional, passed via env vars or startup command):
-      AUTOMATE_PROXY        - proxy URL (http://user:pass@host:port or socks5://...)
-      AUTOMATE_PROFILE_DIR  - persistent Chrome profile directory
-      AUTOMATE_HEADLESS     - "new" to use --headless=new instead of Xvfb
-      AUTOMATE_REGION       - fingerprint region (US/EU) for timezone/locale
-    """
-    global browser, display, _stealth_profile
-    config = config or {}
-
-    # Generate a random but internally-consistent fingerprint
-    region = config.get("region", os.environ.get("AUTOMATE_REGION", "US"))
-    _stealth_profile = _generate_fingerprint_profile(region)
-    screen_prof = _stealth_profile["screen"]
-    platform_prof = _stealth_profile["platform"]
-    webgl_prof = _stealth_profile["webgl"]
-    tz_prof = _stealth_profile["timezone"]
-
-    # Determine headless strategy
-    # Prefer Xvfb when available (even on Termux/proot where --headless=new
-    # crashes due to GPU process failures). Only force headless=new if
-    # explicitly requested or Xvfb (pyvirtualdisplay) isn't installed.
-    use_headless_new = (
-        config.get("headless", os.environ.get("AUTOMATE_HEADLESS", "")) == "new"
-        or _Display is None
-    )
-
-    if not use_headless_new:
-        try:
-            display = _Display(
-                visible=False, size=(screen_prof["width"], screen_prof["height"])
-            )
-            display.start()
-        except Exception as e:
-            sys.stderr.write(
-                f"[engine] Xvfb failed ({e}), falling back to --headless=new\n"
-            )
-            display = None
-            use_headless_new = True
-
+def _build_chrome_options(screen_prof, use_headless_new, config):
+    """Build a fresh ChromeOptions object. Must create new instance each time
+    because undetected_chromedriver modifies the options internally and
+    raises RuntimeError if you try to reuse them."""
     opts = uc.ChromeOptions()
+
+    # Core stability flags (required for Termux/proot)
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--disable-software-rasterizer")
+
+    # Process/threading flags for proot compatibility
+    opts.add_argument("--single-process")  # Run in single process mode
+    opts.add_argument("--no-zygote")  # Disable zygote process
+    opts.add_argument("--disable-setuid-sandbox")
+    opts.add_argument("--disable-seccomp-filter-sandbox")
+
+    # Reduce resource usage
+    opts.add_argument("--disable-background-networking")
+    opts.add_argument("--disable-default-apps")
+    opts.add_argument("--disable-sync")
+    opts.add_argument("--disable-translate")
+    opts.add_argument("--metrics-recording-only")
+    opts.add_argument("--no-first-run")
+    opts.add_argument("--safebrowsing-disable-auto-update")
+
+    # Window/display settings
     opts.add_argument(f"--window-size={screen_prof['width']},{screen_prof['height']}")
     opts.add_argument("--start-maximized")
+
+    # Anti-detection
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_argument("--disable-infobars")
     opts.add_argument("--disable-browser-side-navigation")
     opts.add_argument("--disable-extensions")
-    opts.add_argument("--disable-gpu")
     opts.add_argument("--disable-features=VizDisplayCompositor")
 
     # Headless new mode (Chrome 109+, reduced fingerprint diff vs headed)
@@ -710,6 +694,67 @@ def start(config=None):
             opts.binary_location = p
             break
 
+    return opts
+
+
+def _cleanup_stale_chrome():
+    """Kill any stale Chrome/chromedriver processes that might interfere."""
+    import subprocess
+    try:
+        # Kill any orphaned chromedriver processes
+        subprocess.run(["pkill", "-f", "chromedriver"], capture_output=True, timeout=5)
+        # Kill any orphaned Chrome processes (careful to not kill user's Chrome)
+        subprocess.run(["pkill", "-f", "chrome.*--remote-debugging"], capture_output=True, timeout=5)
+    except Exception:
+        pass  # Ignore errors - best effort cleanup
+
+
+def start(config=None):
+    """Start the browser with full stealth configuration.
+
+    Config options (all optional, passed via env vars or startup command):
+      AUTOMATE_PROXY        - proxy URL (http://user:pass@host:port or socks5://...)
+      AUTOMATE_PROFILE_DIR  - persistent Chrome profile directory
+      AUTOMATE_HEADLESS     - "new" to use --headless=new instead of Xvfb
+      AUTOMATE_REGION       - fingerprint region (US/EU) for timezone/locale
+    """
+    global browser, display, _stealth_profile
+    config = config or {}
+
+    # Clean up any stale Chrome processes before starting
+    _cleanup_stale_chrome()
+
+    # Generate a random but internally-consistent fingerprint
+    region = config.get("region", os.environ.get("AUTOMATE_REGION", "US"))
+    _stealth_profile = _generate_fingerprint_profile(region)
+    screen_prof = _stealth_profile["screen"]
+    platform_prof = _stealth_profile["platform"]
+    webgl_prof = _stealth_profile["webgl"]
+    tz_prof = _stealth_profile["timezone"]
+
+    # Determine headless strategy
+    # Prefer Xvfb when available (even on Termux/proot where --headless=new
+    # crashes due to GPU process failures). Only force headless=new if
+    # explicitly requested or Xvfb (pyvirtualdisplay) isn't installed.
+    use_headless_new = (
+        config.get("headless", os.environ.get("AUTOMATE_HEADLESS", "")) == "new"
+        or _Display is None
+    )
+
+    if not use_headless_new:
+        try:
+            display = _Display(
+                visible=False, size=(screen_prof["width"], screen_prof["height"])
+            )
+            display.start()
+        except Exception as e:
+            sys.stderr.write(
+                f"[engine] Xvfb failed ({e}), falling back to --headless=new\n"
+            )
+            display = None
+            use_headless_new = True
+
+    # Find chromedriver path
     driver_paths = [
         "/data/data/com.termux/files/usr/bin/chromedriver",
         "/usr/bin/chromedriver",
@@ -722,17 +767,46 @@ def start(config=None):
             driver_path = p
             break
 
-    kwargs = {"options": opts, "use_subprocess": True}
-    if driver_path:
-        kwargs["driver_executable_path"] = driver_path
+    # Helper to build kwargs with fresh options (can't reuse ChromeOptions)
+    def make_kwargs(with_version=True):
+        opts = _build_chrome_options(screen_prof, use_headless_new, config)
+        kw = {"options": opts, "use_subprocess": True}
+        if driver_path:
+            kw["driver_executable_path"] = driver_path
+        if with_version:
+            kw["version_main"] = 144
+        return kw
 
-    try:
-        kwargs["version_main"] = 144
-        browser = uc.Chrome(**kwargs)
-    except Exception:
-        if "version_main" in kwargs:
-            del kwargs["version_main"]
-        browser = uc.Chrome(**kwargs)
+    # Try multiple times with different configurations
+    last_error = None
+    for attempt in range(3):
+        try:
+            if attempt == 0:
+                # First attempt: with version_main
+                browser = uc.Chrome(**make_kwargs(with_version=True))
+            elif attempt == 1:
+                # Second attempt: without version_main
+                browser = uc.Chrome(**make_kwargs(with_version=False))
+            else:
+                # Third attempt: force headless=new if we weren't already using it
+                if not use_headless_new:
+                    sys.stderr.write("[engine] Retrying with --headless=new\n")
+                    use_headless_new = True
+                    if display:
+                        try:
+                            display.stop()
+                        except:
+                            pass
+                        display = None
+                browser = uc.Chrome(**make_kwargs(with_version=False))
+            break  # Success, exit retry loop
+        except Exception as e:
+            last_error = e
+            sys.stderr.write(f"[engine] Chrome start attempt {attempt + 1} failed: {e}\n")
+            time.sleep(1)  # Brief pause before retry
+    else:
+        # All attempts failed
+        raise last_error or Exception("Failed to start Chrome after 3 attempts")
 
     # Apply selenium-stealth with profile-matched values
     stealth(
@@ -2119,6 +2193,71 @@ def handle_command(cmd):
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
+def _is_browser_alive():
+    """Check if the browser is still responsive."""
+    global browser
+    if browser is None:
+        return False
+    try:
+        # Simple check - try to get current URL
+        _ = browser.current_url
+        return True
+    except Exception:
+        return False
+
+
+def _restart_browser():
+    """Restart the browser after a crash."""
+    global browser, display
+    sys.stderr.write("[engine] Browser crashed, attempting restart...\n")
+
+    # Clean up old browser
+    try:
+        if browser:
+            browser.quit()
+    except Exception:
+        pass
+    browser = None
+
+    # Clean up display
+    try:
+        if display:
+            display.stop()
+    except Exception:
+        pass
+    display = None
+
+    # Restart
+    try:
+        start()
+        sys.stderr.write("[engine] Browser restarted successfully\n")
+        return True
+    except Exception as e:
+        sys.stderr.write(f"[engine] Failed to restart browser: {e}\n")
+        return False
+
+
+# Errors that indicate Chrome has crashed and needs restart
+CRASH_INDICATORS = [
+    "chrome not reachable",
+    "session not created",
+    "no such session",
+    "session deleted",
+    "target window already closed",
+    "browser has crashed",
+    "disconnected",
+    "connection refused",
+    "invalid session id",
+    "unable to connect",
+]
+
+
+def _is_crash_error(error_msg: str) -> bool:
+    """Check if an error indicates the browser has crashed."""
+    error_lower = error_msg.lower()
+    return any(indicator in error_lower for indicator in CRASH_INDICATORS)
+
+
 if __name__ == "__main__":
     start()
     print("READY", flush=True)
@@ -2135,12 +2274,29 @@ if __name__ == "__main__":
             if cmd_data.get("action") == "close":
                 sys.exit(0)
         except Exception as e:
+            error_msg = str(e)
+            tb = traceback.format_exc()
+
+            # Check if this is a crash that needs restart
+            if _is_crash_error(error_msg) or _is_crash_error(tb):
+                if _restart_browser():
+                    # Retry the command once after restart
+                    try:
+                        result = handle_command(cmd_data)
+                        print(json.dumps(result), flush=True)
+                        continue
+                    except Exception as retry_e:
+                        error_msg = f"Retry after restart failed: {retry_e}"
+                        tb = traceback.format_exc()
+                else:
+                    error_msg = f"Browser crashed and restart failed: {error_msg}"
+
             print(
                 json.dumps(
                     {
                         "success": False,
-                        "error": str(e),
-                        "traceback": traceback.format_exc(),
+                        "error": error_msg,
+                        "traceback": tb,
                     }
                 ),
                 flush=True,

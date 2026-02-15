@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
-import { loadConfig, saveConfig, getConfigPath, getConfigDir } from './config/loader.js';
+import { loadConfig, saveConfig, getConfigPath, getConfigDir, watchConfig, onConfigChange } from './config/loader.js';
 import { Agent } from './agent/agent.js';
 import { SessionManager } from './gateway/session-manager.js';
 import { GatewayServer } from './gateway/server.js';
@@ -13,6 +13,9 @@ import { runOnboardWizard } from './onboard/wizard.js';
 import { wireHeartbeat, isHeartbeatJob } from './heartbeat/manager.js';
 import { PluginManager } from './plugins/manager.js';
 import { AgentRouter } from './agents/router.js';
+import { setSubAgentPersistPath, getInterruptedAgents, resumeAgent } from './agent/tools/subagent.js';
+import { setCanvasPersistPath, setCanvasUploadDir, setCanvasServices } from './canvas/canvas-manager.js';
+import { join } from 'node:path';
 import {
   fetchRegistry, searchSkills, installSkill, uninstallSkill,
   updateSkill, updateAllSkills, listInstalled,
@@ -63,6 +66,19 @@ program
     // Wire memory manager into agent
     agent.setMemoryManager(memoryManager);
 
+    // Set up subagent persistence path (inside sessions dir)
+    const subagentPersistPath = join(config.sessions.directory.replace(/^~/, process.env.HOME || ''), 'subagents.json');
+    setSubAgentPersistPath(subagentPersistPath);
+
+    // Set up canvas persistence path (inside sessions dir)
+    const canvasPersistPath = join(config.sessions.directory.replace(/^~/, process.env.HOME || ''), 'canvases.json');
+    setCanvasPersistPath(canvasPersistPath);
+    // Set up canvas upload directory
+    const canvasUploadDir = join(config.memory.directory.replace(/^~/, process.env.HOME || ''), 'uploads');
+    setCanvasUploadDir(canvasUploadDir);
+    // Wire core services to canvas (same access as plugins)
+    setCanvasServices({ memory: memoryManager, sessions: undefined, scheduler: undefined, agent });
+
     // Wire skills loader into agent (for ClawHub hot-install)
     agent.setSkillsLoader(skillsLoader);
 
@@ -104,6 +120,22 @@ program
     // Start skills hot-reload watcher
     skillsLoader.startWatching();
 
+    // Start config file watcher for live reload
+    onConfigChange((newConfig) => {
+      // Update agent config (system prompt, power steering, etc.)
+      agent.updateConfig(newConfig);
+      // Update heartbeat interval and jitter if changed
+      if (heartbeatManager && newConfig.heartbeat?.intervalMinutes) {
+        const newIntervalMs = newConfig.heartbeat.intervalMinutes * 60 * 1000;
+        const newJitterMs = (newConfig.heartbeat.jitterMinutes || 0) * 60 * 1000;
+        heartbeatManager.updateInterval(newIntervalMs, newJitterMs);
+        console.log(`[config] Applied: systemPrompt, powerSteering, temperature, maxTokens, heartbeat.intervalMinutes=${newConfig.heartbeat.intervalMinutes}, jitterMinutes=${newConfig.heartbeat.jitterMinutes || 0}`);
+      } else {
+        console.log(`[config] Applied: systemPrompt, powerSteering, temperature, maxTokens`);
+      }
+    });
+    watchConfig();
+
     // Load plugins
     let pluginManager: PluginManager | undefined;
     if (config.plugins?.enabled !== false) {
@@ -129,12 +161,14 @@ program
     }
 
     // Wire heartbeat system
+    const heartbeatIntervalMs = (config.heartbeat?.intervalMinutes || 30) * 60 * 1000;
+    const heartbeatJitterMs = (config.heartbeat?.jitterMinutes || 5) * 60 * 1000;
     if (config.heartbeat?.enabled && scheduler) {
-      heartbeatManager = wireHeartbeat(memoryManager, agent, scheduler, true);
+      heartbeatManager = wireHeartbeat(memoryManager, agent, scheduler, true, undefined, heartbeatIntervalMs, heartbeatJitterMs);
       agent.setHeartbeatManager(heartbeatManager);
     } else if (scheduler) {
       // Create but don't auto-start (user can /heartbeat on)
-      heartbeatManager = wireHeartbeat(memoryManager, agent, scheduler, false);
+      heartbeatManager = wireHeartbeat(memoryManager, agent, scheduler, false, undefined, heartbeatIntervalMs, heartbeatJitterMs);
       agent.setHeartbeatManager(heartbeatManager);
     }
     // Point heartbeat at main session if one is set
@@ -145,6 +179,24 @@ program
 
     // Start gateway
     const gateway = new GatewayServer(config, agent, sessionManager);
+
+    // Wire gateway broadcast functions to plugin manager so plugins can stream responses to webchat
+    if (pluginManager) {
+      pluginManager.setGatewayBroadcast(
+        (sessionId, payload) => gateway.sendToSession(sessionId, payload),
+        (payload) => gateway.broadcastToAll(payload),
+      );
+    }
+
+    // Wire gateway broadcast functions to canvas (same power as plugins)
+    setCanvasServices({
+      memory: memoryManager, sessions: sessionManager, scheduler, agent,
+      sendToSession: (sessionId, payload) => gateway.sendToSession(sessionId, payload),
+      broadcastToAll: (payload) => gateway.broadcastToAll(payload),
+    });
+
+    // Wire sendToSession to agent so automated notifications (subagent, heartbeat) stream to webchat
+    agent.setSendToSession((sessionId, payload) => gateway.sendToSession(sessionId, payload));
 
     // Wire heartbeat broadcaster to push live events to all WebSocket clients
     if (heartbeatManager) {
@@ -202,6 +254,20 @@ program
     console.log(`  Memory: ${config.memory.directory}`);
     console.log(`  Config: ${getConfigPath()}`);
     console.log(`  Data: ${getConfigDir()}`);
+
+    // Resume any subagents that were interrupted by restart
+    const interruptedAgents = getInterruptedAgents();
+    if (interruptedAgents.length > 0) {
+      console.log(`  Resuming ${interruptedAgents.length} interrupted subagent(s)...`);
+      for (const agent of interruptedAgents) {
+        // Small delay between resumes to avoid overwhelming
+        setTimeout(() => {
+          resumeAgent(agent).catch(err => {
+            console.error(`[subagent] Failed to resume "${agent.name}": ${err}`);
+          });
+        }, 1000);
+      }
+    }
 
     // Graceful shutdown
     const shutdown = async () => {

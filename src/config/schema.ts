@@ -5,6 +5,7 @@ export const ProviderSchema = z.object({
   model: z.string(),
   apiBase: z.string(),
   apiKey: z.string().optional(),
+  apiType: z.enum(['chat', 'responses']).default('chat'),  // chat = /chat/completions, responses = /responses
   maxTokens: z.number().optional(),
   temperature: z.number().optional(),
   priority: z.number().default(0),  // lower = tried first
@@ -65,6 +66,7 @@ export const ConfigSchema = z.object({
     model: z.string().default('claude-opus-4.6'),
     apiBase: z.string().default('http://localhost:4141/v1'),
     apiKey: z.string().optional(),
+    apiType: z.enum(['chat', 'responses']).default('chat'),  // chat = /chat/completions, responses = /responses
     systemPrompt: z.string().default('You are AutoMate, a fast and capable personal AI assistant. You have access to tools for running shell commands, reading/writing files, browsing the web, and more. Be concise and effective.'),
     maxTokens: z.number().default(8192),
     temperature: z.number().default(0.3),
@@ -74,6 +76,12 @@ export const ConfigSchema = z.object({
     providers: z.array(ProviderSchema).default([]),
     // Model aliases for quick switching
     aliases: z.array(ModelAliasSchema).default([]),
+    // Power steering: periodically re-inject system prompt to keep model on track
+    powerSteering: z.object({
+      enabled: z.boolean().default(true),
+      interval: z.number().default(25),  // re-inject every N messages
+      role: z.enum(['system', 'user', 'both']).default('system'),  // inject as system, user, or both for maximum effect
+    }).default({}),
   }).default({}),
   // Multi-agent: define named agents with isolated memory/sessions/skills
   agents: z.array(AgentProfileSchema).default([]),
@@ -198,6 +206,7 @@ export const ConfigSchema = z.object({
   heartbeat: z.object({
     enabled: z.boolean().default(false),
     intervalMinutes: z.number().default(30),   // how often to check in
+    jitterMinutes: z.number().default(5),      // random +/- variance to avoid detection patterns
   }).default({}),
   tts: TTSConfigSchema,
 });

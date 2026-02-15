@@ -7,13 +7,20 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULTS_DIR = join(__dirname, 'defaults');
 
 // Files that get default templates on first run
+// MEMORY.md is now Tier 1 (core memory — always injected, hard-capped)
+// memory/ subfolder holds Tier 2 files (topic-based, loaded on-demand)
+// Daily logs (YYYY-MM-DD.md) are Tier 3 (raw journal, today+yesterday injected)
 const TEMPLATE_FILES = ['PERSONALITY.md', 'BOOTSTRAP.md', 'IDENTITY.md', 'USER.md', 'AGENTS.md', 'HEARTBEAT.md'];
 
-// Files injected into the system prompt (order matters)
-const PROMPT_FILES = ['AGENTS.md', 'PERSONALITY.md', 'IDENTITY.md', 'USER.md', 'TOOLS.md'];
+// Files that should NOT be auto-injected (handled specially or reserved)
+const SKIP_PROMPT_FILES = ['MEMORY.md', 'BOOTSTRAP.md'];
 
 // Files to index for semantic search (all .md files are indexed)
 const SKIP_INDEX_FILES = ['.vector-index.json'];
+
+// Tier 1 hard cap (characters). Keeps core memory from bloating context.
+// ~8000 chars ≈ ~2000 tokens — doubled from original 4000.
+const TIER1_MAX_CHARS = 8000;
 
 export class MemoryManager {
   private dir: string;
@@ -25,6 +32,7 @@ export class MemoryManager {
     this.dir = memoryDir;
     mkdirSync(this.dir, { recursive: true });
     this.ensureDefaults();
+    this._ensureTier2Dir();
 
     // Store config even if disabled — needed for /index on later
     if (embeddingConfig) {
@@ -53,6 +61,21 @@ export class MemoryManager {
     }
   }
 
+  /** Ensure the memory/ and logs/ subfolders exist */
+  private _ensureTier2Dir(): void {
+    mkdirSync(join(this.dir, 'memory'), { recursive: true });
+    mkdirSync(join(this.dir, 'logs'), { recursive: true });
+    mkdirSync(join(this.dir, 'archive'), { recursive: true });
+  }
+
+  private get _logsDir(): string {
+    return join(this.dir, 'logs');
+  }
+
+  private get _archiveDir(): string {
+    return join(this.dir, 'archive');
+  }
+
   // ── MEMORY.md (curated long-term) ──────────────────────────────────────
 
   getMemory(): string {
@@ -75,54 +98,156 @@ export class MemoryManager {
     this._queueReindex('MEMORY.md', newContent);
   }
 
-  // ── Daily logs ────────────────────────────────────────────────────────
+  // ── Tier 2 Memory (topic-based, on-demand) ────────────────────────────
+
+  private get _tier2Dir(): string {
+    return join(this.dir, 'memory');
+  }
+
+  /** List all Tier 2 topic files */
+  listTier2(): { name: string; size: number; modified: string }[] {
+    const dir = this._tier2Dir;
+    if (!existsSync(dir)) return [];
+    const files = readdirSync(dir).filter(f => f.endsWith('.md'));
+    return files.map(f => {
+      const stat = statSync(join(dir, f));
+      return { name: f, size: stat.size, modified: stat.mtime.toISOString() };
+    });
+  }
+
+  /** Read a Tier 2 topic file */
+  getTier2(topic: string): string {
+    const name = topic.endsWith('.md') ? topic : `${topic}.md`;
+    const path = join(this._tier2Dir, name);
+    if (!existsSync(path)) return '';
+    return readFileSync(path, 'utf-8');
+  }
+
+  /** Write a Tier 2 topic file (full replace) */
+  saveTier2(topic: string, content: string): void {
+    const name = topic.endsWith('.md') ? topic : `${topic}.md`;
+    const path = join(this._tier2Dir, name);
+    writeFileSync(path, content);
+    this._queueReindex(`memory/${name}`, content);
+  }
+
+  /** Append to a Tier 2 topic file */
+  appendTier2(topic: string, entry: string): void {
+    const name = topic.endsWith('.md') ? topic : `${topic}.md`;
+    const path = join(this._tier2Dir, name);
+    const existing = existsSync(path) ? readFileSync(path, 'utf-8') : '';
+    const separator = existing && !existing.endsWith('\n') ? '\n' : '';
+    const newContent = existing + separator + entry + '\n';
+    writeFileSync(path, newContent);
+    this._queueReindex(`memory/${name}`, newContent);
+  }
+
+  /** Delete a Tier 2 topic file */
+  deleteTier2(topic: string): void {
+    const name = topic.endsWith('.md') ? topic : `${topic}.md`;
+    const path = join(this._tier2Dir, name);
+    if (existsSync(path)) unlinkSync(path);
+  }
+
+  // ── Archive (Tier 4 — cold storage, recordkeeping) ────────────────────
+
+  /** List all archive files */
+  listArchive(): { name: string; size: number; modified: string }[] {
+    const dir = this._archiveDir;
+    if (!existsSync(dir)) return [];
+    const files = readdirSync(dir).filter(f => f.endsWith('.md'));
+    return files.map(f => {
+      const stat = statSync(join(dir, f));
+      return { name: f, size: stat.size, modified: stat.mtime.toISOString() };
+    });
+  }
+
+  /** Read an archive file */
+  getArchive(topic: string): string {
+    const name = topic.endsWith('.md') ? topic : `${topic}.md`;
+    const path = join(this._archiveDir, name);
+    if (!existsSync(path)) return '';
+    return readFileSync(path, 'utf-8');
+  }
+
+  /** Write an archive file (full replace) */
+  saveArchive(topic: string, content: string): void {
+    const name = topic.endsWith('.md') ? topic : `${topic}.md`;
+    const path = join(this._archiveDir, name);
+    writeFileSync(path, content);
+    this._queueReindex(`archive/${name}`, content);
+  }
+
+  /** Append to an archive file */
+  appendArchive(topic: string, entry: string): void {
+    const name = topic.endsWith('.md') ? topic : `${topic}.md`;
+    const path = join(this._archiveDir, name);
+    const existing = existsSync(path) ? readFileSync(path, 'utf-8') : '';
+    const separator = existing && !existing.endsWith('\n') ? '\n' : '';
+    const newContent = existing + separator + entry + '\n';
+    writeFileSync(path, newContent);
+    this._queueReindex(`archive/${name}`, newContent);
+  }
+
+  /** Delete an archive file */
+  deleteArchive(topic: string): void {
+    const name = topic.endsWith('.md') ? topic : `${topic}.md`;
+    const path = join(this._archiveDir, name);
+    if (existsSync(path)) unlinkSync(path);
+  }
+
+  // ── Daily logs (stored in logs/ subfolder) ──────────────────────────
 
   appendDailyLog(entry: string): void {
     const date = new Date().toISOString().split('T')[0];
     const filename = `${date}.md`;
-    const path = join(this.dir, filename);
+    const path = join(this._logsDir, filename);
     const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
     appendFileSync(path, `\n## ${timestamp}\n${entry}\n`);
     // Re-index daily log after append
     const content = readFileSync(path, 'utf-8');
-    this._queueReindex(filename, content);
+    this._queueReindex(`logs/${filename}`, content);
   }
 
   /** Get today's daily log content */
   getDailyLog(date?: string): string {
     const d = date || new Date().toISOString().split('T')[0];
-    const path = join(this.dir, `${d}.md`);
-    if (!existsSync(path)) return '';
-    return readFileSync(path, 'utf-8');
+    // Check logs/ subfolder first, fall back to root for migration
+    const logsPath = join(this._logsDir, `${d}.md`);
+    if (existsSync(logsPath)) return readFileSync(logsPath, 'utf-8');
+    const rootPath = join(this.dir, `${d}.md`);
+    if (existsSync(rootPath)) return readFileSync(rootPath, 'utf-8');
+    return '';
   }
 
-  /** Get recent daily logs (today + yesterday) for prompt injection */
-  getRecentDailyLogs(): string {
-    const today = new Date();
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-
-    const todayStr = today.toISOString().split('T')[0];
-    const yesterdayStr = yesterday.toISOString().split('T')[0];
-
-    const sections: string[] = [];
-
-    const yesterdayLog = this.getDailyLog(yesterdayStr);
-    if (yesterdayLog) {
-      // Truncate yesterday to last 2000 chars to save context
-      const trimmed = yesterdayLog.length > 2000
-        ? '...\n' + yesterdayLog.slice(-2000)
-        : yesterdayLog;
-      sections.push(`### Yesterday (${yesterdayStr})\n${trimmed}`);
+  /** Get recent daily log dates (for Tier 2 listing) */
+  getRecentLogDates(count: number = 5): string[] {
+    const dates: string[] = [];
+    // Check logs/ subfolder
+    if (existsSync(this._logsDir)) {
+      const files = readdirSync(this._logsDir)
+        .filter(f => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
+        .sort()
+        .reverse();
+      for (const f of files.slice(0, count)) {
+        dates.push(f.replace('.md', ''));
+      }
     }
-
-    const todayLog = this.getDailyLog(todayStr);
-    if (todayLog) {
-      sections.push(`### Today (${todayStr})\n${todayLog}`);
+    // Also check root for unmigrated logs
+    if (dates.length < count) {
+      const rootFiles = readdirSync(this.dir)
+        .filter(f => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
+        .sort()
+        .reverse();
+      for (const f of rootFiles) {
+        const date = f.replace('.md', '');
+        if (!dates.includes(date)) {
+          dates.push(date);
+          if (dates.length >= count) break;
+        }
+      }
     }
-
-    if (sections.length === 0) return '';
-    return sections.join('\n\n');
+    return dates;
   }
 
   // ── Identity files (PERSONALITY.md, USER.md, IDENTITY.md, etc.) ─────────────
@@ -280,6 +405,33 @@ export class MemoryManager {
         }
       }
 
+      // Also collect .md files from memory/ subdirectory (Tier 2 topics)
+      const tier2Dir = this._tier2Dir;
+      if (existsSync(tier2Dir)) {
+        const tier2Files = readdirSync(tier2Dir).filter(f => f.endsWith('.md'));
+        for (const f of tier2Files) {
+          topFiles.push({ key: `memory/${f}`, path: join(tier2Dir, f) });
+        }
+      }
+
+      // Also collect .md files from logs/ subdirectory (daily logs)
+      const logsDir = this._logsDir;
+      if (existsSync(logsDir)) {
+        const logFiles = readdirSync(logsDir).filter(f => f.endsWith('.md'));
+        for (const f of logFiles) {
+          topFiles.push({ key: `logs/${f}`, path: join(logsDir, f) });
+        }
+      }
+
+      // Also collect .md files from archive/ subdirectory (Tier 4 archive)
+      const archiveDir = this._archiveDir;
+      if (existsSync(archiveDir)) {
+        const archiveFiles = readdirSync(archiveDir).filter(f => f.endsWith('.md'));
+        for (const f of archiveFiles) {
+          topFiles.push({ key: `archive/${f}`, path: join(archiveDir, f) });
+        }
+      }
+
       for (const { key, path } of topFiles) {
         const content = readFileSync(path, 'utf-8');
 
@@ -391,11 +543,43 @@ export class MemoryManager {
 
   listFiles(): { name: string; size: number; modified: string }[] {
     if (!existsSync(this.dir)) return [];
-    const files = readdirSync(this.dir).filter(f => f.endsWith('.md'));
-    return files.map(f => {
+    const results: { name: string; size: number; modified: string }[] = [];
+    
+    // Root-level .md files (MEMORY.md, identity files, unmigrated logs)
+    const rootFiles = readdirSync(this.dir).filter(f => f.endsWith('.md'));
+    for (const f of rootFiles) {
       const stat = statSync(join(this.dir, f));
-      return { name: f, size: stat.size, modified: stat.mtime.toISOString() };
-    });
+      results.push({ name: f, size: stat.size, modified: stat.mtime.toISOString() });
+    }
+    
+    // memory/ subfolder (Tier 2 topics)
+    if (existsSync(this._tier2Dir)) {
+      const memFiles = readdirSync(this._tier2Dir).filter(f => f.endsWith('.md'));
+      for (const f of memFiles) {
+        const stat = statSync(join(this._tier2Dir, f));
+        results.push({ name: `memory/${f}`, size: stat.size, modified: stat.mtime.toISOString() });
+      }
+    }
+    
+    // logs/ subfolder
+    if (existsSync(this._logsDir)) {
+      const logFiles = readdirSync(this._logsDir).filter(f => f.endsWith('.md'));
+      for (const f of logFiles) {
+        const stat = statSync(join(this._logsDir, f));
+        results.push({ name: `logs/${f}`, size: stat.size, modified: stat.mtime.toISOString() });
+      }
+    }
+    
+    // archive/ subfolder
+    if (existsSync(this._archiveDir)) {
+      const archiveFiles = readdirSync(this._archiveDir).filter(f => f.endsWith('.md'));
+      for (const f of archiveFiles) {
+        const stat = statSync(join(this._archiveDir, f));
+        results.push({ name: `archive/${f}`, size: stat.size, modified: stat.mtime.toISOString() });
+      }
+    }
+    
+    return results;
   }
 
   // ── System prompt injection ───────────────────────────────────────────
@@ -411,8 +595,17 @@ export class MemoryManager {
       }
     }
 
-    // Identity/personality files
-    for (const file of PROMPT_FILES) {
+    // Dynamically load ALL top-level .md files (except special ones handled separately)
+    const topLevelFiles = existsSync(this.dir)
+      ? readdirSync(this.dir).filter(f =>
+          f.endsWith('.md') &&
+          !SKIP_PROMPT_FILES.includes(f) &&
+          // Skip date-formatted files (daily logs that weren't migrated)
+          !/^\d{4}-\d{2}-\d{2}\.md$/.test(f)
+        ).sort()
+      : [];
+
+    for (const file of topLevelFiles) {
       const content = this.getIdentityFile(file);
       if (content) {
         // Truncate large files to prevent context overflow
@@ -423,19 +616,33 @@ export class MemoryManager {
       }
     }
 
-    // Curated long-term memory
+    // Curated long-term memory (Tier 1 — hard capped)
     const memory = this.getMemory();
     if (memory) {
-      const trimmed = memory.length > 8000
-        ? memory.slice(0, 8000) + '\n\n_(truncated — use memory_search for full access)_'
+      const trimmed = memory.length > TIER1_MAX_CHARS
+        ? memory.slice(0, TIER1_MAX_CHARS) + '\n\n_(truncated — Tier 1 memory exceeds ' + TIER1_MAX_CHARS + ' char cap. Prune it or move details to Tier 2 topic files via `memory` tool.)_'
         : memory;
       sections.push(`## Long-term Memory\n${trimmed}`);
     }
 
-    // Recent daily logs (today + yesterday)
-    const recentLogs = this.getRecentDailyLogs();
-    if (recentLogs) {
-      sections.push(`## Recent Daily Log\n${recentLogs}`);
+    // Tier 2 summary (list topic names + recent log dates so agent knows what's available)
+    const tier2Files = this.listTier2();
+    const recentLogs = this.getRecentLogDates(5);
+    const archiveFiles = this.listArchive();
+    if (tier2Files.length > 0 || recentLogs.length > 0 || archiveFiles.length > 0) {
+      const parts: string[] = ['Available via `memory` tool (NOT auto-loaded — use `memory search` or `memory tier2_read`/`memory log`):'];
+      if (tier2Files.length > 0) {
+        const names = tier2Files.map(f => f.name.replace('.md', '')).join(', ');
+        parts.push(`Topics: ${names}`);
+      }
+      if (recentLogs.length > 0) {
+        parts.push(`Recent logs: ${recentLogs.join(', ')}`);
+      }
+      if (archiveFiles.length > 0) {
+        const names = archiveFiles.map(f => f.name.replace('.md', '')).join(', ');
+        parts.push(`Archive (cold storage): ${names}`);
+      }
+      sections.push(`## Tier 2 — Reference Memory & Logs\n${parts.join('\n')}`);
     }
 
     if (sections.length === 0) return '';

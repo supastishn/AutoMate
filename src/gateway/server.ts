@@ -15,9 +15,10 @@ import type { AgentRouter, AgentProfile } from '../agents/router.js';
 import type { WebSocket } from 'ws';
 import { setCanvasBroadcaster, getCanvas, getAllCanvases, type CanvasEvent } from '../canvas/canvas-manager.js';
 import { setImageBroadcaster, type ImageEvent } from '../agent/tools/image.js';
+import { setBrowserImageBroadcaster } from '../agent/tools/browser.js';
 import { PresenceManager, type PresenceEvent, type TypingEvent } from './presence.js';
 import { fetchRegistry, searchSkills, fetchSkillContent, vetSkillContent, formatVetResult, installSkill, uninstallSkill, updateSkill, updateAllSkills, listInstalled } from '../clawhub/registry.js';
-import { getBackgroundAgents, clearCompletedAgents } from '../agent/tools/subagent.js';
+import { getBackgroundAgents, clearCompletedAgents, killSubAgent } from '../agent/tools/subagent.js';
 
 interface ContextInfo {
   used: number;
@@ -69,6 +70,130 @@ export class GatewayServer {
     return { used, limit, percent: Math.round((used / limit) * 100) };
   }
 
+  /** Get detailed breakdown of what's using context */
+  private getContextBreakdown(sessionId: string): {
+    systemPrompt: number;
+    toolDefinitions: number;
+    userMessages: number;
+    assistantMessages: number;
+    toolResults: number;
+    total: number;
+    limit: number;
+    details: {
+      systemPrompt: { name: string; tokens: number }[];
+      tools: { name: string; tokens: number }[];
+    };
+  } {
+    const messages = this.sessionManager.getMessages(sessionId);
+    const limit = this.config.sessions.contextLimit;
+
+    // Estimate tokens based on character length / 4
+    const estimateTokens = (text: string) => Math.ceil((text || '').length / 4);
+
+    let systemPromptTotal = 0;
+    let userMessages = 0;
+    let assistantMessages = 0;
+    let toolResults = 0;
+
+    for (const m of messages) {
+      const tokens = estimateTokens(m.content || '');
+      const toolCallTokens = m.tool_calls ? estimateTokens(JSON.stringify(m.tool_calls)) : 0;
+
+      switch (m.role) {
+        case 'system':
+          systemPromptTotal += tokens;
+          break;
+        case 'user':
+          userMessages += tokens;
+          break;
+        case 'assistant':
+          assistantMessages += tokens + toolCallTokens;
+          break;
+        case 'tool':
+          toolResults += tokens;
+          break;
+      }
+    }
+
+    // Get detailed system prompt breakdown from agent
+    const systemPromptDetails: { name: string; tokens: number }[] = [];
+
+    // Base system prompt from config
+    const basePromptTokens = estimateTokens(this.config.agent.systemPrompt);
+    systemPromptDetails.push({ name: 'Base Prompt', tokens: basePromptTokens });
+    systemPromptTotal += basePromptTokens;
+
+    // Memory files
+    const mm = this.agent.getMemoryManager();
+    if (mm) {
+      const memoryFiles = ['PERSONALITY.md', 'USER.md', 'IDENTITY.md', 'AGENTS.md', 'TOOLS.md', 'MEMORY.md'];
+      for (const file of memoryFiles) {
+        const content = mm.getIdentityFile(file);
+        if (content) {
+          const tokens = estimateTokens(content);
+          systemPromptDetails.push({ name: file, tokens });
+          systemPromptTotal += tokens;
+        }
+      }
+    }
+
+    // Skills
+    const skills = this.agent.getLoadedSkills?.() || [];
+    if (skills.length > 0) {
+      // Get skills loader to access actual content
+      const skillsLoader = (this.agent as any).skillsLoader;
+      if (skillsLoader) {
+        const skillsList = skillsLoader.listSkills?.() || [];
+        for (const skill of skillsList) {
+          const tokens = estimateTokens(skill.content || '');
+          systemPromptDetails.push({ name: `skill:${skill.name}`, tokens });
+          systemPromptTotal += tokens;
+        }
+      }
+    }
+
+    // Environment context (date, time, platform, etc.)
+    systemPromptDetails.push({ name: 'Environment', tokens: 50 });
+    systemPromptTotal += 50;
+
+    // Tool catalog (deferred tools list)
+    const toolRegistry = this.agent.getToolRegistry();
+    const sessionView = toolRegistry.getSessionView(sessionId);
+    const deferredCatalog = sessionView.getDeferredCatalog();
+    if (deferredCatalog.length > 0) {
+      const catalogTokens = estimateTokens(deferredCatalog.map(e => `${e.tool.name}: ${e.summary}`).join('\n'));
+      systemPromptDetails.push({ name: 'Tool Catalog', tokens: catalogTokens });
+      systemPromptTotal += catalogTokens;
+    }
+
+    // Get tool definitions breakdown
+    const toolsDetails: { name: string; tokens: number }[] = [];
+    const toolDefs = sessionView.getToolDefs();
+    let toolDefinitionsTotal = 0;
+    for (const def of toolDefs) {
+      const toolJson = JSON.stringify(def);
+      const tokens = estimateTokens(toolJson);
+      toolsDetails.push({ name: def.function.name, tokens });
+      toolDefinitionsTotal += tokens;
+    }
+
+    const total = systemPromptTotal + toolDefinitionsTotal + userMessages + assistantMessages + toolResults;
+
+    return {
+      systemPrompt: systemPromptTotal,
+      toolDefinitions: toolDefinitionsTotal,
+      userMessages,
+      assistantMessages,
+      toolResults,
+      total,
+      limit,
+      details: {
+        systemPrompt: systemPromptDetails,
+        tools: toolsDetails,
+      },
+    };
+  }
+
   async start(): Promise<void> {
     await this.app.register(fastifyCors, { origin: true });
     await this.app.register(fastifyWebsocket);
@@ -88,6 +213,14 @@ export class GatewayServer {
 
     // Wire image broadcaster to push images to all webchat clients
     setImageBroadcaster((event: ImageEvent) => {
+      const msg = JSON.stringify(event);
+      for (const [, client] of this.webChatClients) {
+        try { client.ws.send(msg); } catch {}
+      }
+    });
+
+    // Wire browser screenshots to display in chat (same format as image tool)
+    setBrowserImageBroadcaster((event) => {
       const msg = JSON.stringify(event);
       for (const [, client] of this.webChatClients) {
         try { client.ws.send(msg); } catch {}
@@ -115,8 +248,8 @@ export class GatewayServer {
 
     // Auth middleware
     this.app.addHook('onRequest', async (req, reply) => {
-      // Skip auth for WS upgrade and static files
-      if (req.url === '/ws' || !req.url.startsWith('/api/')) return;
+      // Skip auth for WS upgrade, static files, and uploaded assets
+      if (req.url === '/ws' || !req.url.startsWith('/api/') || req.url.startsWith('/api/uploads/')) return;
       if (this.config.gateway.auth.mode === 'none') return;
 
       const token = req.headers.authorization?.replace('Bearer ', '');
@@ -274,6 +407,51 @@ export class GatewayServer {
       return { session, processing: this.agent.isProcessing(req.params.id) };
     });
 
+    // Get full context including computed system prompt
+    this.app.get<{ Params: { id: string } }>('/api/sessions/:id/context', async (req) => {
+      const session = this.sessionManager.getSession(req.params.id);
+      if (!session) return { error: 'Not found' };
+
+      // Build system prompt like the agent does
+      let systemPrompt = this.config.agent.systemPrompt;
+
+      // Add environment
+      const now = new Date();
+      const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+      systemPrompt += `\n\n# Environment\n- Date: ${days[now.getDay()]}, ${months[now.getMonth()]} ${now.getDate()}, ${now.getFullYear()}`;
+      systemPrompt += `\n- Platform: ${process.platform}`;
+      systemPrompt += `\n- Working Directory: ${process.cwd()}`;
+
+      // Add memory files
+      const mm = this.agent.getMemoryManager();
+      if (mm) {
+        const memoryPrompt = mm.getPromptInjection();
+        if (memoryPrompt) systemPrompt += '\n\n' + memoryPrompt;
+      }
+
+      // Get tool definitions
+      const toolRegistry = this.agent.getToolRegistry();
+      const sessionView = toolRegistry.getSessionView(req.params.id);
+      const toolDefs = sessionView.getToolDefs();
+
+      // Build full messages array as it would appear to the LLM
+      const fullMessages = [
+        { role: 'system', content: systemPrompt },
+        ...session.messages,
+      ];
+
+      return {
+        messages: fullMessages,
+        toolDefinitions: toolDefs,
+        _meta: {
+          systemPromptLength: systemPrompt.length,
+          toolCount: toolDefs.length,
+          messageCount: session.messages.length,
+        },
+      };
+    });
+
     this.app.delete<{ Params: { id: string } }>('/api/sessions/:id', async (req) => {
       this.sessionManager.deleteSession(req.params.id);
       return { ok: true };
@@ -350,6 +528,34 @@ this.app.post<{ Params: { id: string } }>('/api/sessions/:id/repair', async (req
   const removed = this.sessionManager.repairToolPairs(req.params.id);
   if (removed > 0) this.broadcastDataUpdate('sessions');
   return { ok: true, removed };
+});
+
+// Prune first X tool results from a session
+this.app.post<{ Params: { id: string }; Body: { count: number } }>('/api/sessions/:id/prune-tools', async (req, reply) => {
+  const session = this.sessionManager.getSession(req.params.id);
+  if (!session) return reply.code(404).send({ error: 'Session not found' });
+
+  const count = (req.body as any).count || 10;
+  let pruned = 0;
+  let toolResultsSeen = 0;
+
+  // Find tool results and replace their content with [PRUNED]
+  for (let i = 0; i < session.messages.length && pruned < count; i++) {
+    const msg = session.messages[i];
+    if (msg.role === 'tool' && msg.content && msg.content !== '[PRUNED]') {
+      toolResultsSeen++;
+      msg.content = '[PRUNED]';
+      pruned++;
+    }
+  }
+
+  if (pruned > 0) {
+    session.updatedAt = new Date().toISOString();
+    this.sessionManager.saveSession(req.params.id);
+    this.broadcastDataUpdate('sessions');
+  }
+
+  return { ok: true, pruned, totalToolResults: toolResultsSeen };
 });
 
     // Import session from JSON
@@ -451,8 +657,11 @@ this.app.post<{ Params: { id: string } }>('/api/sessions/:id/repair', async (req
     });
 
     // Chat API (REST, non-streaming)
-    this.app.post<{ Body: { message: string; session_id?: string } }>('/api/chat', async (req) => {
+    this.app.post<{ Body: { message: string; session_id?: string } }>('/api/chat', async (req, reply) => {
       const { message, session_id } = req.body;
+      if (!message || typeof message !== 'string') {
+        return reply.code(400).send({ error: 'Missing or invalid message' });
+      }
       const sessionId = session_id || `webchat:rest:${Date.now()}`;
 
       // Check for commands
@@ -535,10 +744,35 @@ this.app.post<{ Params: { id: string } }>('/api/sessions/:id/repair', async (req
       return {
         ok: true,
         filename: data.filename,
+        savedAs: filename,
+        url: `/api/uploads/${filename}`,
         path: filepath,
         size: buf.length,
         mimetype: data.mimetype,
       };
+    });
+
+    // Serve uploaded files
+    this.app.get<{ Params: { filename: string } }>('/api/uploads/:filename', async (req, reply) => {
+      const { readFileSync: rfs, existsSync: efs } = await import('node:fs');
+      const { extname } = await import('node:path');
+      const uploadDir = join(this.config.memory.directory, 'uploads');
+      const filename = req.params.filename.replace(/[^a-zA-Z0-9._-]/g, '');
+      const filepath = join(uploadDir, filename);
+      if (!efs(filepath)) return reply.code(404).send({ error: 'File not found' });
+      const buf = rfs(filepath);
+      const ext = extname(filename).toLowerCase();
+      const mimeMap: Record<string, string> = {
+        '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+        '.webp': 'image/webp', '.svg': 'image/svg+xml', '.bmp': 'image/bmp', '.ico': 'image/x-icon',
+        '.pdf': 'application/pdf', '.json': 'application/json', '.txt': 'text/plain',
+        '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
+        '.mp4': 'video/mp4', '.webm': 'video/webm', '.mp3': 'audio/mpeg', '.wav': 'audio/wav',
+      };
+      const mime = mimeMap[ext] || 'application/octet-stream';
+      reply.header('Content-Type', mime);
+      reply.header('Cache-Control', 'public, max-age=86400');
+      return reply.send(buf);
     });
 
     // Skills API (live skills list)
@@ -609,7 +843,7 @@ this.app.post<{ Params: { id: string } }>('/api/sessions/:id/repair', async (req
         canvasClients: this.canvasClients.size,
         presence: this.presenceManager.getState(),
         skills: this.agent.getLoadedSkills?.() || [],
-        plugins: this.agent.getToolStats().deferredTools.filter(t => t.summary.startsWith('Plugin tool:')),
+        plugins: this.agent.getToolStats().deferredTools.filter(t => t.summary?.startsWith('Plugin tool:')),
         heartbeatLog,
       };
     });
@@ -791,13 +1025,135 @@ this.app.post<{ Params: { id: string } }>('/api/sessions/:id/repair', async (req
     // ── Models API ───────────────────────────────────────────────────
     this.app.get('/api/models', async () => {
       const llm = this.agent.getLLM();
-      return { providers: llm.listProviders(), current: llm.getCurrentProvider() };
+      // Return both runtime providers and config providers
+      return {
+        providers: llm.listProviders(),
+        current: llm.getCurrentProvider(),
+        configProviders: this.config.agent.providers || [],
+        primaryModel: {
+          model: this.config.agent.model,
+          apiBase: this.config.agent.apiBase,
+          apiKey: this.config.agent.apiKey ? '***' : undefined,
+          apiType: (this.config.agent as any).apiType || 'chat',
+          maxTokens: this.config.agent.maxTokens,
+          temperature: this.config.agent.temperature,
+          thinkingLevel: this.config.agent.thinkingLevel,
+        },
+        contextLimit: this.config.sessions.contextLimit,
+      };
     });
 
     this.app.post<{ Body: { name: string } }>('/api/models/switch', async (req) => {
       const llm = this.agent.getLLM();
       const result = llm.switchModel(req.body.name);
       return result;
+    });
+
+    // Add a new model/provider
+    this.app.post<{ Body: { provider: any } }>('/api/models/add', async (req) => {
+      const provider = req.body.provider;
+      if (!provider || !provider.model || !provider.apiBase) {
+        return { success: false, error: 'model and apiBase are required' };
+      }
+      // Add to config
+      const providers = this.config.agent.providers || [];
+      providers.push({
+        name: provider.name || provider.model,
+        model: provider.model,
+        apiBase: provider.apiBase,
+        apiKey: provider.apiKey,
+        apiType: provider.apiType || 'chat',
+        maxTokens: provider.maxTokens,
+        temperature: provider.temperature,
+        priority: provider.priority ?? providers.length,
+      });
+      const merged = { ...this.config, agent: { ...this.config.agent, providers } };
+      saveConfig(merged);
+      // Reload config and LLM providers
+      this.config = reloadConfig();
+      this.agent.getLLM().reloadProviders(this.config);
+      this.broadcastDataUpdate('models');
+      return { success: true };
+    });
+
+    // Update a model/provider
+    this.app.put<{ Params: { index: string }; Body: { provider: any } }>('/api/models/:index', async (req) => {
+      const index = parseInt(req.params.index);
+      const provider = req.body.provider;
+
+      // Index 0 = primary model, else index-1 in providers array
+      if (index === 0) {
+        // Update primary model
+        const merged = {
+          ...this.config,
+          agent: {
+            ...this.config.agent,
+            model: provider.model ?? this.config.agent.model,
+            apiBase: provider.apiBase ?? this.config.agent.apiBase,
+            apiKey: provider.apiKey !== '***' ? provider.apiKey : this.config.agent.apiKey,
+            apiType: provider.apiType ?? (this.config.agent as any).apiType ?? 'chat',
+            maxTokens: provider.maxTokens ?? this.config.agent.maxTokens,
+            temperature: provider.temperature ?? this.config.agent.temperature,
+            thinkingLevel: provider.thinkingLevel ?? this.config.agent.thinkingLevel,
+          },
+        };
+        // Also update contextLimit if provided
+        if (provider.contextLimit !== undefined) {
+          merged.sessions = { ...this.config.sessions, contextLimit: provider.contextLimit };
+        }
+        saveConfig(merged);
+        // Reload config and LLM providers
+        this.config = reloadConfig();
+        this.agent.getLLM().reloadProviders(this.config);
+        this.broadcastDataUpdate('models');
+        return { success: true };
+      } else {
+        // Update failover provider
+        const providers = [...(this.config.agent.providers || [])];
+        const pIdx = index - 1;
+        if (pIdx < 0 || pIdx >= providers.length) {
+          return { success: false, error: 'Invalid provider index' };
+        }
+        providers[pIdx] = {
+          ...providers[pIdx],
+          name: provider.name ?? providers[pIdx].name,
+          model: provider.model ?? providers[pIdx].model,
+          apiBase: provider.apiBase ?? providers[pIdx].apiBase,
+          apiKey: provider.apiKey !== '***' ? provider.apiKey : providers[pIdx].apiKey,
+          apiType: provider.apiType ?? providers[pIdx].apiType ?? 'chat',
+          maxTokens: provider.maxTokens ?? providers[pIdx].maxTokens,
+          temperature: provider.temperature ?? providers[pIdx].temperature,
+          priority: provider.priority ?? providers[pIdx].priority,
+        };
+        const merged = { ...this.config, agent: { ...this.config.agent, providers } };
+        saveConfig(merged);
+        // Reload config and LLM providers
+        this.config = reloadConfig();
+        this.agent.getLLM().reloadProviders(this.config);
+        this.broadcastDataUpdate('models');
+        return { success: true };
+      }
+    });
+
+    // Delete a model/provider (cannot delete primary)
+    this.app.delete<{ Params: { index: string } }>('/api/models/:index', async (req) => {
+      const index = parseInt(req.params.index);
+      if (index === 0) {
+        return { success: false, error: 'Cannot delete primary model' };
+      }
+      const providers = [...(this.config.agent.providers || [])];
+      const pIdx = index - 1;
+      if (pIdx < 0 || pIdx >= providers.length) {
+        return { success: false, error: 'Invalid provider index' };
+      }
+      providers.splice(pIdx, 1);
+      const merged = { ...this.config, agent: { ...this.config.agent, providers } };
+      saveConfig(merged);
+      // Reload config and LLM providers
+      this.config = reloadConfig();
+      this.agent.getLLM().reloadProviders(this.config);
+      this.broadcastDataUpdate('models');
+      return { success: true };
     });
 
     // ── ClawHub API ───────────────────────────────────────────────────
@@ -1017,6 +1373,18 @@ this.app.post('/api/subagents/clear', async () => {
   return { ok: true, cleared };
 });
 
+this.app.post<{ Params: { id: string } }>('/api/subagents/:id/kill', async (req, reply) => {
+  const agent = killSubAgent(req.params.id);
+  if (!agent) {
+    return reply.code(404).send({ error: `Subagent "${req.params.id}" not found` });
+  }
+  // Also interrupt the subagent's session if it's running
+  if (agent.sessionId) {
+    this.agent.interruptSession(agent.sessionId);
+  }
+  return { ok: true, agent };
+});
+
 // ── Plugin Unload API ─────────────────────────────────────────────
     this.app.post<{ Body: { name: string } }>('/api/plugins/unload', async (req, reply) => {
       const pm = this.agent.getPluginManager();
@@ -1084,6 +1452,10 @@ this.app.post('/api/subagents/clear', async () => {
 
           if (msg.type === 'message') {
             const content = msg.content as string;
+            if (!content || typeof content !== 'string') {
+              socket.send(JSON.stringify({ type: 'error', error: 'Missing or invalid message content' }));
+              return;
+            }
 
             // Store agent override from client (for multi-agent routing)
             if (msg.agent) {
@@ -1162,6 +1534,36 @@ this.app.post('/api/subagents/clear', async () => {
             }));
           }
 
+          // Inject a user message into the session without triggering a new response
+          // Used by queued prompts to inject mid-conversation (after tool calls)
+          if (msg.type === 'inject') {
+            const content = msg.content as string;
+            if (content) {
+              this.sessionManager.addMessage(sessionId, { role: 'user', content });
+              socket.send(JSON.stringify({
+                type: 'injected',
+                session_id: sessionId,
+                content,
+              }));
+            }
+          }
+
+          // Queue an injection to be added at the next safe point (after tool results)
+          // This is safer than direct inject when the agent is mid-tool-execution
+          if (msg.type === 'queue_inject') {
+            const content = msg.content as string;
+            const role = (msg.role as 'user' | 'system') || 'user';
+            if (content) {
+              this.agent.queueInjection(sessionId, content, role);
+              socket.send(JSON.stringify({
+                type: 'injection_queued',
+                session_id: sessionId,
+                content,
+                role,
+              }));
+            }
+          }
+
           // Load/resume an existing session
           if (msg.type === 'load_session') {
             const targetId = msg.session_id as string;
@@ -1199,6 +1601,16 @@ this.app.post('/api/subagents/clear', async () => {
             }));
           }
 
+          // Get context breakdown
+          if (msg.type === 'get_context_breakdown') {
+            const breakdown = this.getContextBreakdown(sessionId);
+            socket.send(JSON.stringify({
+              type: 'context_breakdown',
+              session_id: sessionId,
+              breakdown,
+            }));
+          }
+
           // Edit a message's content
           if (msg.type === 'edit_message') {
             const index = msg.index as number;
@@ -1228,7 +1640,7 @@ this.app.post('/api/subagents/clear', async () => {
             // For user messages: re-send the user message
             // For assistant messages: re-send the previous user message
             let userMsgIndex = index;
-            let userContent = targetMsg.content;
+            let userContent = targetMsg.content || '';
             
             if (targetMsg.role === 'assistant') {
               // Find the user message before this assistant message
@@ -1323,6 +1735,26 @@ this.app.post('/api/subagents/clear', async () => {
           if (msg.type === 'ping') {
             socket.send(JSON.stringify({ type: 'pong' }));
           }
+          // Handle canvas_upload from the UI (client uploaded an image and wants it shown)
+          if (msg.type === 'canvas_upload' && msg.content) {
+            const canvasEvent = {
+              type: 'canvas_push' as const,
+              canvas: {
+                id: msg.id || `upload-${Date.now()}`,
+                title: msg.title || 'Upload',
+                content: msg.content,
+                contentType: msg.contentType || 'html',
+                language: msg.language,
+              },
+            };
+            // Broadcast to all other canvas clients
+            const broadcastMsg = JSON.stringify(canvasEvent);
+            for (const [cid, client] of this.canvasClients) {
+              if (cid !== clientId) {
+                try { (client.ws as any).send(broadcastMsg); } catch {}
+              }
+            }
+          }
         } catch {}
       });
 
@@ -1333,7 +1765,7 @@ this.app.post('/api/subagents/clear', async () => {
   }
 
   /** Send a JSON message to all webchat clients currently attached to a given session. */
-  private sendToSession(sessionId: string, payload: Record<string, unknown>): void {
+  sendToSession(sessionId: string, payload: Record<string, unknown>): void {
     const msg = JSON.stringify(payload);
     for (const [, client] of this.webChatClients) {
       if (client.sessionId === sessionId) {
@@ -1342,7 +1774,8 @@ this.app.post('/api/subagents/clear', async () => {
     }
   }
 
-  /** Map raw session messages to a client-friendly format, pairing tool results with assistant tool_calls. */
+  /** Map raw session messages to a client-friendly format, pairing tool results with assistant tool_calls.
+   *  Also injects power steering messages at appropriate intervals with isPowerSteering=true marker. */
   private mapSessionMessages(messages: any[]): any[] {
     // Build a map of tool_call_id → result content from tool-role messages
     const toolResults = new Map<string, string>();
@@ -1352,7 +1785,14 @@ this.app.post('/api/subagents/clear', async () => {
       }
     }
 
-    return messages
+    // Get power steering config
+    const ps = (this.config.agent as any).powerSteering;
+    const psEnabled = ps?.enabled && ps?.interval && ps.interval > 0;
+    const psInterval = ps?.interval || 25;
+    const psRole = ps?.role || 'system';
+
+    // First pass: filter and map messages
+    const filtered = messages
       .map((m, idx) => ({ m, idx }))
       .filter(({ m }) => m.role === 'user' || m.role === 'assistant' || m.role === 'system')
       .map(({ m, idx }) => {
@@ -1366,6 +1806,34 @@ this.app.post('/api/subagents/clear', async () => {
         }
         return mapped;
       });
+
+    // If power steering is disabled, return filtered messages as-is
+    if (!psEnabled) return filtered;
+
+    // Second pass: inject power steering messages at intervals
+    const result: any[] = [];
+    let msgCount = 0;
+
+    for (const msg of filtered) {
+      result.push(msg);
+
+      // Don't count system messages for interval calculation (except power steering ones)
+      if (msg.role !== 'system') {
+        msgCount++;
+      }
+
+      // Inject power steering after every interval messages
+      if (msgCount > 0 && msgCount % psInterval === 0) {
+        result.push({
+          role: psRole,
+          content: '[SYSTEM REMINDER] - System prompt re-injection for context anchoring',
+          isPowerSteering: true,
+          serverIndex: -1, // Virtual message, not stored
+        });
+      }
+    }
+
+    return result;
   }
 
   private broadcastDataUpdate(resource: string, data?: any): void {

@@ -71,6 +71,7 @@ interface ProviderEntry {
   name: string;
   apiBase: string;
   apiKey?: string;
+  apiType: 'chat' | 'responses';
   model: string;
   maxTokens: number;
   temperature: number;
@@ -92,6 +93,7 @@ export class LLMClient {
       name: 'primary',
       apiBase: config.agent.apiBase,
       apiKey: config.agent.apiKey,
+      apiType: (config.agent as any).apiType || 'chat',
       model: config.agent.model,
       maxTokens: config.agent.maxTokens,
       temperature: config.agent.temperature,
@@ -107,6 +109,7 @@ export class LLMClient {
           name: p.name || p.apiBase,
           apiBase: p.apiBase,
           apiKey: p.apiKey,
+          apiType: (p as any).apiType || 'chat',
           model: p.model,
           maxTokens: p.maxTokens || config.agent.maxTokens,
           temperature: p.temperature ?? config.agent.temperature,
@@ -121,18 +124,76 @@ export class LLMClient {
     this.providers.sort((a, b) => a.priority - b.priority);
   }
 
+  /** Update settings at runtime (for live config reload) */
+  updateSettings(settings: { temperature?: number; maxTokens?: number }): void {
+    // Update all providers with new settings
+    for (const p of this.providers) {
+      if (settings.temperature !== undefined) p.temperature = settings.temperature;
+      if (settings.maxTokens !== undefined) p.maxTokens = settings.maxTokens;
+    }
+  }
+
+  /** Reload providers from config (called when models are added/removed/updated) */
+  reloadProviders(config: Config): void {
+    // Preserve current model name to try to restore selection
+    const currentModel = this.providers[this.currentIndex]?.model;
+
+    // Rebuild provider list
+    this.providers = [];
+
+    // Primary provider from agent config
+    this.providers.push({
+      name: 'primary',
+      apiBase: config.agent.apiBase,
+      apiKey: config.agent.apiKey,
+      apiType: (config.agent as any).apiType || 'chat',
+      model: config.agent.model,
+      maxTokens: config.agent.maxTokens,
+      temperature: config.agent.temperature,
+      priority: 0,
+      failCount: 0,
+      lastFail: 0,
+    });
+
+    // Additional failover providers
+    if (config.agent.providers && config.agent.providers.length > 0) {
+      for (const p of config.agent.providers) {
+        this.providers.push({
+          name: p.name || p.apiBase,
+          apiBase: p.apiBase,
+          apiKey: p.apiKey,
+          apiType: (p as any).apiType || 'chat',
+          model: p.model,
+          maxTokens: p.maxTokens || config.agent.maxTokens,
+          temperature: p.temperature ?? config.agent.temperature,
+          priority: p.priority,
+          failCount: 0,
+          lastFail: 0,
+        });
+      }
+    }
+
+    // Sort by priority (lower = higher priority)
+    this.providers.sort((a, b) => a.priority - b.priority);
+
+    // Try to restore previous selection
+    const newIndex = this.providers.findIndex(p => p.model === currentModel);
+    this.currentIndex = newIndex >= 0 ? newIndex : 0;
+  }
+
   /** Get the current active provider info */
-  getCurrentProvider(): { name: string; model: string; apiBase: string } {
+  getCurrentProvider(): { name: string; model: string; apiBase: string; apiType: string } {
     const p = this.providers[this.currentIndex];
-    return { name: p.name, model: p.model, apiBase: p.apiBase };
+    return { name: p.name, model: p.model, apiBase: p.apiBase, apiType: p.apiType };
   }
 
   /** List all available providers */
-  listProviders(): { name: string; model: string; apiBase: string; active: boolean }[] {
+  listProviders(): { name: string; model: string; apiBase: string; apiType: string; active: boolean }[] {
     return this.providers.map((p, i) => ({
       name: p.name,
       model: p.model,
       apiBase: p.apiBase,
+      apiType: p.apiType,
       active: i === this.currentIndex,
     }));
   }
@@ -223,6 +284,11 @@ export class LLMClient {
   }
 
   private async _chatWithProvider(provider: ProviderEntry, messages: LLMMessage[], tools?: ToolDef[], toolChoice?: 'auto' | 'required' | 'none', signal?: AbortSignal): Promise<LLMResponse> {
+    if (provider.apiType === 'responses') {
+      return this._responsesApiCall(provider, messages, tools, toolChoice, signal);
+    }
+
+    // Chat Completions API (default)
     const body: Record<string, unknown> = {
       model: provider.model,
       messages,
@@ -248,6 +314,147 @@ export class LLMClient {
     }
 
     return res.json() as Promise<LLMResponse>;
+  }
+
+  /** Responses API call - converts to/from chat completions format */
+  private async _responsesApiCall(provider: ProviderEntry, messages: LLMMessage[], tools?: ToolDef[], toolChoice?: 'auto' | 'required' | 'none', signal?: AbortSignal): Promise<LLMResponse> {
+    // Convert messages to Responses API format
+    // System message becomes 'instructions', rest are 'input'
+    let instructions = '';
+    const input: any[] = [];
+
+    for (const msg of messages) {
+      if (msg.role === 'system') {
+        instructions += (instructions ? '\n\n' : '') + msg.content;
+      } else if (msg.role === 'user') {
+        input.push({ role: 'user', content: msg.content || '' });
+      } else if (msg.role === 'assistant') {
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+          // Assistant message with tool calls - need structured content
+          const content: any[] = [];
+          if (msg.content) {
+            content.push({ type: 'output_text', text: msg.content });
+          }
+          for (const tc of msg.tool_calls) {
+            content.push({
+              type: 'function_call',
+              id: tc.id,
+              name: tc.function.name,
+              arguments: tc.function.arguments,
+            });
+          }
+          input.push({ role: 'assistant', content });
+        } else {
+          input.push({ role: 'assistant', content: msg.content || '' });
+        }
+      } else if (msg.role === 'tool') {
+        // Tool result - function_call_output format
+        input.push({
+          type: 'function_call_output',
+          call_id: msg.tool_call_id,
+          output: msg.content || '',
+        });
+      }
+    }
+
+    // Build Responses API request body
+    const body: Record<string, unknown> = {
+      model: provider.model,
+      instructions: instructions || undefined,
+      input,
+      max_output_tokens: provider.maxTokens,
+      temperature: provider.temperature,
+    };
+
+    // Convert tools to Responses API format
+    if (tools && tools.length > 0) {
+      body.tools = tools.map(t => ({
+        type: 'function',
+        name: t.function.name,
+        description: t.function.description,
+        parameters: t.function.parameters,
+      }));
+      if (toolChoice === 'required') {
+        body.tool_choice = 'required';
+      } else if (toolChoice === 'none') {
+        body.tool_choice = 'none';
+      }
+    }
+
+    const res = await fetch(`${provider.apiBase}/responses`, {
+      method: 'POST',
+      headers: this.getHeaders(provider),
+      body: JSON.stringify(body),
+      signal: signal || AbortSignal.timeout(120000),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`API error ${res.status}: ${text}`);
+    }
+
+    const data = await res.json();
+
+    // Convert Responses API response to Chat Completions format
+    return this._convertResponsesApiResponse(data);
+  }
+
+  /** Convert Responses API response to Chat Completions format */
+  private _convertResponsesApiResponse(data: any): LLMResponse {
+    const output = data.output || [];
+    let textContent = '';
+    const toolCalls: ToolCall[] = [];
+
+    for (const item of output) {
+      if (item.type === 'message' && item.role === 'assistant') {
+        // Handle content array or string
+        if (typeof item.content === 'string') {
+          textContent += item.content;
+        } else if (Array.isArray(item.content)) {
+          for (const c of item.content) {
+            if (c.type === 'output_text' || c.type === 'text') {
+              textContent += c.text || '';
+            } else if (c.type === 'function_call') {
+              toolCalls.push({
+                id: c.id || `call_${Date.now()}_${toolCalls.length}`,
+                type: 'function',
+                function: {
+                  name: c.name,
+                  arguments: typeof c.arguments === 'string' ? c.arguments : JSON.stringify(c.arguments || {}),
+                },
+              });
+            }
+          }
+        }
+      } else if (item.type === 'function_call') {
+        toolCalls.push({
+          id: item.id || `call_${Date.now()}_${toolCalls.length}`,
+          type: 'function',
+          function: {
+            name: item.name,
+            arguments: typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments || {}),
+          },
+        });
+      }
+    }
+
+    return {
+      id: data.id || `resp_${Date.now()}`,
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: textContent || null,
+          tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+        },
+        finish_reason: data.stop_reason || 'stop',
+      }],
+      usage: data.usage ? {
+        prompt_tokens: data.usage.input_tokens || 0,
+        completion_tokens: data.usage.output_tokens || 0,
+        total_tokens: (data.usage.input_tokens || 0) + (data.usage.output_tokens || 0),
+      } : undefined,
+    };
   }
 
   /** Stream with failover */
@@ -295,6 +502,12 @@ export class LLMClient {
   }
 
   private async *_chatStreamWithProvider(provider: ProviderEntry, messages: LLMMessage[], tools?: ToolDef[], signal?: AbortSignal): AsyncGenerator<StreamChunk> {
+    if (provider.apiType === 'responses') {
+      yield* this._responsesApiStream(provider, messages, tools, signal);
+      return;
+    }
+
+    // Chat Completions streaming (default)
     const body: Record<string, unknown> = {
       model: provider.model,
       messages,
@@ -361,6 +574,203 @@ export class LLMClient {
       }
     } finally {
       // Ensure reader is released on abort or normal completion
+      if (signal?.aborted) {
+        reader.cancel().catch(() => {});
+      }
+    }
+  }
+
+  /** Responses API streaming - converts events to Chat Completions StreamChunk format */
+  private async *_responsesApiStream(provider: ProviderEntry, messages: LLMMessage[], tools?: ToolDef[], signal?: AbortSignal): AsyncGenerator<StreamChunk> {
+    // Convert messages to Responses API format (same as non-streaming)
+    let instructions = '';
+    const input: any[] = [];
+
+    for (const msg of messages) {
+      if (msg.role === 'system') {
+        instructions += (instructions ? '\n\n' : '') + msg.content;
+      } else if (msg.role === 'user') {
+        input.push({ role: 'user', content: msg.content || '' });
+      } else if (msg.role === 'assistant') {
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+          const content: any[] = [];
+          if (msg.content) {
+            content.push({ type: 'output_text', text: msg.content });
+          }
+          for (const tc of msg.tool_calls) {
+            content.push({
+              type: 'function_call',
+              id: tc.id,
+              name: tc.function.name,
+              arguments: tc.function.arguments,
+            });
+          }
+          input.push({ role: 'assistant', content });
+        } else {
+          input.push({ role: 'assistant', content: msg.content || '' });
+        }
+      } else if (msg.role === 'tool') {
+        input.push({
+          type: 'function_call_output',
+          call_id: msg.tool_call_id,
+          output: msg.content || '',
+        });
+      }
+    }
+
+    const body: Record<string, unknown> = {
+      model: provider.model,
+      instructions: instructions || undefined,
+      input,
+      max_output_tokens: provider.maxTokens,
+      temperature: provider.temperature,
+      stream: true,
+    };
+
+    if (tools && tools.length > 0) {
+      body.tools = tools.map(t => ({
+        type: 'function',
+        name: t.function.name,
+        description: t.function.description,
+        parameters: t.function.parameters,
+      }));
+    }
+
+    const res = await fetch(`${provider.apiBase}/responses`, {
+      method: 'POST',
+      headers: this.getHeaders(provider),
+      body: JSON.stringify(body),
+      signal: signal || AbortSignal.timeout(120000),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`API error ${res.status}: ${text}`);
+    }
+
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error('No response body');
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    // Track tool calls being built
+    const toolCallsInProgress: Map<number, { id: string; name: string; arguments: string }> = new Map();
+    let responseId = `resp_${Date.now()}`;
+
+    try {
+      while (true) {
+        if (signal?.aborted) {
+          reader.cancel();
+          return;
+        }
+
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (signal?.aborted) {
+            reader.cancel();
+            return;
+          }
+
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+          const dataStr = trimmed.slice(6);
+          if (dataStr === '[DONE]') return;
+
+          try {
+            const event = JSON.parse(dataStr);
+
+            // Convert Responses API events to Chat Completions StreamChunk format
+            if (event.type === 'response.created') {
+              responseId = event.response?.id || responseId;
+            } else if (event.type === 'response.output_text.delta' || event.type === 'content_block_delta') {
+              // Text content delta
+              const textDelta = event.delta?.text || event.delta || '';
+              yield {
+                id: responseId,
+                choices: [{
+                  index: 0,
+                  delta: { content: textDelta },
+                  finish_reason: null,
+                }],
+              };
+            } else if (event.type === 'response.output_item.added') {
+              // New output item (could be function call)
+              if (event.item?.type === 'function_call') {
+                const idx = event.output_index || 0;
+                toolCallsInProgress.set(idx, {
+                  id: event.item.id || `call_${Date.now()}_${idx}`,
+                  name: event.item.name || '',
+                  arguments: '',
+                });
+                // Emit tool call start
+                yield {
+                  id: responseId,
+                  choices: [{
+                    index: 0,
+                    delta: {
+                      tool_calls: [{
+                        index: idx,
+                        id: event.item.id,
+                        type: 'function',
+                        function: { name: event.item.name, arguments: '' },
+                      }],
+                    },
+                    finish_reason: null,
+                  }],
+                };
+              }
+            } else if (event.type === 'response.function_call_arguments.delta') {
+              // Tool call arguments delta
+              const idx = event.output_index || 0;
+              const tc = toolCallsInProgress.get(idx);
+              if (tc) {
+                tc.arguments += event.delta || '';
+                yield {
+                  id: responseId,
+                  choices: [{
+                    index: 0,
+                    delta: {
+                      tool_calls: [{
+                        index: idx,
+                        function: { arguments: event.delta || '' },
+                      }],
+                    },
+                    finish_reason: null,
+                  }],
+                };
+              }
+            } else if (event.type === 'response.completed' || event.type === 'response.done') {
+              // Final event with usage
+              const usage = event.response?.usage || event.usage;
+              if (usage) {
+                yield {
+                  id: responseId,
+                  choices: [{
+                    index: 0,
+                    delta: {},
+                    finish_reason: 'stop',
+                  }],
+                  usage: {
+                    prompt_tokens: usage.input_tokens || 0,
+                    completion_tokens: usage.output_tokens || 0,
+                    total_tokens: (usage.input_tokens || 0) + (usage.output_tokens || 0),
+                  },
+                };
+              }
+            }
+          } catch {
+            // Skip malformed events
+          }
+        }
+      }
+    } finally {
       if (signal?.aborted) {
         reader.cancel().catch(() => {});
       }

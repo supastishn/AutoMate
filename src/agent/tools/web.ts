@@ -176,7 +176,7 @@ export const webTools: Tool[] = [
     description: [
       'Web operations: search and fetch.',
       'Actions: search, fetch.',
-      'search — search the web using DuckDuckGo (no API key needed). Falls back to Brave Search if BRAVE_API_KEY is set.',
+      'search — search the web using DuckDuckGo (no API key needed).',
       'fetch — fetch a URL and extract clean text content.',
     ].join(' '),
     parameters: {
@@ -202,7 +202,7 @@ export const webTools: Tool[] = [
           if (!query) return { output: '', error: 'query is required for search' };
           const count = Math.min(Math.max((params.count as number) || 5, 1), 20);
 
-          // Primary: DuckDuckGo HTML scraping (no API key needed)
+          // DuckDuckGo HTML scraping (no API key needed)
           try {
             const results = await searchDDG(query, count);
 
@@ -214,41 +214,12 @@ export const webTools: Tool[] = [
               if (output.length > 10000) output = output.slice(0, 10000) + '\n... (truncated)';
               return { output };
             }
-            // DDG returned 0 results, fall through to Brave
+            // DDG returned 0 results
           } catch {
-            // DDG failed, fall through to Brave
+            // DDG failed
           }
 
-          // Fallback: Brave Search API (if API key is set)
-          const apiKey = process.env.BRAVE_API_KEY;
-          if (apiKey) {
-            try {
-              const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}`;
-              const res = await fetch(url, {
-                headers: { Accept: 'application/json', 'X-Subscription-Token': apiKey, 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36' },
-              });
-
-              if (res.ok) {
-                const data = (await res.json()) as {
-                  web?: { results?: Array<{ title?: string; url?: string; description?: string }> };
-                };
-                const results = data.web?.results ?? [];
-
-                if (results.length > 0) {
-                  let output = `# Search: ${query}\n\n`;
-                  for (const r of results) {
-                    output += `## ${r.title ?? '(no title)'}\n${r.url ?? ''}\n${r.description ?? ''}\n\n`;
-                  }
-                  if (output.length > 10000) output = output.slice(0, 10000) + '\n... (truncated)';
-                  return { output };
-                }
-              }
-            } catch {
-              // Brave also failed
-            }
-          }
-
-          return { output: `# Search: ${query}\n\nNo results found.` };
+          return { output: '', error: `No results found for: ${query}` };
         }
 
         case 'fetch': {

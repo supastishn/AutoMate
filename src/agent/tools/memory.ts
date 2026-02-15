@@ -16,24 +16,40 @@ const memoryTool: Tool = {
   description: [
     'Manage memory and daily logs. Actions:',
     'search — semantic search across all memory (vector+BM25). Pass query, optional limit and mode (hybrid|vector|text|legacy).',
-    'read — read the curated MEMORY.md file.',
-    'write — replace entire MEMORY.md content. Pass content.',
+    'read — read the curated MEMORY.md file (Tier 1 core memory).',
+    'write — replace entire MEMORY.md content. Pass content. Hard cap: ~4000 chars.',
     'append — append to MEMORY.md without replacing. Pass entry.',
     'log — append timestamped entry to today\'s daily log. Pass entry.',
+    'log_read — read a daily log. Pass query as date (YYYY-MM-DD), defaults to today.',
     'files — list all memory files with sizes.',
     'reindex — rebuild the semantic search index.',
     'stats — show search index statistics.',
+    '',
+    'Tier 2 (topic-based reference memory, loaded on-demand):',
+    'tier2_list — list all Tier 2 topic files.',
+    'tier2_read — read a Tier 2 topic file. Pass topic (e.g. "discord", "reddit").',
+    'tier2_write — write/replace a Tier 2 topic file. Pass topic + content.',
+    'tier2_append — append to a Tier 2 topic file. Pass topic + entry.',
+    'tier2_delete — delete a Tier 2 topic file. Pass topic.',
+    '',
+    'Archive (cold storage for recordkeeping, lower priority):',
+    'archive_list — list all archive files.',
+    'archive_read — read an archive file. Pass topic.',
+    'archive_write — write/replace an archive file. Pass topic + content.',
+    'archive_append — append to an archive file. Pass topic + entry.',
+    'archive_delete — delete an archive file. Pass topic.',
   ].join(' '),
   parameters: {
     type: 'object',
     properties: {
       action: {
         type: 'string',
-        description: 'Action: search|read|write|append|log|files|reindex|stats',
+        description: 'Action: search|read|write|append|log|log_read|files|reindex|stats|tier2_list|tier2_read|tier2_write|tier2_append|tier2_delete|archive_list|archive_read|archive_write|archive_append|archive_delete',
       },
       query: { type: 'string', description: 'Search query (for search)' },
-      content: { type: 'string', description: 'Full content (for write)' },
-      entry: { type: 'string', description: 'Text to append (for append, log)' },
+      content: { type: 'string', description: 'Full content (for write, tier2_write)' },
+      entry: { type: 'string', description: 'Text to append (for append, log, tier2_append)' },
+      topic: { type: 'string', description: 'Topic name for Tier 2 files (e.g. "discord", "reddit", "workshop")' },
       limit: { type: 'number', description: 'Max results (for search, default 10)' },
       mode: { type: 'string', description: 'Search mode: hybrid|vector|text|legacy (default hybrid)' },
     },
@@ -90,6 +106,12 @@ const memoryTool: Tool = {
         memoryManagerRef.appendDailyLog(entry);
         return { output: `Logged to ${new Date().toISOString().split('T')[0]}.md` };
       }
+      case 'log_read': {
+        const date = (params.query as string) || new Date().toISOString().split('T')[0];
+        const content = memoryManagerRef.getDailyLog(date);
+        if (!content) return { output: `No daily log found for ${date}.` };
+        return { output: content };
+      }
       case 'files': {
         const files = memoryManagerRef.listFiles();
         if (files.length === 0) return { output: 'No memory files found.' };
@@ -110,8 +132,81 @@ const memoryTool: Tool = {
         if (!stats.enabled) return { output: 'Semantic search: DISABLED (legacy substring only). Enable: memory.embedding.enabled = true' };
         return { output: [`Semantic search: ENABLED`, `Chunks: ${stats.totalChunks}`, `Files: ${stats.indexedFiles.join(', ')}`].join('\n') };
       }
+
+      // ── Tier 2 operations ──
+      case 'tier2_list': {
+        const files = memoryManagerRef.listTier2();
+        if (files.length === 0) return { output: 'No Tier 2 topic files yet. Create one with tier2_write action.' };
+        return { output: `Tier 2 topic files (${files.length}):\n` + files.map(f => `  ${f.name} | ${f.size} bytes | modified ${f.modified}`).join('\n') };
+      }
+      case 'tier2_read': {
+        const topic = params.topic as string;
+        if (!topic) return { output: '', error: 'topic is required for tier2_read (e.g. "discord", "reddit")' };
+        const content = memoryManagerRef.getTier2(topic);
+        if (!content) return { output: `Tier 2 file "${topic}" does not exist or is empty.` };
+        return { output: content };
+      }
+      case 'tier2_write': {
+        const topic = params.topic as string;
+        const content = params.content as string;
+        if (!topic) return { output: '', error: 'topic is required for tier2_write' };
+        if (!content) return { output: '', error: 'content is required for tier2_write' };
+        memoryManagerRef.saveTier2(topic, content);
+        return { output: `Tier 2 "${topic}" written (${content.length} chars)` };
+      }
+      case 'tier2_append': {
+        const topic = params.topic as string;
+        const entry = params.entry as string;
+        if (!topic) return { output: '', error: 'topic is required for tier2_append' };
+        if (!entry) return { output: '', error: 'entry is required for tier2_append' };
+        memoryManagerRef.appendTier2(topic, entry);
+        return { output: `Appended to Tier 2 "${topic}" (${entry.length} chars)` };
+      }
+      case 'tier2_delete': {
+        const topic = params.topic as string;
+        if (!topic) return { output: '', error: 'topic is required for tier2_delete' };
+        memoryManagerRef.deleteTier2(topic);
+        return { output: `Tier 2 "${topic}" deleted.` };
+      }
+
+      // ── Archive operations (cold storage) ──
+      case 'archive_list': {
+        const files = memoryManagerRef.listArchive();
+        if (files.length === 0) return { output: 'No archive files yet. Create one with archive_write action.' };
+        return { output: `Archive files (${files.length}):\n` + files.map(f => `  ${f.name} | ${f.size} bytes | modified ${f.modified}`).join('\n') };
+      }
+      case 'archive_read': {
+        const topic = params.topic as string;
+        if (!topic) return { output: '', error: 'topic is required for archive_read' };
+        const content = memoryManagerRef.getArchive(topic);
+        if (!content) return { output: `Archive file "${topic}" does not exist or is empty.` };
+        return { output: content };
+      }
+      case 'archive_write': {
+        const topic = params.topic as string;
+        const content = params.content as string;
+        if (!topic) return { output: '', error: 'topic is required for archive_write' };
+        if (!content) return { output: '', error: 'content is required for archive_write' };
+        memoryManagerRef.saveArchive(topic, content);
+        return { output: `Archive "${topic}" written (${content.length} chars)` };
+      }
+      case 'archive_append': {
+        const topic = params.topic as string;
+        const entry = params.entry as string;
+        if (!topic) return { output: '', error: 'topic is required for archive_append' };
+        if (!entry) return { output: '', error: 'entry is required for archive_append' };
+        memoryManagerRef.appendArchive(topic, entry);
+        return { output: `Appended to archive "${topic}" (${entry.length} chars)` };
+      }
+      case 'archive_delete': {
+        const topic = params.topic as string;
+        if (!topic) return { output: '', error: 'topic is required for archive_delete' };
+        memoryManagerRef.deleteArchive(topic);
+        return { output: `Archive "${topic}" deleted.` };
+      }
+
       default:
-        return { output: '', error: `Unknown action "${action}". Valid: search, read, write, append, log, files, reindex, stats` };
+        return { output: '', error: `Unknown action "${action}". Valid: search, read, write, append, log, log_read, files, reindex, stats, tier2_list, tier2_read, tier2_write, tier2_append, tier2_delete, archive_list, archive_read, archive_write, archive_append, archive_delete` };
     }
   },
 };
@@ -124,6 +219,7 @@ const identityTool: Tool = {
     'Read or write identity/personality files that define who you are.',
     'Files: PERSONALITY.md, USER.md, IDENTITY.md, AGENTS.md, TOOLS.md, HEARTBEAT.md, MEMORY.md.',
     'Actions: read (pass file), write (pass file + content). If updating PERSONALITY.md, tell the user.',
+    'Note: For topic-based reference memory (Tier 2), use the memory tool with tier2_* actions instead.',
   ].join(' '),
   parameters: {
     type: 'object',

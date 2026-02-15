@@ -78,7 +78,7 @@ export class DiscordChannel {
     const originalBroadcaster = this.getExistingImageBroadcaster();
     setImageBroadcaster((event: ImageEvent) => {
       const sessionId = event.sessionId;
-      if (sessionId.startsWith('discord:')) {
+      if (sessionId?.startsWith('discord:')) {
         const existing = this.pendingImages.get(sessionId) || [];
         existing.push(event);
         this.pendingImages.set(sessionId, existing);

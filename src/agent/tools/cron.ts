@@ -32,6 +32,7 @@ export const cronTools: Tool[] = [
         every_minutes: { type: 'number', description: 'Interval in minutes (for create, type=interval)' },
         cron_expression: { type: 'string', description: '5-field cron expression (for create, type=cron)' },
         session_id: { type: 'string', description: 'Optional session ID to run the prompt in' },
+        jitter_minutes: { type: 'number', description: 'Random jitter in minutes (+/-) to vary execution time (for create, type=interval|cron)' },
         id: { type: 'string', description: 'Job ID (for delete, toggle)' },
         enabled: { type: 'boolean', description: 'true to enable, false to disable (for toggle)' },
       },
@@ -50,7 +51,12 @@ export const cronTools: Tool[] = [
 
           if (!name || !prompt || !type) return { output: '', error: 'name, prompt, and type are required for create' };
 
-          const schedule: { type: 'once' | 'interval' | 'cron'; at?: string; every?: number; cron?: string } = { type };
+          const schedule: { type: 'once' | 'interval' | 'cron'; at?: string; every?: number; cron?: string; jitter?: number } = { type };
+
+          // Add jitter if specified (convert minutes to ms)
+          if (params.jitter_minutes && typeof params.jitter_minutes === 'number' && params.jitter_minutes > 0) {
+            schedule.jitter = (params.jitter_minutes as number) * 60_000;
+          }
 
           if (type === 'once') {
             if (!params.at) return { output: '', error: '"at" is required for type=once' };
@@ -64,8 +70,9 @@ export const cronTools: Tool[] = [
           }
 
           const job = schedulerRef.addJob(name, prompt, schedule, sessionId);
+          const jitterInfo = schedule.jitter ? `\n  jitter: ±${params.jitter_minutes}m` : '';
           return {
-            output: `Created job "${job.name}" (${job.id})\n  type: ${job.schedule.type}\n  next run: ${job.nextRun ?? 'N/A'}\n  enabled: ${job.enabled}`,
+            output: `Created job "${job.name}" (${job.id})\n  type: ${job.schedule.type}${jitterInfo}\n  next run: ${job.nextRun ?? 'N/A'}\n  enabled: ${job.enabled}`,
           };
         }
 
@@ -73,16 +80,17 @@ export const cronTools: Tool[] = [
           const jobs = schedulerRef.listJobs();
           if (jobs.length === 0) return { output: 'No scheduled jobs.' };
 
-          const header = 'ID         | Enabled | Runs | Type     | Name                 | Next Run';
+          const header = 'ID         | Enabled | Runs | Type     | Jitter | Name                 | Next Run';
           const sep = '-'.repeat(header.length);
           const rows = jobs.map(j => {
             const id = j.id.padEnd(10);
             const en = (j.enabled ? 'yes' : 'no').padEnd(7);
             const runs = String(j.runCount).padEnd(4);
             const type = j.schedule.type.padEnd(8);
+            const jitter = j.schedule.jitter ? `±${Math.round(j.schedule.jitter / 60000)}m`.padEnd(6) : '-'.padEnd(6);
             const name = j.name.slice(0, 20).padEnd(20);
             const next = j.nextRun ? new Date(j.nextRun).toLocaleString() : 'N/A';
-            return `${id} | ${en} | ${runs} | ${type} | ${name} | ${next}`;
+            return `${id} | ${en} | ${runs} | ${type} | ${jitter} | ${name} | ${next}`;
           });
 
           return { output: [header, sep, ...rows].join('\n') };

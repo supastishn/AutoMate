@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Tool } from '../tool-registry.js';
+import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import type { Tool, ToolContext } from '../tool-registry.js';
 
 /**
  * Browser integration via persistent Python process.
@@ -9,6 +10,7 @@ import type { Tool } from '../tool-registry.js';
  * The Python engine handles all Selenium operations; we communicate via JSON lines over stdio.
  *
  * Single unified tool with action parameter — keeps the tool list lean.
+ * Supports concurrent access via command queue (serializes requests to single browser).
  */
 
 let pyProc: ChildProcess | null = null;
@@ -17,12 +19,48 @@ let browserStarted = false;
 let pendingResolve: ((v: string) => void) | null = null;
 let pendingReject: ((e: Error) => void) | null = null;
 
+// Command queue for serializing concurrent browser requests
+// sessionId is included so tab switching happens atomically with the command
+type QueuedCommand = {
+  command: Record<string, unknown>;
+  sessionId?: string;
+  resolve: (v: Record<string, unknown>) => void;
+  reject: (e: Error) => void;
+};
+const commandQueue: QueuedCommand[] = [];
+let commandRunning = false;
+
+// Track which tab belongs to which session (for subagent isolation)
+// Maps sessionId -> window handle
+const sessionTabMap: Map<string, string> = new Map();
+
 // Browser config (set from outside via setBrowserConfig)
 let browserProfileDir: string = '';
+let screenshotDir: string = '';
+
+// Image broadcaster for auto-displaying screenshots in chat
+type ImageBroadcastFn = (event: {
+  type: 'image';
+  sessionId: string;
+  base64?: string;
+  mimeType: string;
+  alt?: string;
+  filename?: string;
+}) => void;
+let imageBroadcaster: ImageBroadcastFn | null = null;
+
+/** Set image broadcaster for auto-displaying screenshots in chat */
+export function setBrowserImageBroadcaster(fn: ImageBroadcastFn): void {
+  imageBroadcaster = fn;
+}
 
 /** Configure the browser profile directory for session persistence (cookies, logins, etc.) */
-export function setBrowserConfig(opts: { profileDir?: string }): void {
+export function setBrowserConfig(opts: { profileDir?: string; screenshotDir?: string }): void {
   if (opts.profileDir) browserProfileDir = opts.profileDir;
+  if (opts.screenshotDir) {
+    screenshotDir = opts.screenshotDir;
+    if (!existsSync(screenshotDir)) mkdirSync(screenshotDir, { recursive: true });
+  }
 }
 
 function getEnginePath(): string {
@@ -72,13 +110,20 @@ async function ensureBrowser(): Promise<void> {
       }
     });
 
-    pyProc.on('exit', () => {
+    pyProc.on('exit', (code) => {
+      console.log(`[browser] Python process exited with code ${code}`);
       pyProc = null;
       browserStarted = false;
+      // Reject pending command if any
       if (pendingReject) {
         pendingReject(new Error('Browser process exited'));
         pendingReject = null;
         pendingResolve = null;
+      }
+      // Reject all queued commands
+      while (commandQueue.length > 0) {
+        const { reject } = commandQueue.shift()!;
+        reject(new Error('Browser process exited'));
       }
     });
 
@@ -105,9 +150,8 @@ function processBuffer(): void {
   }
 }
 
-async function cmd(command: Record<string, unknown>): Promise<Record<string, unknown>> {
-  await ensureBrowser();
-
+/** Execute a single command (internal - called by queue processor) */
+async function executeCommand(command: Record<string, unknown>): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       if (pendingReject) {
@@ -139,6 +183,135 @@ async function cmd(command: Record<string, unknown>): Promise<Record<string, unk
       reject(err);
     }
   });
+}
+
+/** Check if an error indicates the browser process died */
+function isBrowserDeadError(err: Error): boolean {
+  const msg = err.message.toLowerCase();
+  return msg.includes('process exited') ||
+         msg.includes('epipe') ||
+         msg.includes('channel closed') ||
+         msg.includes('not running');
+}
+
+/** Force restart the browser process */
+async function restartBrowser(): Promise<void> {
+  console.log('[browser] Restarting browser process...');
+  // Kill existing process
+  if (pyProc && !pyProc.killed) {
+    try {
+      pyProc.kill('SIGTERM');
+    } catch { /* ignore */ }
+  }
+  pyProc = null;
+  browserStarted = false;
+  responseBuffer = '';
+  commandRunning = false;
+  // Clear tab mappings since browser is dead
+  sessionTabMap.clear();
+  // Clear pending handlers
+  pendingResolve = null;
+  pendingReject = null;
+  // Start fresh
+  await ensureBrowser();
+  console.log('[browser] Browser restarted successfully');
+}
+
+/** Ensure session has a tab and switch to it (called inside queue processing for atomicity) */
+async function ensureSessionTab(sessionId: string): Promise<void> {
+  if (!sessionTabMap.has(sessionId)) {
+    // Get current tabs
+    const tabsResult = await executeCommand({ action: 'tabs' });
+    const tabs = (tabsResult as any).tabs || [];
+
+    if (tabs.length === 0 || (tabs.length === 1 && sessionTabMap.size === 0)) {
+      // First session, use the existing tab
+      const currentHandle = (tabsResult as any).current;
+      if (currentHandle) sessionTabMap.set(sessionId, currentHandle);
+    } else {
+      // Create a new tab for this session
+      const newTabResult = await executeCommand({ action: 'new_tab', url: 'about:blank' });
+      if (newTabResult.success) {
+        const newTabsResult = await executeCommand({ action: 'tabs' });
+        const newHandle = (newTabsResult as any).current;
+        if (newHandle) sessionTabMap.set(sessionId, newHandle);
+      }
+    }
+  }
+
+  // Switch to this session's tab
+  const handle = sessionTabMap.get(sessionId);
+  if (handle) {
+    try {
+      await executeCommand({ action: 'switch_tab', handle });
+    } catch {
+      // Tab may have been closed externally, recreate it
+      sessionTabMap.delete(sessionId);
+      const newTabResult = await executeCommand({ action: 'new_tab', url: 'about:blank' });
+      if (newTabResult.success) {
+        const newTabsResult = await executeCommand({ action: 'tabs' });
+        const newHandle = (newTabsResult as any).current;
+        if (newHandle) sessionTabMap.set(sessionId, newHandle);
+      }
+    }
+  }
+}
+
+/** Process the next command in queue - handles tab switching atomically */
+async function processQueue(): Promise<void> {
+  if (commandRunning || commandQueue.length === 0) return;
+
+  commandRunning = true;
+  const { command, sessionId, resolve, reject } = commandQueue.shift()!;
+
+  try {
+    // ATOMIC: Switch to session's tab THEN execute command
+    // This happens inside the queue processor so no other command can interleave
+    if (sessionId) {
+      await ensureSessionTab(sessionId);
+    }
+
+    const result = await executeCommand(command);
+    resolve(result);
+  } catch (err) {
+    // If browser died, try to restart and retry once
+    if (isBrowserDeadError(err as Error)) {
+      try {
+        await restartBrowser();
+        // Re-ensure tab after restart
+        if (sessionId) {
+          await ensureSessionTab(sessionId);
+        }
+        const retryResult = await executeCommand(command);
+        resolve(retryResult);
+      } catch (retryErr) {
+        reject(retryErr as Error);
+      }
+    } else {
+      reject(err as Error);
+    }
+  } finally {
+    commandRunning = false;
+    // Process next command if any
+    if (commandQueue.length > 0) {
+      processQueue();
+    }
+  }
+}
+
+/** Queue a command for execution (serializes concurrent requests) */
+async function cmd(command: Record<string, unknown>, sessionId?: string): Promise<Record<string, unknown>> {
+  await ensureBrowser();
+
+  return new Promise((resolve, reject) => {
+    commandQueue.push({ command, sessionId, resolve, reject });
+    processQueue();
+  });
+}
+
+/** Queue a raw command without session context (for internal use) */
+async function cmdRaw(command: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return cmd(command, undefined);
 }
 
 function fmt(result: Record<string, unknown>): string {
@@ -331,7 +504,7 @@ export const browserTools: Tool[] = [
       },
       required: ['action'],
     },
-    execute: async (params: Record<string, unknown>) => {
+    execute: async (params: Record<string, unknown>, ctx?: ToolContext) => {
       const action = params.action as string;
 
       // Validate action
@@ -387,13 +560,75 @@ export const browserTools: Tool[] = [
       if (action === 'wait_element' && !command['condition']) command['condition'] = 'present';
       if (!command['by'] && params['selector']) command['by'] = 'css';
 
-      // Handle close specially (process may die)
+      const sessionId = ctx?.sessionId;
+
+      // ── Handle close specially ──
       if (action === 'close') {
-        try { return { output: fmt(await cmd(command)) }; }
+        sessionTabMap.clear();
+        try { return { output: fmt(await cmdRaw(command)) }; }
         catch { pyProc = null; browserStarted = false; return { output: 'Browser closed' }; }
       }
 
-      return { output: fmt(await cmd(command)) };
+      // ── Intercept tab-related actions to work within session scope ──
+      // The agent thinks they're managing tabs, but they only see their own tab.
+      // Tab switching is handled atomically in the queue processor.
+      if (sessionId && action === 'tabs') {
+        // Get current page info via the queue (which will switch to session tab first)
+        const result = await cmd(command, sessionId);
+        const handle = sessionTabMap.get(sessionId);
+        // Return just their tab info, hide the multi-session nature
+        return {
+          output: fmt({
+            success: true,
+            current: handle,
+            tabs: [{ handle, title: (result as any).title || 'Tab', url: (result as any).url || '' }],
+            count: 1,
+          }),
+        };
+      }
+
+      if (sessionId && action === 'new_tab') {
+        // Agent wants a new tab - just navigate their existing tab to the new URL
+        const url = command['url'] as string || 'about:blank';
+        const navResult = await cmd({ action: 'navigate', url }, sessionId);
+        return { output: fmt({ success: navResult.success, message: 'Opened in current tab', url }) };
+      }
+
+      if (sessionId && action === 'switch_tab') {
+        // No-op since each session only has one tab
+        return { output: fmt({ success: true, message: 'Already on your tab' }) };
+      }
+
+      if (sessionId && action === 'close_tab') {
+        // Navigate to blank instead of actually closing
+        await cmd({ action: 'navigate', url: 'about:blank' }, sessionId);
+        return { output: fmt({ success: true, message: 'Tab cleared' }) };
+      }
+
+      // ── Execute command with session context ──
+      // The queue processor will switch to the session's tab atomically before executing
+      const result = await cmd(command, sessionId);
+
+      // Auto-display screenshots in chat
+      if (result.success && ['screenshot', 'screenshot_full', 'screenshot_element'].includes(action)) {
+        const base64Data = result.data as string;
+        if (base64Data && imageBroadcaster && ctx?.sessionId) {
+          const alt = action === 'screenshot_full' ? 'Full Page Screenshot'
+            : action === 'screenshot_element' ? 'Element Screenshot'
+            : 'Browser Screenshot';
+
+          imageBroadcaster({
+            type: 'image',
+            sessionId: ctx.sessionId,
+            base64: base64Data,
+            mimeType: 'image/png',
+            alt,
+            filename: `screenshot-${Date.now()}.png`,
+          });
+        }
+      }
+
+      return { output: fmt(result) };
     },
   },
 ];

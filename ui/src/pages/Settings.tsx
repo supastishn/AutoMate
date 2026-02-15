@@ -51,6 +51,15 @@ const SECTIONS: SectionDef[] = [
       { key: 'agent.apiKey', label: 'API Key', type: 'string' },
       { key: 'agent.maxTokens', label: 'Max Tokens', type: 'number' },
       { key: 'agent.temperature', label: 'Temperature', type: 'number' },
+      { key: 'agent.thinkingLevel', label: 'Thinking Level', type: 'string' },
+    ],
+  },
+  {
+    title: 'Power Steering',
+    fields: [
+      { key: 'agent.powerSteering.enabled', label: 'Enabled', type: 'boolean' },
+      { key: 'agent.powerSteering.interval', label: 'Interval (messages)', type: 'number' },
+      { key: 'agent.powerSteering.role', label: 'Role (system/user)', type: 'string' },
     ],
   },
   {
@@ -86,12 +95,14 @@ const SECTIONS: SectionDef[] = [
     title: 'Features',
     fields: [
       { key: 'browser.enabled', label: 'Browser', type: 'boolean' },
+      { key: 'browser.headless', label: 'Browser Headless', type: 'boolean' },
       { key: 'cron.enabled', label: 'Cron', type: 'boolean' },
       { key: 'webhooks.enabled', label: 'Webhooks', type: 'boolean' },
       { key: 'canvas.enabled', label: 'Canvas', type: 'boolean' },
       { key: 'plugins.enabled', label: 'Plugins', type: 'boolean' },
       { key: 'heartbeat.enabled', label: 'Heartbeat', type: 'boolean' },
       { key: 'heartbeat.intervalMinutes', label: 'Heartbeat Interval (min)', type: 'number' },
+      { key: 'heartbeat.jitterMinutes', label: 'Heartbeat Jitter ±(min)', type: 'number' },
     ],
   },
   {
@@ -100,8 +111,10 @@ const SECTIONS: SectionDef[] = [
       { key: 'memory.directory', label: 'Memory Directory', type: 'string' },
       { key: 'memory.sharedDirectory', label: 'Shared Memory Directory', type: 'string' },
       { key: 'sessions.directory', label: 'Sessions Directory', type: 'string' },
-      { key: 'sessions.contextLimit', label: 'Context Limit', type: 'number' },
-      { key: 'sessions.compactAt', label: 'Compact At', type: 'number' },
+      { key: 'sessions.contextLimit', label: 'Context Limit (tokens)', type: 'number' },
+      { key: 'sessions.reserveTokens', label: 'Reserve Tokens', type: 'number' },
+      { key: 'sessions.compactAt', label: 'Compact At (ratio)', type: 'number' },
+      { key: 'sessions.autoResetHour', label: 'Auto Reset Hour (-1=off)', type: 'number' },
       { key: 'memory.embedding.enabled', label: 'Embedding Enabled', type: 'boolean' },
       { key: 'memory.embedding.model', label: 'Embedding Model', type: 'string' },
       { key: 'memory.embedding.apiBase', label: 'Embedding API Base', type: 'string' },
@@ -109,10 +122,37 @@ const SECTIONS: SectionDef[] = [
     ],
   },
   {
+    title: 'Context Pruning',
+    fields: [
+      { key: 'sessions.pruning.enabled', label: 'Enabled', type: 'boolean' },
+      { key: 'sessions.pruning.ttlMs', label: 'TTL (ms)', type: 'number' },
+      { key: 'sessions.pruning.keepLastAssistants', label: 'Keep Last N Assistant Turns', type: 'number' },
+      { key: 'sessions.pruning.softTrimRatio', label: 'Soft Trim Ratio', type: 'number' },
+      { key: 'sessions.pruning.hardClearRatio', label: 'Hard Clear Ratio', type: 'number' },
+      { key: 'sessions.pruning.minPrunableChars', label: 'Min Prunable Chars', type: 'number' },
+      { key: 'sessions.pruning.softTrim.maxChars', label: 'Soft Trim Max Chars', type: 'number' },
+      { key: 'sessions.pruning.softTrim.headChars', label: 'Soft Trim Head Chars', type: 'number' },
+      { key: 'sessions.pruning.softTrim.tailChars', label: 'Soft Trim Tail Chars', type: 'number' },
+      { key: 'sessions.pruning.hardClear.enabled', label: 'Hard Clear Enabled', type: 'boolean' },
+      { key: 'sessions.pruning.hardClear.placeholder', label: 'Hard Clear Placeholder', type: 'string' },
+    ],
+  },
+  {
     title: 'Tool Policy',
     fields: [
       { key: 'tools.allow', label: 'Allow List', type: 'array' },
       { key: 'tools.deny', label: 'Deny List', type: 'array' },
+      { key: 'tools.requireApproval', label: 'Require Approval', type: 'array' },
+    ],
+  },
+  {
+    title: 'TTS (Text-to-Speech)',
+    fields: [
+      { key: 'tts.enabled', label: 'Enabled', type: 'boolean' },
+      { key: 'tts.provider', label: 'Provider', type: 'string' },
+      { key: 'tts.apiKey', label: 'API Key', type: 'string' },
+      { key: 'tts.voice', label: 'Voice', type: 'string' },
+      { key: 'tts.model', label: 'Model', type: 'string' },
     ],
   },
   {
@@ -121,6 +161,7 @@ const SECTIONS: SectionDef[] = [
       { key: 'skills.directory', label: 'Skills Directory', type: 'string' },
       { key: 'cron.directory', label: 'Cron Directory', type: 'string' },
       { key: 'plugins.directory', label: 'Plugins Directory', type: 'string' },
+      { key: 'browser.profileDir', label: 'Browser Profile Directory', type: 'string' },
     ],
   },
 ]

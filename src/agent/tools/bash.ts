@@ -96,6 +96,26 @@ export const bashTool: Tool = {
           error: exitCode !== 0 ? `Exit code: ${exitCode}` : undefined,
         });
       });
+
+      // Listen for abort signal to kill the process
+      if (ctx.signal) {
+        const abortHandler = () => {
+          proc.kill('SIGTERM');
+          // Give it a moment, then force kill
+          setTimeout(() => {
+            try { proc.kill('SIGKILL'); } catch {}
+          }, 500);
+          resolve({
+            output: '(process interrupted)',
+            error: 'INTERRUPTED',
+          });
+        };
+        if (ctx.signal.aborted) {
+          abortHandler();
+        } else {
+          ctx.signal.addEventListener('abort', abortHandler, { once: true });
+        }
+      }
     });
   },
 };

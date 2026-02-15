@@ -4,6 +4,8 @@ export interface ToolContext {
   sessionId: string;
   workdir: string;
   elevated?: boolean;
+  /** Abort signal - tools should check this and abort early when signaled */
+  signal?: AbortSignal;
 }
 
 export interface ToolResult {

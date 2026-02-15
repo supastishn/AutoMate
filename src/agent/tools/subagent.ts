@@ -1,20 +1,29 @@
 /**
  * Sub-Agent Spawner — spawn isolated sub-agents with their own context.
- * 
+ *
  * Two modes:
  *   - blocking (default): Waits for sub-agent to finish and returns the result inline.
  *   - parallel: Runs in background, returns a hash ID immediately.
  *     Use the `subagent_poll` tool to check status and retrieve results.
- * 
+ *
  * Sub-agents keep running until they call `subagent_finish`. If they produce
  * a plain text response without tool calls, a "continue" nudge is injected
  * so they keep working instead of stopping early.
+ *
+ * Background agents are persisted to disk so they can resume after restart.
  */
 
 import type { Tool } from '../tool-registry.js';
 import { randomBytes } from 'node:crypto';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 
 let spawnFn: ((opts: SubAgentOpts) => Promise<SubAgentResult>) | null = null;
+/** Callback to notify the parent session when a parallel sub-agent finishes */
+let notifyParentFn: ((parentSessionId: string, message: string) => void) | null = null;
+/** Path to persist background agents */
+let persistPath: string | null = null;
+
 
 export interface SubAgentOpts {
   name: string;
@@ -27,6 +36,8 @@ export interface SubAgentOpts {
   mode?: 'blocking' | 'parallel';
   /** Session ID of the parent — used to inherit promoted tools */
   parentSessionId?: string;
+  /** Existing session ID to resume (for restart recovery) */
+  resumeSessionId?: string;
 }
 
 export interface SubAgentResult {
@@ -64,8 +75,11 @@ export function consumeSubAgentFinish(sessionId: string): string | undefined {
 
 interface BackgroundAgent {
   id: string;
+  parentSessionId?: string;
+  sessionId?: string;  // The subagent's own session ID for resume
   name: string;
   task: string;
+  systemPrompt?: string;
   status: 'running' | 'completed' | 'timeout' | 'error';
   startTime: number;
   endTime?: number;
@@ -78,6 +92,93 @@ const backgroundAgents: Map<string, BackgroundAgent> = new Map();
 
 function generateId(): string {
   return randomBytes(4).toString('hex');
+}
+
+/** Set the path for persisting background agents */
+export function setSubAgentPersistPath(path: string): void {
+  persistPath = path;
+  // Ensure directory exists
+  const dir = dirname(path);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  // Load existing state
+  loadPersistedAgents();
+}
+
+/** Save background agents to disk */
+function persistAgents(): void {
+  if (!persistPath) return;
+  try {
+    const data = JSON.stringify([...backgroundAgents.values()], null, 2);
+    writeFileSync(persistPath, data, 'utf-8');
+  } catch (err) {
+    console.error(`[subagent] Failed to persist agents: ${(err as Error).message}`);
+  }
+}
+
+/** Load background agents from disk */
+function loadPersistedAgents(): void {
+  if (!persistPath || !existsSync(persistPath)) return;
+  try {
+    const data = readFileSync(persistPath, 'utf-8');
+    const agents: BackgroundAgent[] = JSON.parse(data);
+    for (const agent of agents) {
+      backgroundAgents.set(agent.id, agent);
+    }
+    console.log(`[subagent] Loaded ${agents.length} persisted agents`);
+  } catch (err) {
+    console.error(`[subagent] Failed to load persisted agents: ${(err as Error).message}`);
+  }
+}
+
+/** Get agents that were running when server stopped (for resume) */
+export function getInterruptedAgents(): BackgroundAgent[] {
+  return [...backgroundAgents.values()].filter(a => a.status === 'running');
+}
+
+/** Resume an interrupted agent - called from index.ts on startup */
+export async function resumeAgent(agent: BackgroundAgent): Promise<void> {
+  if (!spawnFn) {
+    console.error(`[subagent] Cannot resume "${agent.name}" - spawner not available`);
+    return;
+  }
+
+  console.log(`[subagent] Resuming interrupted agent "${agent.name}" (${agent.id})`);
+
+  // The agent's session still exists, so spawning with the same sessionId will continue it
+  spawnFn({
+    name: agent.name,
+    task: '[RESUME] Continue from where you left off. The server was restarted. Review your progress and complete the task.',
+    systemPrompt: agent.systemPrompt,
+    reportBack: true,
+    timeout: 24 * 60 * 60 * 1000,
+    parentSessionId: agent.parentSessionId,
+    resumeSessionId: agent.sessionId,  // Pass existing session to continue
+  })
+    .then((result) => {
+      agent.status = result.status === 'completed' ? 'completed' : result.status;
+      agent.output = result.output;
+      agent.toolCalls = result.toolCalls;
+      agent.endTime = Date.now();
+      persistAgents();
+
+      if (agent.parentSessionId && notifyParentFn) {
+        const duration = ((agent.endTime - agent.startTime) / 1000).toFixed(1);
+        const preview = (result.output || '').slice(0, 500);
+        notifyParentFn(agent.parentSessionId, `[Sub-agent resumed & completed — "${agent.name}" (${agent.id}) finished in ${duration}s]\n\n${preview}${(result.output || '').length > 500 ? '\n\n... (use subagent_poll to see full output)' : ''}`);
+      }
+    })
+    .catch((err) => {
+      agent.status = 'error';
+      agent.error = (err as Error).message;
+      agent.endTime = Date.now();
+      persistAgents();
+
+      if (agent.parentSessionId && notifyParentFn) {
+        notifyParentFn(agent.parentSessionId, `[Sub-agent resume failed — "${agent.name}" (${agent.id}): ${(err as Error).message}]`);
+      }
+    });
 }
 
 function cleanupOldAgents(): void {
@@ -108,6 +209,25 @@ export function clearCompletedAgents(): number {
   return cleared;
 }
 
+/** Kill/stop a running subagent by ID. Returns the agent if found, null otherwise. */
+export function killSubAgent(id: string): BackgroundAgent | null {
+  const agent = backgroundAgents.get(id);
+  if (!agent) return null;
+
+  if (agent.status === 'running') {
+    agent.status = 'error';
+    agent.error = 'Killed by user';
+    agent.endTime = Date.now();
+    persistAgents();
+  }
+
+  return agent;
+}
+
+export function setSubAgentNotifier(fn: (parentSessionId: string, message: string) => void): void {
+  notifyParentFn = fn;
+}
+
 export function setSubAgentSpawner(fn: (opts: SubAgentOpts) => Promise<SubAgentResult>): void {
   spawnFn = fn;
 }
@@ -132,10 +252,8 @@ export const subAgentTools: Tool[] = [
       properties: {
         name: { type: 'string', description: 'Name for this sub-agent (e.g. "researcher", "code-reviewer")' },
         task: { type: 'string', description: 'The task/prompt to give the sub-agent' },
-        system_prompt: { type: 'string', description: 'Optional custom system prompt' },
-        mode: { type: 'string', description: 'blocking (wait for result) or parallel (background, poll later)', enum: ['blocking', 'parallel'] },
+        mode: { type: 'string', description: 'blocking (wait for result) or parallel (background, poll later). Parallel agents auto-notify when done.', enum: ['blocking', 'parallel'] },
         report_back: { type: 'boolean', description: 'Deprecated. true=blocking, false=parallel. Use mode instead.' },
-        timeout: { type: 'number', description: 'Timeout in seconds (default: 300)' },
       },
       required: ['name', 'task'],
     },
@@ -144,8 +262,9 @@ export const subAgentTools: Tool[] = [
 
       const name = params.name as string;
       const task = params.task as string;
+      // Fixed 24-hour timeout for all subagents
+      const timeout = 24 * 60 * 60 * 1000;
       const systemPrompt = params.system_prompt as string | undefined;
-      const timeout = ((params.timeout as number) || 300) * 1000;
       const parentSessionId = ctx?.sessionId;
 
       // Resolve mode
@@ -159,15 +278,21 @@ export const subAgentTools: Tool[] = [
       try {
         if (mode === 'parallel') {
           const id = generateId();
+          // Generate the session ID that will be used (matches agent.ts logic)
+          const sessionId = `subagent:${name}:${id}`;
           const agent: BackgroundAgent = {
             id,
+            parentSessionId,
+            sessionId,
             name,
-            task: task.slice(0, 200),
+            task: task.slice(0, 500),  // Store more of task for context
+            systemPrompt,
             status: 'running',
             startTime: Date.now(),
             toolCalls: [],
           };
           backgroundAgents.set(id, agent);
+          persistAgents();  // Persist immediately so we can resume if server restarts
           cleanupOldAgents();
 
           spawnFn({ name, task, systemPrompt, reportBack: true, timeout, parentSessionId })
@@ -176,11 +301,25 @@ export const subAgentTools: Tool[] = [
               agent.output = result.output;
               agent.toolCalls = result.toolCalls;
               agent.endTime = Date.now();
+              persistAgents();  // Update persisted state
+
+              // Notify the parent session that this sub-agent finished
+              if (parentSessionId && notifyParentFn) {
+                const duration = ((agent.endTime - agent.startTime) / 1000).toFixed(1);
+                const preview = (result.output || '').slice(0, 500);
+                notifyParentFn(parentSessionId, `[Sub-agent completed — "${name}" (${id}) finished in ${duration}s]\n\n${preview}${(result.output || '').length > 500 ? '\n\n... (use subagent_poll to see full output)' : ''}`);
+              }
             })
             .catch((err) => {
               agent.status = 'error';
               agent.error = (err as Error).message;
               agent.endTime = Date.now();
+              persistAgents();  // Update persisted state
+
+              // Notify the parent session about the error too
+              if (parentSessionId && notifyParentFn) {
+                notifyParentFn(parentSessionId, `[Sub-agent error — "${name}" (${id}) failed: ${(err as Error).message}]`);
+              }
             });
 
           return {

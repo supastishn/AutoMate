@@ -10,13 +10,27 @@ interface CanvasData {
   language?: string
 }
 
+interface UploadResult {
+  ok: boolean
+  filename: string
+  savedAs: string
+  url: string
+  path: string
+  size: number
+  mimetype: string
+}
+
 export default function Canvas() {
   const colors = useColors()
   const [canvases, setCanvases] = useState<CanvasData[]>([])
   const [activeIdx, setActiveIdx] = useState(0)
   const [connected, setConnected] = useState(false)
   const [htmlPreview, setHtmlPreview] = useState<string | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const [uploadedImages, setUploadedImages] = useState<UploadResult[]>([])
+  const [showUploads, setShowUploads] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     connect()
@@ -34,7 +48,6 @@ export default function Canvas() {
       try {
         const msg = JSON.parse(e.data)
 
-        // Load initial canvases on connect
         if (msg.type === 'connected' && msg.canvases) {
           setCanvases(msg.canvases)
           if (msg.canvases.length > 0) setActiveIdx(0)
@@ -61,6 +74,77 @@ export default function Canvas() {
     wsRef.current = ws
   }
 
+  const handleUpload = async (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    setUploading(true)
+    const results: UploadResult[] = []
+
+    for (const file of Array.from(files)) {
+      const formData = new FormData()
+      formData.append('file', file)
+      try {
+        const res = await fetch('/api/upload', { method: 'POST', body: formData })
+        const data = await res.json() as UploadResult
+        if (data.ok) {
+          results.push(data)
+        }
+      } catch (err) {
+        console.error('Upload failed:', err)
+      }
+    }
+
+    if (results.length > 0) {
+      setUploadedImages(prev => [...results, ...prev])
+      // If single image uploaded, push it to canvas as HTML immediately
+      if (results.length === 1 && results[0].mimetype?.startsWith('image/')) {
+        const r = results[0]
+        const html = `<!DOCTYPE html>
+<html><head><style>
+  body { margin:0; padding:16px; background:#111; display:flex; flex-direction:column; align-items:center; font-family:sans-serif; }
+  img { max-width:100%; height:auto; border-radius:8px; box-shadow:0 4px 20px rgba(0,0,0,0.5); }
+  .title { color:#ccc; font-size:14px; margin-bottom:12px; }
+  .meta { color:#666; font-size:11px; margin-top:8px; }
+</style></head><body>
+  <div class="title">${r.filename}</div>
+  <img src="${r.url}" alt="${r.filename}" />
+  <div class="meta">${r.savedAs} · ${(r.size / 1024).toFixed(1)} KB</div>
+</body></html>`
+
+        // Push via WS if connected
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({
+            type: 'canvas_upload',
+            title: r.filename,
+            content: html,
+            contentType: 'html',
+            url: r.url,
+          }))
+        }
+
+        // Also update local state directly for instant feedback
+        setCanvases(prev => {
+          const imgCanvas: CanvasData = {
+            id: 'upload-' + Date.now(),
+            title: r.filename,
+            content: html,
+            contentType: 'html',
+          }
+          return [...prev, imgCanvas]
+        })
+        setActiveIdx(canvases.length) // switch to the new one
+      }
+    }
+
+    setUploading(false)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024) return bytes + ' B'
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+  }
+
   const canvas = canvases[activeIdx] || null
 
   const renderContent = () => {
@@ -71,8 +155,17 @@ export default function Canvas() {
             <div style={{ fontSize: 48, marginBottom: 16, opacity: 0.3 }}>&#9634;</div>
             <div style={{ fontSize: 16 }}>Canvas is empty</div>
             <div style={{ fontSize: 13, marginTop: 8, color: colors.textMuted }}>
-              The agent can push content here using canvas_push
+              Push content via the agent, or upload an image below
             </div>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              style={{
+                marginTop: 16, padding: '8px 20px', background: colors.accent, color: colors.accentContrast,
+                border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 600,
+              }}
+            >
+              📤 Upload Image
+            </button>
           </div>
         </div>
       )
@@ -81,6 +174,7 @@ export default function Canvas() {
     if (canvas.contentType === 'html') {
       return (
         <iframe
+          key={canvas.id + '-' + canvas.content.length}
           srcDoc={canvas.content}
           style={{
             width: '100%', height: '100%', border: 'none',
@@ -187,7 +281,20 @@ export default function Canvas() {
         .canvas-markdown th { background: var(--bgTertiary); color: var(--accent); }
         .canvas-markdown hr { border: none; border-top: 1px solid var(--borderLight); margin: 1.2em 0; }
         .canvas-markdown img { max-width: 100%; border-radius: 4px; }
+        .upload-btn:hover { opacity: 0.85; }
+        .upload-grid-item:hover { opacity: 0.8; outline: 2px solid var(--accent); }
       `}</style>
+
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*,video/*,.pdf,.txt,.json,.html,.css,.js,.ts,.py,.md"
+        multiple
+        style={{ display: 'none' }}
+        onChange={(e) => handleUpload(e.target.files)}
+      />
+
       {/* Header */}
       <div style={{
         padding: '12px 20px', borderBottom: `1px solid ${colors.border}`,
@@ -206,7 +313,7 @@ export default function Canvas() {
             </span>
           )}
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {/* Canvas tabs if multiple */}
           {canvases.length > 1 && canvases.map((c, i) => (
             <button
@@ -222,6 +329,35 @@ export default function Canvas() {
               {c.title || c.id}
             </button>
           ))}
+
+          {/* Upload button */}
+          <button
+            className="upload-btn"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+            style={{
+              padding: '4px 12px', background: colors.bgTertiary, color: colors.warning,
+              border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12,
+              fontWeight: 600, opacity: uploading ? 0.5 : 1,
+            }}
+          >
+            {uploading ? '⏳ Uploading...' : '📤 Upload'}
+          </button>
+
+          {/* Uploads gallery toggle */}
+          {uploadedImages.length > 0 && (
+            <button
+              onClick={() => setShowUploads(!showUploads)}
+              style={{
+                padding: '4px 12px', background: showUploads ? colors.accent : colors.bgTertiary,
+                color: showUploads ? colors.accentContrast : colors.textSecondary,
+                border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12,
+              }}
+            >
+              🖼 {uploadedImages.length}
+            </button>
+          )}
+
           {canvas?.contentType === 'html' && (
             <button
               onClick={() => {
@@ -269,8 +405,79 @@ export default function Canvas() {
         </div>
       </div>
 
-      {/* Canvas content area */}
-      <div style={{ flex: 1, overflow: 'hidden', background: colors.bgSecondary }}>
+      {/* Uploads gallery panel */}
+      {showUploads && (
+        <div style={{
+          padding: '12px 20px', borderBottom: `1px solid ${colors.border}`,
+          background: colors.bgSecondary, maxHeight: 200, overflowY: 'auto',
+        }}>
+          <div style={{ fontSize: 12, color: colors.textSecondary, marginBottom: 8 }}>
+            Uploaded files ({uploadedImages.length})
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {uploadedImages.map((img, i) => (
+              <div
+                key={i}
+                className="upload-grid-item"
+                onClick={() => {
+                  // Click to view in canvas
+                  if (img.mimetype?.startsWith('image/')) {
+                    const html = `<!DOCTYPE html>
+<html><head><style>
+  body { margin:0; padding:16px; background:#111; display:flex; flex-direction:column; align-items:center; }
+  img { max-width:100%; height:auto; border-radius:8px; box-shadow:0 4px 20px rgba(0,0,0,0.5); }
+  .meta { color:#666; font-size:11px; margin-top:8px; font-family:sans-serif; }
+</style></head><body>
+  <img src="${img.url}" alt="${img.filename}" />
+  <div class="meta">${img.filename} · ${formatSize(img.size)}</div>
+</body></html>`
+                    setCanvases(prev => {
+                      const newCanvas: CanvasData = { id: 'view-' + Date.now(), title: img.filename, content: html, contentType: 'html' }
+                      return [...prev, newCanvas]
+                    })
+                    setActiveIdx(canvases.length)
+                  }
+                }}
+                style={{
+                  width: 80, height: 80, borderRadius: 6, overflow: 'hidden', cursor: 'pointer',
+                  border: `1px solid ${colors.borderLight}`, position: 'relative', flexShrink: 0,
+                }}
+              >
+                {img.mimetype?.startsWith('image/') ? (
+                  <img src={img.url} alt={img.filename} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                ) : (
+                  <div style={{
+                    width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: colors.bgTertiary, fontSize: 10, color: colors.textSecondary, textAlign: 'center', padding: 4,
+                  }}>
+                    {img.filename}
+                  </div>
+                )}
+                <div style={{
+                  position: 'absolute', bottom: 0, left: 0, right: 0, background: 'rgba(0,0,0,0.7)',
+                  fontSize: 9, color: '#ccc', padding: '2px 4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>
+                  {formatSize(img.size)}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{ marginTop: 8, fontSize: 11, color: colors.textMuted }}>
+            URL format: <code style={{ background: colors.bgTertiary, padding: '1px 4px', borderRadius: 3, fontSize: 10 }}>/api/uploads/filename</code>
+          </div>
+        </div>
+      )}
+
+      {/* Canvas content area — supports drag & drop */}
+      <div
+        style={{ flex: 1, overflow: 'hidden', background: colors.bgSecondary, position: 'relative' }}
+        onDragOver={(e) => { e.preventDefault(); e.stopPropagation() }}
+        onDrop={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          handleUpload(e.dataTransfer.files)
+        }}
+      >
         {renderContent()}
       </div>
 

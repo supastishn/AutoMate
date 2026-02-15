@@ -20,6 +20,14 @@ interface MemoryFile {
   modified: string
 }
 
+interface FileSystemItem {
+  name: string
+  fullPath: string
+  isFolder: boolean
+  size?: number
+  modified?: string
+}
+
 interface SearchResult {
   file: string
   content: string
@@ -46,6 +54,7 @@ const spinnerKeyframes = `
 const Memory: React.FC = () => {
   const colors = useColors()
   const [files, setFiles] = React.useState<MemoryFile[]>([])
+  const [currentPath, setCurrentPath] = React.useState<string>('') // Current folder path
   const [selectedFile, setSelectedFile] = React.useState<string | null>(null)
   const [fileContent, setFileContent] = React.useState<string>('')
   const [editing, setEditing] = React.useState(false)
@@ -88,6 +97,77 @@ const Memory: React.FC = () => {
       })
       .catch(() => {})
   }, [])
+
+  // Compute items (folders + files) visible at the current path level
+  const currentItems = React.useMemo((): FileSystemItem[] => {
+    const items: FileSystemItem[] = []
+    const foldersInPath = new Set<string>()
+
+    for (const f of files) {
+      // If currentPath is empty, we're at root
+      // If file.name starts with currentPath + '/', it's inside this folder
+      const prefix = currentPath ? currentPath + '/' : ''
+
+      if (currentPath === '' || f.name.startsWith(prefix)) {
+        // Get the relative path from current directory
+        const relativePath = currentPath ? f.name.slice(prefix.length) : f.name
+
+        // Check if there's a subfolder at this level
+        const slashIndex = relativePath.indexOf('/')
+        if (slashIndex !== -1) {
+          // This file is in a subfolder
+          const folderName = relativePath.slice(0, slashIndex)
+          if (!foldersInPath.has(folderName)) {
+            foldersInPath.add(folderName)
+            items.push({
+              name: folderName,
+              fullPath: prefix + folderName,
+              isFolder: true,
+            })
+          }
+        } else {
+          // Direct file at this level
+          items.push({
+            name: relativePath,
+            fullPath: f.name,
+            isFolder: false,
+            size: f.size,
+            modified: f.modified,
+          })
+        }
+      }
+    }
+
+    // Sort: folders first, then files alphabetically
+    return items.sort((a, b) => {
+      if (a.isFolder !== b.isFolder) return a.isFolder ? -1 : 1
+      return a.name.localeCompare(b.name)
+    })
+  }, [files, currentPath])
+
+  const navigateToFolder = (folderPath: string) => {
+    setCurrentPath(folderPath)
+    setSelectedFile(null)
+    setFileContent('')
+    setEditContent('')
+    setEditing(false)
+  }
+
+  const navigateUp = () => {
+    if (!currentPath) return
+    const lastSlash = currentPath.lastIndexOf('/')
+    if (lastSlash === -1) {
+      setCurrentPath('')
+    } else {
+      setCurrentPath(currentPath.slice(0, lastSlash))
+    }
+    setSelectedFile(null)
+  }
+
+  const pathParts = React.useMemo(() => {
+    if (!currentPath) return []
+    return currentPath.split('/')
+  }, [currentPath])
 
   React.useEffect(() => {
     loadFiles()
@@ -311,36 +391,110 @@ const Memory: React.FC = () => {
             letterSpacing: 1,
             color: colors.textMuted,
             borderBottom: `1px solid ${colors.border}`,
-          }}>Memory Files</div>
-          {files.length === 0 && (
-            <div style={{ padding: 16, color: colors.textMuted, fontSize: 13 }}>
-              No files found
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+          }}>
+            {currentPath && (
+              <button
+                onClick={navigateUp}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: colors.accent,
+                  cursor: 'pointer',
+                  padding: '2px 6px',
+                  borderRadius: 4,
+                  fontSize: 14,
+                  fontWeight: 700,
+                  lineHeight: 1,
+                }}
+                title="Go back"
+              >
+                ←
+              </button>
+            )}
+            <span style={{ flex: 1 }}>
+              {currentPath ? currentPath.split('/').pop() : 'Memory Files'}
+            </span>
+          </div>
+          {/* Breadcrumb */}
+          {currentPath && (
+            <div style={{
+              padding: '8px 16px',
+              fontSize: 11,
+              color: colors.textMuted,
+              borderBottom: `1px solid ${colors.border}`,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              flexWrap: 'wrap',
+            }}>
+              <span
+                onClick={() => navigateToFolder('')}
+                style={{ cursor: 'pointer', color: colors.accent }}
+              >
+                root
+              </span>
+              {pathParts.map((part, i) => (
+                <React.Fragment key={i}>
+                  <span>/</span>
+                  <span
+                    onClick={() => navigateToFolder(pathParts.slice(0, i + 1).join('/'))}
+                    style={{
+                      cursor: i < pathParts.length - 1 ? 'pointer' : 'default',
+                      color: i < pathParts.length - 1 ? colors.accent : colors.textPrimary,
+                    }}
+                  >
+                    {part}
+                  </span>
+                </React.Fragment>
+              ))}
             </div>
           )}
-          {files.map((f) => (
+          {currentItems.length === 0 && (
+            <div style={{ padding: 16, color: colors.textMuted, fontSize: 13 }}>
+              {currentPath ? 'Empty folder' : 'No files found'}
+            </div>
+          )}
+          {currentItems.map((item) => (
             <div
-              key={f.name}
+              key={item.fullPath}
               style={{
                 padding: '10px 16px',
                 cursor: 'pointer',
                 borderBottom: `1px solid ${colors.border}`,
-                background: selectedFile === f.name ? colors.bgPrimary : 'transparent',
-                borderLeft: selectedFile === f.name ? `3px solid ${colors.accent}` : '3px solid transparent',
+                background: selectedFile === item.fullPath ? colors.bgPrimary : 'transparent',
+                borderLeft: selectedFile === item.fullPath ? `3px solid ${colors.accent}` : '3px solid transparent',
                 transition: 'background 0.15s',
               }}
-              onClick={() => selectFile(f.name)}
+              onClick={() => {
+                if (item.isFolder) {
+                  navigateToFolder(item.fullPath)
+                } else {
+                  selectFile(item.fullPath)
+                }
+              }}
             >
               <div style={{
                 fontSize: 13,
-                fontWeight: selectedFile === f.name ? 600 : 400,
-                color: selectedFile === f.name ? colors.accent : colors.textPrimary,
+                fontWeight: selectedFile === item.fullPath ? 600 : 400,
+                color: item.isFolder ? colors.warning : (selectedFile === item.fullPath ? colors.accent : colors.textPrimary),
                 wordBreak: 'break-all',
                 fontFamily: 'monospace',
-              }}>{f.name}</div>
-              <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
-                {formatSize(f.size)} &middot;{' '}
-                {new Date(f.modified).toLocaleDateString()}
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+              }}>
+                <span style={{ fontSize: 14 }}>{item.isFolder ? '📁' : '📄'}</span>
+                {item.name}
               </div>
+              {!item.isFolder && (
+                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4, marginLeft: 20 }}>
+                  {formatSize(item.size!)} &middot;{' '}
+                  {new Date(item.modified!).toLocaleDateString()}
+                </div>
+              )}
             </div>
           ))}
         </div>

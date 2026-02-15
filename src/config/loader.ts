@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, watch, type FSWatcher } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve, extname } from 'node:path';
 import { ConfigSchema, type Config } from './schema.js';
@@ -6,6 +6,11 @@ import { ConfigSchema, type Config } from './schema.js';
 const CONFIG_DIR = join(homedir(), '.automate');
 const CONFIG_FILE_JSON = join(CONFIG_DIR, 'automate.json');
 const CONFIG_FILE_YAML = join(CONFIG_DIR, 'automate.yaml');
+
+// Config file watcher for live reload
+let configWatcher: FSWatcher | null = null;
+let configChangeCallbacks: ((config: Config) => void)[] = [];
+let lastConfigMtime = 0;
 
 export function resolveHome(p: string): string {
   if (p.startsWith('~')) return p.replace('~', homedir());
@@ -267,4 +272,53 @@ export function getConfigPath(): string {
 
 export function getConfigDir(): string {
   return CONFIG_DIR;
+}
+
+/** Register a callback to be called when config file changes */
+export function onConfigChange(callback: (config: Config) => void): void {
+  configChangeCallbacks.push(callback);
+}
+
+/** Start watching the config file for changes */
+export function watchConfig(): void {
+  if (configWatcher) return; // already watching
+
+  const configPath = getConfigFilePath();
+  if (!existsSync(configPath)) return;
+
+  console.log(`[config] Watching ${configPath} for live reload`);
+
+  // Debounce: only reload if file changed at least 500ms ago
+  let debounceTimer: NodeJS.Timeout | null = null;
+
+  configWatcher = watch(configPath, (eventType) => {
+    if (eventType !== 'change') return;
+
+    // Debounce rapid changes
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      try {
+        const newConfig = reloadConfig(configPath);
+        console.log(`[config] Config reloaded (live)`);
+        for (const cb of configChangeCallbacks) {
+          try {
+            cb(newConfig);
+          } catch (err) {
+            console.error(`[config] Callback error:`, err);
+          }
+        }
+      } catch (err) {
+        console.error(`[config] Failed to reload config:`, err);
+      }
+    }, 500);
+  });
+}
+
+/** Stop watching the config file */
+export function unwatchConfig(): void {
+  if (configWatcher) {
+    configWatcher.close();
+    configWatcher = null;
+  }
+  configChangeCallbacks = [];
 }

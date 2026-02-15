@@ -11,6 +11,8 @@ export interface CronJob {
     at?: string;
     every?: number;
     cron?: string;
+    /** Random jitter in ms - actual delay will be every +/- random(0, jitter) */
+    jitter?: number;
   };
   sessionId?: string;
   enabled: boolean;
@@ -219,6 +221,10 @@ export class Scheduler {
   private calculateNextRun(job: CronJob, now?: Date): string | undefined {
     const ref = now ?? new Date();
 
+    // Calculate jitter offset if specified
+    const jitter = job.schedule.jitter || 0;
+    const jitterOffset = jitter > 0 ? Math.floor(Math.random() * jitter * 2) - jitter : 0;
+
     switch (job.schedule.type) {
       case 'once': {
         if (!job.schedule.at) return undefined;
@@ -227,12 +233,14 @@ export class Scheduler {
       case 'interval': {
         if (!job.schedule.every || job.schedule.every <= 0) return undefined;
         const base = job.lastRun ? new Date(job.lastRun) : ref;
-        return new Date(base.getTime() + job.schedule.every).toISOString();
+        const nextTime = base.getTime() + job.schedule.every + jitterOffset;
+        return new Date(Math.max(nextTime, ref.getTime() + 1000)).toISOString();
       }
       case 'cron': {
         if (!job.schedule.cron) return undefined;
         try {
-          return nextCronMatch(job.schedule.cron, ref).toISOString();
+          const cronTime = nextCronMatch(job.schedule.cron, ref).getTime();
+          return new Date(cronTime + jitterOffset).toISOString();
         } catch {
           return undefined;
         }
