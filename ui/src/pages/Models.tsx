@@ -24,6 +24,7 @@ interface Provider {
   temperature?: number
   priority?: number
   active?: boolean
+  contextWindow?: number
 }
 
 interface PrimaryModel {
@@ -46,7 +47,7 @@ interface ModelFormData {
   temperature: string
   thinkingLevel: string
   priority: string
-  contextLimit: string
+  contextWindow: string
 }
 
 const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high']
@@ -65,14 +66,13 @@ const emptyForm: ModelFormData = {
   temperature: '0.3',
   thinkingLevel: 'off',
   priority: '0',
-  contextLimit: '120000',
+  contextWindow: '',
 }
 
 export default function Models() {
   const colors = useColors()
   const [providers, setProviders] = useState<Provider[]>([])
   const [primaryModel, setPrimaryModel] = useState<PrimaryModel | null>(null)
-  const [contextLimit, setContextLimit] = useState<number>(120000)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [toast, setToast] = useState<{ msg: string; err: boolean } | null>(null)
@@ -87,11 +87,15 @@ export default function Models() {
 
   const fetchModels = useCallback(async () => {
     try {
-      const r = await fetch(`${API}/api/models`, { headers: authHeaders() })
-      const data = await r.json()
-      setProviders(data.providers || [])
-      setPrimaryModel(data.primaryModel || null)
-      setContextLimit(data.contextLimit || 120000)
+      const [modelsRes, configRes] = await Promise.all([
+        fetch(`${API}/api/models`, { headers: authHeaders() }),
+        fetch(`${API}/api/config/full`, { headers: authHeaders() }),
+      ])
+      const modelsData = await modelsRes.json()
+      const configData = await configRes.json()
+
+      setProviders(modelsData.providers || [])
+      setPrimaryModel(modelsData.primaryModel || null)
     } catch (e) {
       showToast('Failed to load models', true)
     } finally {
@@ -134,12 +138,12 @@ export default function Models() {
       apiType: form.apiType,
       maxTokens: parseInt(form.maxTokens) || undefined,
       temperature: parseFloat(form.temperature) || undefined,
+      contextWindow: form.contextWindow ? parseInt(form.contextWindow) : undefined,
     }
 
     // Primary model has extra fields
     if (editIndex === 0) {
       provider.thinkingLevel = form.thinkingLevel
-      provider.contextLimit = parseInt(form.contextLimit) || undefined
     } else {
       provider.priority = parseInt(form.priority) || 0
     }
@@ -181,6 +185,7 @@ export default function Models() {
       maxTokens: parseInt(form.maxTokens) || undefined,
       temperature: parseFloat(form.temperature) || undefined,
       priority: parseInt(form.priority) || 0,
+      contextWindow: form.contextWindow ? parseInt(form.contextWindow) : undefined,
     }
 
     try {
@@ -246,7 +251,7 @@ export default function Models() {
       temperature: String(p.temperature ?? (index === 0 ? primaryModel?.temperature : 0.3) ?? 0.3),
       thinkingLevel: index === 0 ? (primaryModel?.thinkingLevel || 'off') : 'off',
       priority: String((p as any).priority || index),
-      contextLimit: String(contextLimit),
+      contextWindow: p.contextWindow ? String(p.contextWindow) : '',
     })
     setEditIndex(index)
   }
@@ -366,9 +371,11 @@ export default function Models() {
                   <span style={{ fontSize: 11, color: colors.textMuted }}>
                     Thinking: <span style={{ color: colors.textSecondary }}>{primaryModel.thinkingLevel}</span>
                   </span>
-                  <span style={{ fontSize: 11, color: colors.textMuted }}>
-                    Context: <span style={{ color: colors.textSecondary }}>{contextLimit.toLocaleString()}</span>
-                  </span>
+                  {providers[0]?.contextWindow && (
+                    <span style={{ fontSize: 11, color: colors.textMuted }}>
+                      Context: <span style={{ color: colors.textSecondary }}>{providers[0].contextWindow?.toLocaleString()}</span>
+                    </span>
+                  )}
                 </div>
               )}
             </div>
@@ -396,6 +403,8 @@ export default function Models() {
           No models configured
         </div>
       )}
+
+
 
       {/* Edit Modal */}
       {editIndex !== null && (
@@ -490,32 +499,33 @@ export default function Models() {
               </div>
             </div>
 
+            <div style={{ marginBottom: 16 }}>
+              <label style={labelStyle}>Context Window (tokens)</label>
+              <input
+                style={inputStyle}
+                type="number"
+                value={form.contextWindow}
+                onChange={e => setForm({ ...form, contextWindow: e.target.value })}
+                placeholder="Leave empty to use default"
+              />
+              <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
+                Override the default context limit for this model. Leave empty to use the global default.
+              </div>
+            </div>
+
             {editIndex === 0 ? (
-              <>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
-                  <div>
-                    <label style={labelStyle}>Thinking Level</label>
-                    <select
-                      style={{ ...inputStyle, cursor: 'pointer' }}
-                      value={form.thinkingLevel}
-                      onChange={e => setForm({ ...form, thinkingLevel: e.target.value })}
-                    >
-                      {THINKING_LEVELS.map(l => (
-                        <option key={l} value={l}>{l}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Context Limit</label>
-                    <input
-                      style={inputStyle}
-                      type="number"
-                      value={form.contextLimit}
-                      onChange={e => setForm({ ...form, contextLimit: e.target.value })}
-                    />
-                  </div>
-                </div>
-              </>
+              <div style={{ marginBottom: 16 }}>
+                <label style={labelStyle}>Thinking Level</label>
+                <select
+                  style={{ ...inputStyle, cursor: 'pointer' }}
+                  value={form.thinkingLevel}
+                  onChange={e => setForm({ ...form, thinkingLevel: e.target.value })}
+                >
+                  {THINKING_LEVELS.map(l => (
+                    <option key={l} value={l}>{l}</option>
+                  ))}
+                </select>
+              </div>
             ) : (
               <div style={{ marginBottom: 16 }}>
                 <label style={labelStyle}>Priority (lower = higher priority)</label>
@@ -627,6 +637,20 @@ export default function Models() {
                   value={form.temperature}
                   onChange={e => setForm({ ...form, temperature: e.target.value })}
                 />
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 16 }}>
+              <label style={labelStyle}>Context Window (tokens)</label>
+              <input
+                style={inputStyle}
+                type="number"
+                value={form.contextWindow}
+                onChange={e => setForm({ ...form, contextWindow: e.target.value })}
+                placeholder="Leave empty to use default"
+              />
+              <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
+                Override the default context limit for this model. Leave empty to use the global default.
               </div>
             </div>
 
