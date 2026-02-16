@@ -7,22 +7,17 @@ import { init } from '@heyputer/puter.js/src/init.cjs';
 import type { Tool } from '../tool-registry.js';
 
 let puter: any = null;
-let apiToken: string | undefined;
 let defaultModel = 'claude';
 
-function getPuter(): any {
+function getPuter(config: any): any {
   if (!puter) {
-    if (!apiToken) {
+    const token = process.env.puterAuthToken || config.puter?.authToken;
+    if (!token) {
       throw new Error('Puter.js auth token not configured. Set config.puter.authToken or environment variable puterAuthToken');
     }
-    puter = init(apiToken);
+    puter = init(token);
   }
   return puter;
-}
-
-export function setPuterConfig(token?: string, model?: string): void {
-  apiToken = token;
-  if (model) defaultModel = model;
 }
 
 export const puterTools: Tool[] = [
@@ -53,10 +48,10 @@ export const puterTools: Tool[] = [
     },
     async execute(params, ctx) {
       const action = params.action as string;
-      // Config is set via setPuterConfig, using module-level variables
+      const config = ctx.agentConfig || {};
 
       try {
-        const puter = getPuter();
+        const puter = getPuter(config);
       } catch (err: any) {
         return { output: '', error: err.message };
       }
@@ -65,7 +60,7 @@ export const puterTools: Tool[] = [
         case 'chat': {
           const message = params.message as string;
           if (!message) return { output: '', error: 'message is required for chat' };
-          const model = (params.model as string) || defaultModel;
+          const model = (params.model as string) || config.puter?.defaultModel || defaultModel;
           const stream = (params.stream as boolean) || false;
 
           try {

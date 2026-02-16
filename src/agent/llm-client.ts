@@ -1,4 +1,5 @@
 import type { Config, Provider } from '../config/schema.js';
+import { init } from '@heyputer/puter.js/src/init.cjs';
 
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -15,6 +16,112 @@ export interface ToolCall {
     name: string;
     arguments: string;
   };
+  /** Puter.js API call - uses @heyputer/puter.js SDK */
+  private async _puterApiCall(provider: ProviderEntry, messages: LLMMessage[], tools?: ToolDef[], signal?: AbortSignal): Promise<LLMResponse> {
+    const token = provider.apiKey || process.env.puterAuthToken;
+    if (!token) {
+      throw new Error('Puter.js auth token not provided. Set provider apiKey or puterAuthToken environment variable.');
+    }
+    const puter = init(token);
+
+    // Build conversation string from messages
+    let conversation = '';
+    for (const msg of messages) {
+      if (msg.role === 'system') {
+        conversation += `[System]\n${msg.content}\n\n`;
+      } else if (msg.role === 'user') {
+        conversation += `[User]\n${msg.content}\n\n`;
+      } else if (msg.role === 'assistant') {
+        conversation += `[Assistant]\n${msg.content}\n\n`;
+      } else if (msg.role === 'tool') {
+        conversation += `[Tool Result]\n${msg.content}\n\n`;
+      }
+    }
+
+    try {
+      const response = await puter.ai.chat(conversation, {
+        model: provider.model,
+        stream: false,
+      });
+
+      return {
+        id: `puter_${Date.now()}`,
+        choices: [{
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: response.text || '',
+          },
+          finish_reason: 'stop',
+        }],
+        usage: response.usage ? {
+          prompt_tokens: response.usage.input_tokens || 0,
+          completion_tokens: response.usage.output_tokens || 0,
+          total_tokens: (response.usage.input_tokens || 0) + (response.usage.output_tokens || 0),
+        } : undefined,
+      };
+    } catch (err: any) {
+      throw new Error(`Puter API error: ${err.message}`);
+    }
+  }
+
+  /** Puter.js streaming API call */
+  private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], tools?: ToolDef[], signal?: AbortSignal): AsyncGenerator<StreamChunk> {
+    const token = provider.apiKey || process.env.puterAuthToken;
+    if (!token) {
+      throw new Error('Puter.js auth token not provided. Set provider apiKey or puterAuthToken environment variable.');
+    }
+    const puter = init(token);
+
+    // Build conversation string
+    let conversation = '';
+    for (const msg of messages) {
+      if (msg.role === 'system') {
+        conversation += `[System]\n${msg.content}\n\n`;
+      } else if (msg.role === 'user') {
+        conversation += `[User]\n${msg.content}\n\n`;
+      } else if (msg.role === 'assistant') {
+        conversation += `[Assistant]\n${msg.content}\n\n`;
+      } else if (msg.role === 'tool') {
+        conversation += `[Tool Result]\n${msg.content}\n\n`;
+      }
+    }
+
+    const response = await puter.ai.chat(conversation, {
+      model: provider.model,
+      stream: true,
+    });
+
+    const responseId = `puter_${Date.now()}`;
+
+    try {
+      for await (const part of response) {
+        if (signal?.aborted) {
+          break;
+        }
+        if (part?.text) {
+          yield {
+            id: responseId,
+            choices: [{
+              index: 0,
+            delta: { content: part.text },
+              finish_reason: null,
+            }],
+          };
+        }
+      }
+      yield {
+        id: responseId,
+        choices: [{
+          index: 0,
+          delta: {},
+          finish_reason: 'stop',
+        }],
+      };
+    } catch (err: any) {
+      throw new Error(`Puter API streaming error: ${err.message}`);
+    }
+  }
 }
 
 export interface LLMResponse {
@@ -71,13 +178,14 @@ interface ProviderEntry {
   name: string;
   apiBase: string;
   apiKey?: string;
-  apiType: 'chat' | 'responses';
+  apiType: 'chat' | 'responses' | 'puter';
   model: string;
   maxTokens: number;
   temperature: number;
   priority: number;
   failCount: number;
   lastFail: number;
+  contextWindow?: number;  // Model's context window size
 }
 
 export class LLMClient {
@@ -100,6 +208,7 @@ export class LLMClient {
       priority: 0,
       failCount: 0,
       lastFail: 0,
+      contextWindow: (config.agent as any).contextWindow,
     });
 
     // Additional failover providers
@@ -116,6 +225,7 @@ export class LLMClient {
           priority: p.priority,
           failCount: 0,
           lastFail: 0,
+          contextWindow: (p as any).contextWindow,
         });
       }
     }
@@ -182,9 +292,9 @@ export class LLMClient {
   }
 
   /** Get the current active provider info */
-  getCurrentProvider(): { name: string; model: string; apiBase: string; apiType: string } {
+  getCurrentProvider(): { name: string; model: string; apiBase: string; apiType: string; contextWindow?: number } {
     const p = this.providers[this.currentIndex];
-    return { name: p.name, model: p.model, apiBase: p.apiBase, apiType: p.apiType };
+    return { name: p.name, model: p.model, apiBase: p.apiBase, apiType: p.apiType, contextWindow: p.contextWindow };
   }
 
   /** List all available providers */
@@ -284,6 +394,9 @@ export class LLMClient {
   }
 
   private async _chatWithProvider(provider: ProviderEntry, messages: LLMMessage[], tools?: ToolDef[], toolChoice?: 'auto' | 'required' | 'none', signal?: AbortSignal): Promise<LLMResponse> {
+    if (provider.apiType === 'puter') {
+      return this._puterApiCall(provider, messages, tools, signal);
+    }
     if (provider.apiType === 'responses') {
       return this._responsesApiCall(provider, messages, tools, toolChoice, signal);
     }
@@ -502,6 +615,10 @@ export class LLMClient {
   }
 
   private async *_chatStreamWithProvider(provider: ProviderEntry, messages: LLMMessage[], tools?: ToolDef[], signal?: AbortSignal): AsyncGenerator<StreamChunk> {
+    if (provider.apiType === 'puter') {
+      yield* this._puterApiStream(provider, messages, tools, signal);
+      return;
+    }
     if (provider.apiType === 'responses') {
       yield* this._responsesApiStream(provider, messages, tools, signal);
       return;

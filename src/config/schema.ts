@@ -5,7 +5,7 @@ export const ProviderSchema = z.object({
   model: z.string(),
   apiBase: z.string(),
   apiKey: z.string().optional(),
-  apiType: z.enum(['chat', 'responses']).default('chat'),  // chat = /chat/completions, responses = /responses
+  apiType: z.enum(['chat', 'responses', 'puter']).default('chat'),  // chat = /chat/completions, responses = /responses, puter = @heyputer/puter.js
   maxTokens: z.number().optional(),
   temperature: z.number().optional(),
   priority: z.number().default(0),  // lower = tried first
@@ -67,7 +67,7 @@ export const ConfigSchema = z.object({
     model: z.string().default('claude-opus-4.6'),
     apiBase: z.string().default('http://localhost:4141/v1'),
     apiKey: z.string().optional(),
-    apiType: z.enum(['chat', 'responses']).default('chat'),  // chat = /chat/completions, responses = /responses
+    apiType: z.enum(['chat', 'responses', 'puter']).default('chat'),  // chat = /chat/completions, responses = /responses, puter = @heyputer/puter.js
     systemPrompt: z.string().default('You are AutoMate, a fast and capable personal AI assistant. You have access to tools for running shell commands, reading/writing files, browsing the web, and more. Be concise and effective.'),
     maxTokens: z.number().default(8192),
     temperature: z.number().default(0.3),
@@ -244,11 +244,6 @@ export const ConfigSchema = z.object({
     sessionId: z.string().optional(),          // custom session ID for heartbeat
   }).default({}),
   tts: TTSConfigSchema,
-  puter: z.object({
-    enabled: z.boolean().default(false),
-    authToken: z.string().optional(),
-    defaultModel: z.string().default('claude'),
-  }).default({}),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

@@ -18,7 +18,7 @@ import { skillTools, setSkillsLoader as setSkillToolLoader, getSessionSkillsInje
 import { sharedMemoryTools, setSharedMemoryDir } from './tools/shared-memory.js';
 import { pluginTools, setPluginManager, setPluginReloadCallback } from '../plugins/manager.js';
 import { ttsTools, setTTSConfig } from './tools/tts.js';
-import { puterTools, setPuterConfig } from './tools/puter.js';
+import { puterTools } from './tools/puter.js';
 import { gatewayTools, setGatewayControls } from './tools/gateway.js';
 import { messageTools, setMessageAgent } from './tools/message.js';
 import { agentsListTools, setAgentsRouter } from './tools/agents-list.js';
@@ -144,9 +144,6 @@ export class Agent {
     setSessionManager(sessionManager);
     setAgent(this);
     setImageConfig(config.agent.apiBase, config.agent.model, config.agent.apiKey);
-    if (config.puter?.enabled) {
-      setPuterConfig(config.puter.authToken, config.puter.defaultModel);
-    }
     if (config.memory.sharedDirectory) {
       setSharedMemoryDir(config.memory.sharedDirectory);
     }
@@ -178,18 +175,6 @@ export class Agent {
         summary: 'Analyze images (vision), generate images (DALL-E), send images to chat',
         actions: ['analyze', 'generate', 'send'],
       });
-    }
-
-    // Puter.js AI (chat and image generation)
-    if (config.puter?.enabled) {
-      for (const tool of puterTools) {
-        this.tools.registerDeferred({
-          tool,
-          summary: 'AI services via Puter.js: chat with multiple models, generate images',
-          actions: ['chat', 'txt2img'],
-          conditional: 'puter.enabled',
-        });
-      }
     }
 
     // Browser automation
