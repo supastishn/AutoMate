@@ -1,7 +1,7 @@
 import type { Config } from '../config/schema.js';
 import { LLMClient, type LLMMessage, type StreamChunk } from './llm-client.js';
 import { ToolRegistry, type ToolContext, type Tool, type SessionToolView, type ToolRegistryStats } from './tool-registry.js';
-import { bashTool } from './tools/bash.js';
+import { bashTool, bashTools, setBackgroundShellNotifier } from './tools/bash.js';
 import { readFileTool, writeFileTool, editFileTool, applyPatchTool, hashlineEditTool } from './tools/files.js';
 import { browserTools, setBrowserConfig, setBrowserImageBroadcaster } from './tools/browser.js';
 import { sessionTools, setSessionManager, setAgent } from './tools/sessions.js';
@@ -18,6 +18,7 @@ import { skillTools, setSkillsLoader as setSkillToolLoader, getSessionSkillsInje
 import { sharedMemoryTools, setSharedMemoryDir } from './tools/shared-memory.js';
 import { pluginTools, setPluginManager, setPluginReloadCallback } from '../plugins/manager.js';
 import { ttsTools, setTTSConfig } from './tools/tts.js';
+import { puterTools, setPuterConfig } from './tools/puter.js';
 import { gatewayTools, setGatewayControls } from './tools/gateway.js';
 import { messageTools, setMessageAgent } from './tools/message.js';
 import { agentsListTools, setAgentsRouter } from './tools/agents-list.js';
@@ -117,6 +118,10 @@ export class Agent {
     // ── Core tools (always loaded — essential for every interaction) ──────
 
     this.tools.register(bashTool);
+    // Register background shell tools
+    for (const tool of bashTools.slice(1)) { // skip bashTool (already registered)
+      this.tools.register(tool);
+    }
     this.tools.register(readFileTool);
     this.tools.register(writeFileTool);
     this.tools.register(editFileTool);
@@ -139,6 +144,9 @@ export class Agent {
     setSessionManager(sessionManager);
     setAgent(this);
     setImageConfig(config.agent.apiBase, config.agent.model, config.agent.apiKey);
+    if (config.puter?.enabled) {
+      setPuterConfig(config.puter.authToken, config.puter.defaultModel);
+    }
     if (config.memory.sharedDirectory) {
       setSharedMemoryDir(config.memory.sharedDirectory);
     }
@@ -170,6 +178,18 @@ export class Agent {
         summary: 'Analyze images (vision), generate images (DALL-E), send images to chat',
         actions: ['analyze', 'generate', 'send'],
       });
+    }
+
+    // Puter.js AI (chat and image generation)
+    if (config.puter?.enabled) {
+      for (const tool of puterTools) {
+        this.tools.registerDeferred({
+          tool,
+          summary: 'AI services via Puter.js: chat with multiple models, generate images',
+          actions: ['chat', 'txt2img'],
+          conditional: 'puter.enabled',
+        });
+      }
     }
 
     // Browser automation
@@ -792,6 +812,21 @@ export class Agent {
 
     // Wire notifier so parallel sub-agents message the parent session when done
     setSubAgentNotifier((parentSessionId: string, message: string) => {
+      // If parent session is currently processing, inject the notification
+      // so it appears in the current conversation flow
+      if (this.processing.has(parentSessionId)) {
+        this.queueInjection(parentSessionId, message, 'user');
+        // Also send to WebSocket so UI shows the notification immediately
+        if (this.sendToSessionFn) {
+          this.sendToSessionFn(parentSessionId, {
+            type: 'notification',
+            content: message,
+            source: 'subagent',
+          });
+        }
+        return;
+      }
+      // Parent is idle - process as a new message
       const { onStream, onToolCall } = this.makeStreamCallbacks(parentSessionId);
       this.processMessage(parentSessionId, message, onStream, onToolCall).then(result => {
         if (this.sendToSessionFn && result?.content) {
@@ -801,10 +836,70 @@ export class Agent {
         console.error(`[subagent-notifier] Failed to notify parent session ${parentSessionId}:`, err);
       });
     });
+
+    // Wire notifier so background shells message the parent session when done
+    setBackgroundShellNotifier((parentSessionId: string, message: string) => {
+      // If parent session is currently processing, inject the notification
+      if (this.processing.has(parentSessionId)) {
+        this.queueInjection(parentSessionId, message, 'user');
+        if (this.sendToSessionFn) {
+          this.sendToSessionFn(parentSessionId, {
+            type: 'notification',
+            content: message,
+            source: 'shell',
+          });
+        }
+        return;
+      }
+      // Parent is idle - process as a new message
+      const { onStream, onToolCall } = this.makeStreamCallbacks(parentSessionId);
+      this.processMessage(parentSessionId, message, onStream, onToolCall).then(result => {
+        if (this.sendToSessionFn && result?.content) {
+          this.sendToSessionFn(parentSessionId, { type: 'response', content: result.content, done: true });
+        }
+      }).catch((err) => {
+        console.error(`[shell-notifier] Failed to notify parent session ${parentSessionId}:`, err);
+      });
+    });
   }
 
   registerTool(tool: any): void {
     this.tools.register(tool);
+  }
+
+  /**
+   * Safe message injection that works whether session is busy or idle.
+   * - If session is processing: uses queueInjection (appears in current flow)
+   * - If session is idle: starts a new processMessage
+   *
+   * Plugins should use this instead of calling processMessage directly.
+   */
+  injectMessage(sessionId: string, message: string, options?: { role?: 'user' | 'system'; source?: string }): void {
+    const role = options?.role || 'user';
+    const source = options?.source || 'plugin';
+
+    if (this.processing.has(sessionId)) {
+      // Session is busy - inject into current flow
+      this.queueInjection(sessionId, message, role);
+      if (this.sendToSessionFn) {
+        this.sendToSessionFn(sessionId, {
+          type: 'notification',
+          content: message,
+          source,
+        });
+      }
+      return;
+    }
+
+    // Session is idle - process as a new message
+    const { onStream, onToolCall } = this.makeStreamCallbacks(sessionId);
+    this.processMessage(sessionId, message, onStream, onToolCall).then(result => {
+      if (this.sendToSessionFn && result?.content) {
+        this.sendToSessionFn(sessionId, { type: 'response', content: result.content, done: true });
+      }
+    }).catch((err) => {
+      console.error(`[agent] Failed to inject message to ${sessionId}:`, err);
+    });
   }
 
   /** Register a tool as deferred (discoverable via catalog, loaded per-session via load_tool or programmatically). */
@@ -997,9 +1092,10 @@ export class Agent {
     const ctx: ToolContext = { sessionId, workdir: process.cwd(), elevated: isElevated, signal };
 
     let iterations = 0;
-    const maxIterations = 50; // safety limit
+    // No hard iteration cap - agent runs until task is done or context fills
+    // (context compaction handles long-running tasks)
 
-    while (iterations < maxIterations) {
+    while (true) {
       // Check if abort was requested
       if (signal?.aborted) {
         this.sessionManager.saveSession(sessionId);
@@ -1026,7 +1122,12 @@ export class Agent {
         const { content, toolCalls, usage } = await this.streamCompletion(messages, toolDefs, onStream, signal);
 
         // Store actual API-reported token usage for accurate context tracking
-        if (usage) this.sessionManager.setSessionTokens(sessionId, usage);
+        // Pass provider's contextWindow for per-model context limits
+        const provider = this.llm.getCurrentProvider();
+        if (usage) {
+          this.sessionManager.setCurrentModel(provider.model);
+          this.sessionManager.setSessionTokens(sessionId, usage, provider.contextWindow);
+        }
 
         if (toolCalls.length > 0) {
           // Process tool calls
@@ -1093,6 +1194,15 @@ export class Agent {
         }
 
         // Final response (no tool calls)
+        // Check for pending injections before finalizing - if any, continue the loop
+        if (this.hasPendingInjections(sessionId)) {
+          if (content) {
+            this.sessionManager.addMessage(sessionId, { role: 'assistant', content });
+          }
+          this._processPendingInjections(sessionId);
+          continue;
+        }
+
         // For subagent sessions: if subagent_finish hasn't been called, nudge to continue
         if (sessionId.startsWith('subagent:') && !isSubAgentFinished(sessionId)) {
           if (content) {
@@ -1125,12 +1235,15 @@ export class Agent {
         const msg = choice.message;
 
         // Store actual API-reported token usage for accurate context tracking
+        // Pass provider's contextWindow for per-model context limits
         if (response.usage) {
+          const provider = this.llm.getCurrentProvider();
+          this.sessionManager.setCurrentModel(provider.model);
           this.sessionManager.setSessionTokens(sessionId, {
             promptTokens: response.usage.prompt_tokens,
             completionTokens: response.usage.completion_tokens,
             totalTokens: response.usage.total_tokens,
-          });
+          }, provider.contextWindow);
         }
 
         if (msg.tool_calls && msg.tool_calls.length > 0) {
@@ -1191,6 +1304,15 @@ export class Agent {
 
         const content = msg.content || '';
 
+        // Check for pending injections before finalizing - if any, continue the loop
+        if (this.hasPendingInjections(sessionId)) {
+          if (content) {
+            this.sessionManager.addMessage(sessionId, { role: 'assistant', content });
+          }
+          this._processPendingInjections(sessionId);
+          continue;
+        }
+
         // For subagent sessions: if subagent_finish hasn't been called, nudge to continue
         if (sessionId.startsWith('subagent:') && !isSubAgentFinished(sessionId)) {
           if (content) {
@@ -1219,8 +1341,7 @@ export class Agent {
         };
       }
     }
-
-    return { content: '(max tool iterations reached)', toolCalls: toolCallResults };
+    // Unreachable - loop only exits via return statements
   }
 
   private async streamCompletion(

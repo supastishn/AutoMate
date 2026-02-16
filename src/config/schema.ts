@@ -11,6 +11,7 @@ export const ProviderSchema = z.object({
   priority: z.number().default(0),  // lower = tried first
   cooldownMs: z.number().optional(), // cooldown after error before retry
   lastError: z.number().optional(),  // timestamp of last error (runtime only)
+  contextWindow: z.number().optional(),  // model's context window size (overrides sessions.contextLimit)
 });
 
 export type Provider = z.infer<typeof ProviderSchema>;
@@ -173,10 +174,39 @@ export const ConfigSchema = z.object({
   }).default({}),
   sessions: z.object({
     directory: z.string().default('~/.automate/sessions'),
-    contextLimit: z.number().default(120000),    // max tokens before auto-compact
+    contextLimit: z.number().default(120000),    // default max tokens (used if model has no contextWindow)
     compactAt: z.number().default(0.8),          // trigger at this fraction of contextLimit
     reserveTokens: z.number().default(20000),    // reserve tokens for response generation
     autoResetHour: z.number().default(-1),       // -1 = disabled, 0-23 = hour to reset daily
+    // Per-model context windows: model name pattern -> context window size
+    // Patterns support * wildcard (e.g., "gpt-4*" matches "gpt-4", "gpt-4-turbo", etc.)
+    modelContextWindows: z.record(z.string(), z.number()).default({
+      'gpt-4o*': 128000,
+      'gpt-4-turbo*': 128000,
+      'gpt-4-32k*': 32000,
+      'gpt-4*': 8000,
+      'gpt-3.5-turbo-16k*': 16000,
+      'gpt-3.5*': 4000,
+      'claude-3-opus*': 200000,
+      'claude-3-sonnet*': 200000,
+      'claude-3-haiku*': 200000,
+      'claude-3.5*': 200000,
+      'claude-2*': 100000,
+      'gemini-1.5-pro*': 1000000,
+      'gemini-1.5-flash*': 1000000,
+      'gemini-pro*': 32000,
+      'mistral-large*': 128000,
+      'mistral-medium*': 32000,
+      'mistral-small*': 32000,
+      'llama-3.1-405b*': 128000,
+      'llama-3.1-70b*': 128000,
+      'llama-3.1-8b*': 128000,
+      'llama-3-70b*': 8000,
+      'llama-3-8b*': 8000,
+      'deepseek-coder*': 128000,
+      'deepseek-chat*': 128000,
+      'qwen-2.5*': 128000,
+    }),
     // Context pruning: trim tool results before they consume too much context
     pruning: z.object({
       enabled: z.boolean().default(true),
@@ -202,13 +232,23 @@ export const ConfigSchema = z.object({
   plugins: z.object({
     enabled: z.boolean().default(true),
     directory: z.string().default('~/.automate/plugins'),
+    // Session for plugin notifications (separate from main/heartbeat)
+    notificationSession: z.string().optional(), // e.g. "webchat:plugin-notifications"
   }).default({}),
   heartbeat: z.object({
     enabled: z.boolean().default(false),
     intervalMinutes: z.number().default(30),   // how often to check in
     jitterMinutes: z.number().default(5),      // random +/- variance to avoid detection patterns
+    // Use separate session for heartbeat (default: uses main session or webchat:heartbeat)
+    separateSession: z.boolean().default(true),
+    sessionId: z.string().optional(),          // custom session ID for heartbeat
   }).default({}),
   tts: TTSConfigSchema,
+  puter: z.object({
+    enabled: z.boolean().default(false),
+    authToken: z.string().optional(),
+    defaultModel: z.string().default('claude'),
+  }).default({}),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
