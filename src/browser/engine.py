@@ -62,6 +62,45 @@ from selenium.common.exceptions import (
     JavascriptException,
 )
 
+# pyautogui for real X11 mouse/keyboard control (optional, lazy import)
+pyautogui = None
+HAS_PYAUTOGUI = False
+
+def _init_pyautogui():
+    """Lazily initialize pyautogui when actually needed (requires DISPLAY)."""
+    global pyautogui, HAS_PYAUTOGUI
+    if pyautogui is not None:
+        return HAS_PYAUTOGUI
+    try:
+        # Ensure DISPLAY is set to the Xvfb display if available
+        if display is not None:
+            os.environ['DISPLAY'] = f":{display.display}"
+            # Try to set up xauthority for Xvfb
+            xauth_file = os.path.expanduser("~/.Xauthority")
+            if not os.path.exists(xauth_file):
+                try:
+                    import subprocess
+                    subprocess.run(['xauth', 'generate', f":{display.display}", '.', 'trusted'], 
+                                   capture_output=True, timeout=5)
+                    if os.path.exists(xauth_file):
+                        os.environ['XAUTHORITY'] = xauth_file
+                except Exception:
+                    pass  # Continue without xauthority
+            else:
+                os.environ['XAUTHORITY'] = xauth_file
+        import pyautogui as _pyautogui
+        _pyautogui.FAILSAFE = False  # Don't throw exception on corner
+        _pyautogui.PAUSE = 0  # We handle delays ourselves
+        pyautogui = _pyautogui
+        HAS_PYAUTOGUI = True
+    except (ImportError, KeyError, Exception):
+        # ImportError: pyautogui not installed
+        # KeyError: DISPLAY not set
+        # Other exceptions from mouseinfo/display init
+        pyautogui = None
+        HAS_PYAUTOGUI = False
+    return HAS_PYAUTOGUI
+
 # ---------------------------------------------------------------------------
 # Global state
 # ---------------------------------------------------------------------------
@@ -216,6 +255,13 @@ PLATFORM_PROFILES = [
         "ua_platform": "X11; Linux x86_64",
         "hw_concurrency": 8,
         "device_memory": 16,
+    },
+    {
+        "platform": "Linux aarch64",
+        "os": "linux",
+        "ua_platform": "X11; Linux aarch64",
+        "hw_concurrency": 16,
+        "device_memory": 32,
     },
 ]
 
@@ -639,12 +685,69 @@ def _build_chrome_options(screen_prof, use_headless_new, config):
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_argument("--disable-infobars")
     opts.add_argument("--disable-browser-side-navigation")
-    opts.add_argument("--disable-extensions")
+    # NOTE: --disable-extensions removed to allow MetaMask and other extensions
     opts.add_argument("--disable-features=VizDisplayCompositor")
+    
+    # Allow popups/windows (including extension windows)
+    opts.add_argument("--disable-popup-blocking")
+    
+    # Extension support - load extensions from config or env
+    extensions_dir = config.get(
+        "extensions_dir",
+        os.environ.get("AUTOMATE_EXTENSIONS_DIR", ""),
+    )
+    extension_paths = config.get(
+        "extensions",
+        os.environ.get("AUTOMATE_EXTENSIONS", ""),
+    )
+    sys.stderr.write(f"[engine] Extension config - dir: {extensions_dir}, paths: {extension_paths}\n")
+    if extensions_dir or extension_paths:
+        # Enable extension loading
+        opts.add_argument("--enable-extensions")
+        # Load specific extensions
+        if extension_paths:
+            for ext_path in extension_paths.split(","):
+                ext_path = ext_path.strip()
+                sys.stderr.write(f"[engine] Checking extension path: {ext_path}, exists: {os.path.exists(ext_path)}\n")
+                if ext_path and os.path.exists(ext_path):
+                    opts.add_argument(f"--load-extension={ext_path}")
+                    sys.stderr.write(f"[engine] Added --load-extension={ext_path}\n")
+        if extensions_dir:
+            # Load all unpacked extensions from directory
+            if os.path.isdir(extensions_dir):
+                for ext_name in os.listdir(extensions_dir):
+                    ext_full = os.path.join(extensions_dir, ext_name)
+                    if os.path.isdir(ext_full):
+                        opts.add_argument(f"--load-extension={ext_full}")
+                        sys.stderr.write(f"[engine] Added extension from dir: {ext_full}\n")
+    extensions_dir = config.get(
+        "extensions_dir",
+        os.environ.get("AUTOMATE_EXTENSIONS_DIR", ""),
+    )
+    extension_paths = config.get(
+        "extensions",
+        os.environ.get("AUTOMATE_EXTENSIONS", ""),
+    )
+    if extensions_dir or extension_paths:
+        # Enable extension loading with developer mode for unpacked extensions
+        opts.add_argument("--enable-extensions")
+        opts.add_argument("--enable-features=ExtensionsToolbarMenu")
+        # Load specific extensions
+        if extension_paths:
+            for ext_path in extension_paths.split(","):
+                ext_path = ext_path.strip()
+                if ext_path and os.path.exists(ext_path):
+                    opts.add_argument(f"--load-extension={ext_path}")
+                    sys.stderr.write(f"[engine] Added --load-extension={ext_path}\n")
+        if extensions_dir:
+            # Load all unpacked extensions from directory
+            if os.path.isdir(extensions_dir):
+                for ext_name in os.listdir(extensions_dir):
+                    ext_full = os.path.join(extensions_dir, ext_name)
+                    if os.path.isdir(ext_full):
+                        opts.add_argument(f"--load-extension={ext_full}")
+                        sys.stderr.write(f"[engine] Added extension from dir: {ext_full}\n")
 
-    # Headless new mode (Chrome 109+, reduced fingerprint diff vs headed)
-    if use_headless_new:
-        opts.add_argument("--headless=new")
 
     # Persistent profile for cookie/fingerprint/login persistence across sessions
     profile_dir = config.get(
@@ -674,6 +777,8 @@ def _build_chrome_options(screen_prof, use_headless_new, config):
         "credentials_enable_service": False,
         "profile.password_manager_enabled": False,
         "profile.default_content_setting_values.notifications": 2,
+        "profile.default_content_setting_values.popups": 1,
+        "profile.managed_default_content_settings.popups": 1,
         # Disable WebRTC IP leak through prefs too
         "webrtc.ip_handling_policy": "disable_non_proxied_udp",
         "webrtc.multiple_routes_enabled": False,
@@ -681,7 +786,9 @@ def _build_chrome_options(screen_prof, use_headless_new, config):
     }
     opts.add_experimental_option("prefs", prefs)
 
+    configured_chromium = os.environ.get("AUTOMATE_CHROMIUM_PATH", "").strip()
     chrome_paths = [
+        configured_chromium,
         "/data/data/com.termux/files/usr/bin/chromium-browser",
         "/data/data/com.termux/files/usr/bin/chromium",
         "/data/data/com.termux/files/usr/bin/google-chrome",
@@ -720,6 +827,10 @@ def start(config=None):
     """
     global browser, display, _stealth_profile
     config = config or {}
+    extensions_enabled = bool(
+        config.get("extensions_dir", os.environ.get("AUTOMATE_EXTENSIONS_DIR", ""))
+        or config.get("extensions", os.environ.get("AUTOMATE_EXTENSIONS", ""))
+    )
 
     # Clean up any stale Chrome processes before starting
     _cleanup_stale_chrome()
@@ -732,30 +843,38 @@ def start(config=None):
     webgl_prof = _stealth_profile["webgl"]
     tz_prof = _stealth_profile["timezone"]
 
-    # Determine headless strategy
-    # Prefer Xvfb when available (even on Termux/proot where --headless=new
-    # crashes due to GPU process failures). Only force headless=new if
-    # explicitly requested or Xvfb (pyvirtualdisplay) isn't installed.
-    use_headless_new = (
-        config.get("headless", os.environ.get("AUTOMATE_HEADLESS", "")) == "new"
-        or _Display is None
-    )
-
-    if not use_headless_new:
+    # Always use Xvfb - extensions don't work properly with --headless=new
+    use_headless_new = False  # Force Xvfb mode for extension support
+    
+    try:
+        display = _Display(
+            visible=False, size=(screen_prof["width"], screen_prof["height"])
+        )
+        display.start()
+        sys.stderr.write(f"[engine] Xvfb started on display :{display.display}\n")
+        # Set up Xauthority for pyautogui compatibility
+        os.environ['DISPLAY'] = f":{display.display}"
         try:
-            display = _Display(
-                visible=False, size=(screen_prof["width"], screen_prof["height"])
-            )
-            display.start()
-        except Exception as e:
-            sys.stderr.write(
-                f"[engine] Xvfb failed ({e}), falling back to --headless=new\n"
-            )
-            display = None
-            use_headless_new = True
+            import subprocess
+            xauth_file = os.path.expanduser("~/.Xauthority")
+            # Generate auth entry for this display
+            subprocess.run(['xauth', 'generate', f":{display.display}", '.', 'trusted'], 
+                           capture_output=True, timeout=5)
+            if os.path.exists(xauth_file):
+                os.environ['XAUTHORITY'] = xauth_file
+                sys.stderr.write(f"[engine] Xauthority configured at {xauth_file}\n")
+        except Exception as xauth_err:
+            sys.stderr.write(f"[engine] Xauthority setup skipped: {xauth_err}\n")
+    except Exception as e:
+        sys.stderr.write(
+            f"[engine] Xvfb failed ({e}), extensions may not work!\n"
+        )
+        display = None
 
     # Find chromedriver path
+    configured_driver = os.environ.get("AUTOMATE_CHROMEDRIVER_PATH", "").strip()
     driver_paths = [
+        configured_driver,
         "/data/data/com.termux/files/usr/bin/chromedriver",
         "/usr/bin/chromedriver",
         "/usr/sbin/chromedriver",
@@ -789,7 +908,7 @@ def start(config=None):
                 browser = uc.Chrome(**make_kwargs(with_version=False))
             else:
                 # Third attempt: force headless=new if we weren't already using it
-                if not use_headless_new:
+                if not use_headless_new and not extensions_enabled:
                     sys.stderr.write("[engine] Retrying with --headless=new\n")
                     use_headless_new = True
                     if display:
@@ -798,6 +917,8 @@ def start(config=None):
                         except:
                             pass
                         display = None
+                elif extensions_enabled:
+                    sys.stderr.write("[engine] Keeping Xvfb mode because extensions are enabled\n")
                 browser = uc.Chrome(**make_kwargs(with_version=False))
             break  # Success, exit retry loop
         except Exception as e:
@@ -818,6 +939,22 @@ def start(config=None):
         renderer=webgl_prof["renderer"],
         fix_hairline=True,
     )
+
+    # Override user-agent to match platform (prevents fingerprint mismatch)
+    try:
+        current_ua = browser.execute_script("return navigator.userAgent")
+        # Inject platform-matching UA component
+        ua_platform = platform_prof.get("ua_platform", "X11; Linux aarch64")
+        # Replace the platform part in the user-agent
+        import re
+        new_ua = re.sub(r'\([^)]+\)', f'({ua_platform})', current_ua, count=1)
+        browser.execute_cdp_cmd(
+            "Emulation.setUserAgentOverride",
+            {"userAgent": new_ua, "platform": platform_prof["platform"]}
+        )
+        sys.stderr.write(f"[engine] Overrode UA to: {new_ua}\n")
+    except Exception as e:
+        sys.stderr.write(f"[engine] UA override failed: {e}\n")
 
     # Timezone emulation via CDP
     try:
@@ -993,7 +1130,7 @@ def _bezier_curve(start, end, steps=20):
 
 
 def _human_move_to(element):
-    """Move mouse to element along a natural bezier curve."""
+    """Move mouse to element along a natural bezier curve using real X11 mouse."""
     global browser
     try:
         loc = element.location
@@ -1006,37 +1143,70 @@ def _human_move_to(element):
             int(size["height"] * 0.2), int(size["height"] * 0.8)
         )
 
-        # Current mouse position (approximate from window center)
-        start_x = random.randint(100, 800)
-        start_y = random.randint(100, 500)
+        # Get browser window position offset for X11 coordinates
+        window_pos = browser.get_window_position()
+        target_x += window_pos.get('x', 0)
+        target_y += window_pos.get('y', 0)
 
-        points = _bezier_curve(
-            (start_x, start_y), (target_x, target_y), steps=random.randint(15, 30)
-        )
-
-        chain = ActionChains(browser)
-        chain.move_by_offset(points[0][0] - start_x, points[0][1] - start_y)
-        for i in range(1, len(points)):
-            dx = points[i][0] - points[i - 1][0]
-            dy = points[i][1] - points[i - 1][1]
-            chain.move_by_offset(dx, dy)
-            # Variable speed: slower at start and end
-            chain.pause(random.uniform(0.005, 0.025))
-        chain.perform()
+        if _init_pyautogui():
+            # Use real X11 mouse movement
+            current_x, current_y = pyautogui.position()
+            points = _bezier_curve(
+                (current_x, current_y), (target_x, target_y), steps=random.randint(20, 40)
+            )
+            for i, (x, y) in enumerate(points):
+                pyautogui.moveTo(x, y, _pause=False)
+                # Variable speed: slower at start and end
+                progress = i / len(points)
+                if progress < 0.2 or progress > 0.8:
+                    time.sleep(random.uniform(0.01, 0.03))
+                else:
+                    time.sleep(random.uniform(0.005, 0.015))
+        else:
+            # Fallback to Selenium ActionChains
+            chain = ActionChains(browser)
+            chain.move_to_element(element).perform()
     except Exception:
         # Fallback to simple move
         ActionChains(browser).move_to_element(element).perform()
 
 
+def _human_click(button='left', clicks=1):
+    """Perform real X11 mouse click using pyautogui."""
+    if _init_pyautogui():
+        # Small delay before click
+        time.sleep(random.uniform(0.05, 0.15))
+        pyautogui.click(button=button, clicks=clicks, _pause=False)
+        # Small delay after click
+        time.sleep(random.uniform(0.1, 0.3))
+    else:
+        # Fallback: can't do real click without pyautogui
+        pass
+
+
 def _human_type_text(element, text):
-    """Type text with human-like timing variations.
+    """Type text with human-like timing variations using real X11 keyboard.
 
     Supports inline key commands: /enter, /tab, /escape, /backspace, /space
     Example: "hello/enterworld" types "hello", presses Enter, types "world".
     """
-    # Split text on /key commands, preserving them as tokens
     import re
-    key_commands = {
+    # Map /key commands to pyautogui key names
+    pyautogui_keys = {
+        '/enter': 'enter',
+        '/return': 'return',
+        '/tab': 'tab',
+        '/escape': 'escape',
+        '/backspace': 'backspace',
+        '/delete': 'delete',
+        '/space': 'space',
+        '/up': 'up',
+        '/down': 'down',
+        '/left': 'left',
+        '/right': 'right',
+    }
+    # Selenium keys fallback
+    selenium_keys = {
         '/enter': Keys.ENTER,
         '/return': Keys.RETURN,
         '/tab': Keys.TAB,
@@ -1049,23 +1219,30 @@ def _human_type_text(element, text):
         '/left': Keys.ARROW_LEFT,
         '/right': Keys.ARROW_RIGHT,
     }
+
     # Build regex: match any /key command (case-insensitive)
-    pattern = '(' + '|'.join(re.escape(k) for k in key_commands) + ')'
+    pattern = '(' + '|'.join(re.escape(k) for k in pyautogui_keys) + ')'
     parts = re.split(pattern, text, flags=re.IGNORECASE)
 
     for part in parts:
         if not part:
             continue
         lower = part.lower()
-        if lower in key_commands:
+        if lower in pyautogui_keys:
             # Send the special key
             time.sleep(random.uniform(0.05, 0.15))
-            element.send_keys(key_commands[lower])
+            if _init_pyautogui():
+                pyautogui.press(pyautogui_keys[lower], _pause=False)
+            else:
+                element.send_keys(selenium_keys[lower])
             time.sleep(random.uniform(0.1, 0.3))
         else:
             # Type each character with human-like delays
             for char in part:
-                element.send_keys(char)
+                if _init_pyautogui():
+                    pyautogui.write(char, _pause=False, interval=0)
+                else:
+                    element.send_keys(char)
                 # Variable delay: faster for common chars, slower for special
                 if char in " .,!?":
                     time.sleep(random.uniform(0.08, 0.20))
@@ -1079,18 +1256,40 @@ def _human_type_text(element, text):
 
 
 def _human_scroll(browser_inst, direction="down", amount=None):
-    """Scroll with human-like variable speed."""
+    """Scroll with human-like variable speed using real X11 mouse scroll."""
     if amount is None:
         amount = random.randint(200, 600)
-    steps = random.randint(3, 8)
-    per_step = amount / steps
-    for _ in range(steps):
-        step_amount = per_step + random.uniform(-20, 20)
-        if direction == "down":
-            browser_inst.execute_script(f"window.scrollBy(0, {step_amount});")
-        else:
-            browser_inst.execute_script(f"window.scrollBy(0, -{step_amount});")
-        time.sleep(random.uniform(0.02, 0.08))
+
+    if _init_pyautogui():
+        # Real X11 mouse scroll - pyautogui uses "clicks" where each click ~100px
+        clicks = amount // 100
+        remainder = amount % 100
+        # Do main scroll in human-like steps
+        steps = random.randint(3, 8)
+        clicks_per_step = max(1, clicks // steps)
+        for _ in range(steps):
+            if direction == "down":
+                pyautogui.scroll(-clicks_per_step, _pause=False)
+            else:
+                pyautogui.scroll(clicks_per_step, _pause=False)
+            time.sleep(random.uniform(0.02, 0.08))
+        # Any remainder via JS
+        if remainder > 0:
+            if direction == "down":
+                browser_inst.execute_script(f"window.scrollBy(0, {remainder});")
+            else:
+                browser_inst.execute_script(f"window.scrollBy(0, -{remainder});")
+    else:
+        # Fallback to JS scroll
+        steps = random.randint(3, 8)
+        per_step = amount / steps
+        for _ in range(steps):
+            step_amount = per_step + random.uniform(-20, 20)
+            if direction == "down":
+                browser_inst.execute_script(f"window.scrollBy(0, {step_amount});")
+            else:
+                browser_inst.execute_script(f"window.scrollBy(0, -{step_amount});")
+            time.sleep(random.uniform(0.02, 0.08))
 
 
 # ---------------------------------------------------------------------------
@@ -1100,8 +1299,17 @@ def handle_command(cmd):
     global browser, display, _network_log, _console_logger_injected
     action = cmd.get("action")
 
+    # ==== Ping/health check ====
+    if action == "ping":
+        # Simple health check - just verify browser is responsive
+        try:
+            url = browser.current_url
+            return {"success": True, "alive": True, "url": url}
+        except Exception as e:
+            return {"success": False, "alive": False, "error": str(e)}
+
     # ==== Navigation ====
-    if action == "navigate":
+    elif action == "navigate":
         browser.get(cmd["url"])
         # Random small delay to look human
         time.sleep(random.uniform(0.2, 0.5))
@@ -1141,21 +1349,28 @@ def handle_command(cmd):
     elif action == "human_click":
         el = browser.find_element(by_str(cmd.get("by", "css")), cmd["selector"])
         _human_move_to(el)
-        time.sleep(random.uniform(0.05, 0.15))
-        el.click()
-        time.sleep(random.uniform(0.1, 0.3))
+        # Use real X11 click instead of Selenium's el.click()
+        _human_click()
         return {"success": True, "url": browser.current_url, "title": browser.title}
 
     elif action == "human_type":
         el = browser.find_element(by_str(cmd.get("by", "css")), cmd["selector"])
         if cmd.get("clear", True):
-            el.click()
+            # Click to focus first
+            _human_move_to(el)
+            _human_click()
             time.sleep(random.uniform(0.1, 0.2))
-            # Select all + delete instead of .clear() (more human)
-            el.send_keys(Keys.CONTROL + "a")
-            time.sleep(random.uniform(0.05, 0.1))
-            el.send_keys(Keys.DELETE)
-            time.sleep(random.uniform(0.1, 0.2))
+            # Select all + delete (real X11 keys)
+            if _init_pyautogui():
+                pyautogui.hotkey('ctrl', 'a', _pause=False)
+                time.sleep(random.uniform(0.05, 0.1))
+                pyautogui.press('delete', _pause=False)
+                time.sleep(random.uniform(0.1, 0.2))
+            else:
+                el.send_keys(Keys.CONTROL + "a")
+                time.sleep(random.uniform(0.05, 0.1))
+                el.send_keys(Keys.DELETE)
+                time.sleep(random.uniform(0.1, 0.2))
         _human_type_text(el, cmd["text"])
         return {"success": True}
 
@@ -1194,7 +1409,25 @@ def handle_command(cmd):
         }
 
     # ==== Element interaction ====
+    # ==== Element interaction ====
     elif action == "click":
+        el = browser.find_element(by_str(cmd.get("by", "css")), cmd["selector"])
+        el.click()
+        return {"success": True, "url": browser.current_url, "title": browser.title}
+    
+    elif action == "trusted_click":
+        # Use W3C Actions API for trusted click (works for popups/new tabs)
+        el = browser.find_element(by_str(cmd.get("by", "css")), cmd["selector"])
+        # Scroll element into view first
+        browser.execute_script("arguments[0].scrollIntoView({block: 'center'});", el)
+        time.sleep(0.2)
+        # Use Actions API with proper sequencing
+        actions = ActionChains(browser)
+        actions.move_to_element(el)
+        actions.pause(0.1)
+        actions.click()
+        actions.perform()
+        return {"success": True, "url": browser.current_url, "title": browser.title}
         el = browser.find_element(by_str(cmd.get("by", "css")), cmd["selector"])
         el.click()
         return {"success": True, "url": browser.current_url, "title": browser.title}
@@ -2186,6 +2419,70 @@ def handle_command(cmd):
             display.stop()
         return {"success": True}
 
+    # ==== Reload config (hot reload extensions and other settings) ====
+    elif action == "reload_config":
+        new_config = cmd.get("config", {})
+        sys.stderr.write(f"[engine] Reloading browser with new config: {new_config}\n")
+        sys.stderr.write(f"[engine] Config keys: {list(new_config.keys())}\n")
+        sys.stderr.write(f"[engine] Extensions value: {new_config.get('extensions')}\n")
+        
+        # Clean up old browser
+        try:
+            if browser:
+                browser.quit()
+        except Exception as e:
+            sys.stderr.write(f"[engine] Error quitting old browser: {e}\n")
+        
+        # Clean up display
+        try:
+            if display:
+                display.stop()
+        except Exception:
+            pass
+        display = None
+        browser = None
+        
+        # Restart with new config
+        try:
+            start(new_config)
+            sys.stderr.write("[engine] Browser restarted with new config successfully\n")
+            return {
+                "success": True,
+                "message": "Browser reloaded with new config",
+                "config_received": new_config
+            }
+        except Exception as e:
+            sys.stderr.write(f"[engine] Failed to restart browser: {e}\n")
+            return {"success": False, "error": str(e)}
+    elif action == "reload_config":
+        new_config = cmd.get("config", {})
+        sys.stderr.write(f"[engine] Reloading browser with new config: {list(new_config.keys())}\n")
+        
+        # Clean up old browser
+        try:
+            if browser:
+                browser.quit()
+        except Exception as e:
+            sys.stderr.write(f"[engine] Error quitting old browser: {e}\n")
+        
+        # Clean up display
+        try:
+            if display:
+                display.stop()
+        except Exception:
+            pass
+        display = None
+        browser = None
+        
+        # Restart with new config
+        try:
+            start(new_config)
+            sys.stderr.write("[engine] Browser restarted with new config successfully\n")
+            return {"success": True, "message": "Browser reloaded with new config"}
+        except Exception as e:
+            sys.stderr.write(f"[engine] Failed to restart browser: {e}\n")
+            return {"success": False, "error": str(e)}
+
     else:
         return {"success": False, "error": f"Unknown action: {action}"}
 
@@ -2249,6 +2546,10 @@ CRASH_INDICATORS = [
     "connection refused",
     "invalid session id",
     "unable to connect",
+    "remotedisconnected",
+    "connection aborted",
+    "remote end closed",
+    "protocolerror",
 ]
 
 
@@ -2258,9 +2559,35 @@ def _is_crash_error(error_msg: str) -> bool:
     return any(indicator in error_lower for indicator in CRASH_INDICATORS)
 
 
+def _cleanup_and_exit(signum=None, frame=None):
+    """Signal handler to cleanup browser on exit."""
+    global browser, display
+    try:
+        if browser:
+            browser.quit()
+            sys.stderr.write("[engine] Browser quit on signal\n")
+    except Exception as e:
+        sys.stderr.write(f"[engine] Error quitting browser on signal: {e}\n")
+    try:
+        if display:
+            display.stop()
+    except:
+        pass
+    sys.exit(0)
+
+
+# Register signal handlers for cleanup
+import signal
+signal.signal(signal.SIGTERM, _cleanup_and_exit)
+signal.signal(signal.SIGINT, _cleanup_and_exit)
+
+
 if __name__ == "__main__":
     start()
     print("READY", flush=True)
+
+    max_consecutive_failures = 3
+    consecutive_failures = 0
 
     for line in sys.stdin:
         line = line.strip()
@@ -2270,16 +2597,20 @@ if __name__ == "__main__":
             cmd_data = json.loads(line)
             result = handle_command(cmd_data)
             print(json.dumps(result), flush=True)
+            consecutive_failures = 0  # Reset on success
 
             if cmd_data.get("action") == "close":
                 sys.exit(0)
         except Exception as e:
             error_msg = str(e)
             tb = traceback.format_exc()
+            consecutive_failures += 1
 
             # Check if this is a crash that needs restart
             if _is_crash_error(error_msg) or _is_crash_error(tb):
+                sys.stderr.write(f"[engine] Crash detected: {error_msg[:100]}\n")
                 if _restart_browser():
+                    consecutive_failures = 0
                     # Retry the command once after restart
                     try:
                         result = handle_command(cmd_data)
@@ -2290,6 +2621,15 @@ if __name__ == "__main__":
                         tb = traceback.format_exc()
                 else:
                     error_msg = f"Browser crashed and restart failed: {error_msg}"
+
+            # If too many consecutive failures, try a full restart
+            if consecutive_failures >= max_consecutive_failures:
+                sys.stderr.write(f"[engine] {consecutive_failures} consecutive failures, forcing restart\n")
+                if _restart_browser():
+                    consecutive_failures = 0
+                else:
+                    sys.stderr.write("[engine] Forced restart failed, exiting\n")
+                    sys.exit(1)
 
             print(
                 json.dumps(

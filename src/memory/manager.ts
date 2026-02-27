@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, append
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { VectorIndex, type EmbeddingConfig, type SearchResult } from './vector-index.js';
+import { TextSearchIndex, type TextSearchResult } from './text-search-index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULTS_DIR = join(__dirname, 'defaults');
@@ -13,7 +14,7 @@ const DEFAULTS_DIR = join(__dirname, 'defaults');
 const TEMPLATE_FILES = ['PERSONALITY.md', 'BOOTSTRAP.md', 'IDENTITY.md', 'USER.md', 'AGENTS.md', 'HEARTBEAT.md'];
 
 // Files that should NOT be auto-injected (handled specially or reserved)
-const SKIP_PROMPT_FILES = ['MEMORY.md', 'BOOTSTRAP.md'];
+const SKIP_PROMPT_FILES = ['MEMORY.md', 'BOOTSTRAP.md', 'HEARTBEAT.md', 'OBJECTIVE_LOG.md'];
 
 // Files to index for semantic search (all .md files are indexed)
 const SKIP_INDEX_FILES = ['.vector-index.json'];
@@ -25,6 +26,7 @@ const TIER1_MAX_CHARS = 8000;
 export class MemoryManager {
   private dir: string;
   private vectorIndex: VectorIndex | null = null;
+  private textSearchIndex: TextSearchIndex;
   private embeddingConfig: EmbeddingConfig | null = null;
   private indexingInProgress: boolean = false;
 
@@ -33,6 +35,9 @@ export class MemoryManager {
     mkdirSync(this.dir, { recursive: true });
     this.ensureDefaults();
     this._ensureTier2Dir();
+
+    // Initialize text search index (always available, even without embeddings)
+    this.textSearchIndex = new TextSearchIndex(this.dir);
 
     // Store config even if disabled — needed for /index on later
     if (embeddingConfig) {
@@ -87,6 +92,8 @@ export class MemoryManager {
   saveMemory(content: string): void {
     writeFileSync(join(this.dir, 'MEMORY.md'), content);
     this._queueReindex('MEMORY.md', content);
+    this.textSearchIndex.indexFile('MEMORY.md', content, 1); // Tier 1 = highest priority
+    this.textSearchIndex.save();
   }
 
   appendMemory(entry: string): void {
@@ -96,6 +103,8 @@ export class MemoryManager {
     const newContent = existing + separator + entry + '\n';
     writeFileSync(path, newContent);
     this._queueReindex('MEMORY.md', newContent);
+    this.textSearchIndex.indexFile('MEMORY.md', newContent, 1);
+    this.textSearchIndex.save();
   }
 
   // ── Tier 2 Memory (topic-based, on-demand) ────────────────────────────
@@ -129,6 +138,8 @@ export class MemoryManager {
     const path = join(this._tier2Dir, name);
     writeFileSync(path, content);
     this._queueReindex(`memory/${name}`, content);
+    this.textSearchIndex.indexFile(`memory/${name}`, content, 2);
+    this.textSearchIndex.save();
   }
 
   /** Append to a Tier 2 topic file */
@@ -140,13 +151,19 @@ export class MemoryManager {
     const newContent = existing + separator + entry + '\n';
     writeFileSync(path, newContent);
     this._queueReindex(`memory/${name}`, newContent);
+    this.textSearchIndex.indexFile(`memory/${name}`, newContent, 2);
+    this.textSearchIndex.save();
   }
 
   /** Delete a Tier 2 topic file */
   deleteTier2(topic: string): void {
     const name = topic.endsWith('.md') ? topic : `${topic}.md`;
     const path = join(this._tier2Dir, name);
-    if (existsSync(path)) unlinkSync(path);
+    if (existsSync(path)) {
+      unlinkSync(path);
+      this.textSearchIndex.removeFile(`memory/${name}`);
+      this.textSearchIndex.save();
+    }
   }
 
   // ── Archive (Tier 4 — cold storage, recordkeeping) ────────────────────
@@ -176,6 +193,8 @@ export class MemoryManager {
     const path = join(this._archiveDir, name);
     writeFileSync(path, content);
     this._queueReindex(`archive/${name}`, content);
+    this.textSearchIndex.indexFile(`archive/${name}`, content, 4); // Tier 4 = lowest priority
+    this.textSearchIndex.save();
   }
 
   /** Append to an archive file */
@@ -187,13 +206,68 @@ export class MemoryManager {
     const newContent = existing + separator + entry + '\n';
     writeFileSync(path, newContent);
     this._queueReindex(`archive/${name}`, newContent);
+    this.textSearchIndex.indexFile(`archive/${name}`, newContent, 4);
+    this.textSearchIndex.save();
   }
 
   /** Delete an archive file */
   deleteArchive(topic: string): void {
     const name = topic.endsWith('.md') ? topic : `${topic}.md`;
     const path = join(this._archiveDir, name);
-    if (existsSync(path)) unlinkSync(path);
+    if (existsSync(path)) {
+      unlinkSync(path);
+      this.textSearchIndex.removeFile(`archive/${name}`);
+      this.textSearchIndex.save();
+    }
+  }
+
+  // ── Transcripts (stored in transcripts/ subfolder) ────────────────────
+
+  private get _transcriptsDir(): string {
+    return join(this.dir, 'transcripts');
+  }
+
+  /** Save a session transcript and index it for search */
+  saveTranscript(sessionId: string, content: string): void {
+    const transcriptsDir = this._transcriptsDir;
+    mkdirSync(transcriptsDir, { recursive: true });
+
+    const safeName = sessionId.replace(/[:/\\?*"<>|]/g, '_');
+    const filename = `transcript-${safeName}.md`;
+    const filepath = join(transcriptsDir, filename);
+
+    const fullContent = `# Session Transcript: ${sessionId}\n\nLast updated: ${new Date().toISOString()}\n\n${content}`;
+    writeFileSync(filepath, fullContent);
+
+    // Index for text search (tier 3 - same as logs)
+    this.textSearchIndex.indexFile(`transcripts/${filename}`, fullContent, 3);
+    this.textSearchIndex.save();
+
+    // Queue for vector indexing if enabled
+    this._queueReindex(`transcripts/${filename}`, fullContent);
+  }
+
+  /** Delete a transcript */
+  deleteTranscript(sessionId: string): void {
+    const safeName = sessionId.replace(/[:/\\?*"<>|]/g, '_');
+    const filename = `transcript-${safeName}.md`;
+    const filepath = join(this._transcriptsDir, filename);
+    if (existsSync(filepath)) {
+      unlinkSync(filepath);
+      this.textSearchIndex.removeFile(`transcripts/${filename}`);
+      this.textSearchIndex.save();
+    }
+  }
+
+  /** List all transcripts */
+  listTranscripts(): { name: string; size: number; modified: string }[] {
+    const dir = this._transcriptsDir;
+    if (!existsSync(dir)) return [];
+    const files = readdirSync(dir).filter(f => f.endsWith('.md'));
+    return files.map(f => {
+      const stat = statSync(join(dir, f));
+      return { name: f, size: stat.size, modified: stat.mtime.toISOString() };
+    });
   }
 
   // ── Daily logs (stored in logs/ subfolder) ──────────────────────────
@@ -207,6 +281,8 @@ export class MemoryManager {
     // Re-index daily log after append
     const content = readFileSync(path, 'utf-8');
     this._queueReindex(`logs/${filename}`, content);
+    this.textSearchIndex.indexFile(`logs/${filename}`, content, 3);
+    this.textSearchIndex.save();
   }
 
   /** Get today's daily log content */
@@ -261,6 +337,8 @@ export class MemoryManager {
   saveIdentityFile(name: string, content: string): void {
     writeFileSync(join(this.dir, name), content);
     this._queueReindex(name, content);
+    this.textSearchIndex.indexFile(name, content, 2);
+    this.textSearchIndex.save();
   }
 
   /** Check if BOOTSTRAP.md exists (first-run state) */
@@ -289,6 +367,9 @@ export class MemoryManager {
       this.vectorIndex.clear();
       this.vectorIndex.save();
     }
+    // Clear text search index
+    this.textSearchIndex.clear();
+    this.textSearchIndex.save();
     this.ensureDefaults();
   }
 
@@ -381,27 +462,27 @@ export class MemoryManager {
    * Call this on startup to build/refresh the index.
    * Returns number of chunks indexed.
    */
-  async indexAll(): Promise<{ indexed: number; files: number; skipped: number }> {
-    if (!this.vectorIndex) return { indexed: 0, files: 0, skipped: 0 };
-    if (this.indexingInProgress) return { indexed: 0, files: 0, skipped: 0 };
+  async indexAll(): Promise<{ indexed: number; files: number; skipped: number; textIndexed: number }> {
+    if (this.indexingInProgress) return { indexed: 0, files: 0, skipped: 0, textIndexed: 0 };
 
     this.indexingInProgress = true;
     let totalChunks = 0;
     let filesIndexed = 0;
     let filesSkipped = 0;
+    let textFilesIndexed = 0;
 
     try {
       // Collect top-level .md files
       const topFiles = readdirSync(this.dir).filter(f =>
         f.endsWith('.md') && !SKIP_INDEX_FILES.includes(f)
-      ).map(f => ({ key: f, path: join(this.dir, f) }));
+      ).map(f => ({ key: f, path: join(this.dir, f), tier: f === 'MEMORY.md' ? 1 : 2 }));
 
       // Also collect .md files from transcripts/ subdirectory
       const transcriptsDir = join(this.dir, 'transcripts');
       if (existsSync(transcriptsDir)) {
         const transcriptFiles = readdirSync(transcriptsDir).filter(f => f.endsWith('.md'));
         for (const f of transcriptFiles) {
-          topFiles.push({ key: `transcripts/${f}`, path: join(transcriptsDir, f) });
+          topFiles.push({ key: `transcripts/${f}`, path: join(transcriptsDir, f), tier: 3 });
         }
       }
 
@@ -410,7 +491,7 @@ export class MemoryManager {
       if (existsSync(tier2Dir)) {
         const tier2Files = readdirSync(tier2Dir).filter(f => f.endsWith('.md'));
         for (const f of tier2Files) {
-          topFiles.push({ key: `memory/${f}`, path: join(tier2Dir, f) });
+          topFiles.push({ key: `memory/${f}`, path: join(tier2Dir, f), tier: 2 });
         }
       }
 
@@ -419,7 +500,7 @@ export class MemoryManager {
       if (existsSync(logsDir)) {
         const logFiles = readdirSync(logsDir).filter(f => f.endsWith('.md'));
         for (const f of logFiles) {
-          topFiles.push({ key: `logs/${f}`, path: join(logsDir, f) });
+          topFiles.push({ key: `logs/${f}`, path: join(logsDir, f), tier: 3 });
         }
       }
 
@@ -428,44 +509,86 @@ export class MemoryManager {
       if (existsSync(archiveDir)) {
         const archiveFiles = readdirSync(archiveDir).filter(f => f.endsWith('.md'));
         for (const f of archiveFiles) {
-          topFiles.push({ key: `archive/${f}`, path: join(archiveDir, f) });
+          topFiles.push({ key: `archive/${f}`, path: join(archiveDir, f), tier: 4 });
         }
       }
 
-      for (const { key, path } of topFiles) {
-        const content = readFileSync(path, 'utf-8');
-
-        if (!this.vectorIndex.needsReindex(key, content)) {
-          filesSkipped++;
+      for (const { key, path, tier } of topFiles) {
+        let content: string;
+        try {
+          content = readFileSync(path, 'utf-8');
+        } catch (readErr) {
+          console.error(`[memory] Failed to read ${key}:`, (readErr as Error).message);
           continue;
         }
 
-        try {
-          const chunks = await this.vectorIndex.indexFile(key, content);
-          totalChunks += chunks;
-          filesIndexed++;
-        } catch (err) {
-          console.error(`[memory] Failed to index ${key}:`, (err as Error).message);
+        // Vector indexing (if enabled)
+        if (this.vectorIndex) {
+          if (this.vectorIndex.needsReindex(key, content)) {
+            try {
+              const chunks = await this.vectorIndex.indexFile(key, content);
+              if (chunks > 0) {
+                totalChunks += chunks;
+                filesIndexed++;
+              } else {
+                filesSkipped++;
+              }
+            } catch (err) {
+              console.error(`[memory] Failed to vector index ${key}:`, (err as Error).message);
+            }
+          } else {
+            filesSkipped++;
+          }
+        }
+
+        // Text indexing (always)
+        if (this.textSearchIndex.needsReindex(key, content)) {
+          this.textSearchIndex.indexFile(key, content, tier);
+          textFilesIndexed++;
         }
       }
 
-      this.vectorIndex.save();
+      // Save indexes
+      if (this.vectorIndex) {
+        this.vectorIndex.save();
+      }
+      this.textSearchIndex.save();
+
+      // Log summary
+      if (filesIndexed === 0 && textFilesIndexed === 0 && topFiles.length > 0) {
+        console.warn(`[memory] No files indexed (${filesSkipped} skipped, ${topFiles.length} total)`);
+      } else {
+        console.log(`[memory] Indexed ${filesIndexed} files (${totalChunks} chunks vector, ${textFilesIndexed} files text)`);
+      }
     } finally {
       this.indexingInProgress = false;
     }
 
-    return { indexed: totalChunks, files: filesIndexed, skipped: filesSkipped };
+    return { indexed: totalChunks, files: filesIndexed, skipped: filesSkipped, textIndexed: textFilesIndexed };
   }
 
-  /** Get vector index stats */
-  getIndexStats(): { enabled: boolean; totalChunks: number; indexedFiles: string[] } {
+  /** Get vector and text index stats */
+  getIndexStats(): { 
+    enabled: boolean; 
+    totalChunks: number; 
+    indexedFiles: string[];
+    textSearch: { files: number; terms: number; avgDocLength: number };
+  } {
+    const textStats = this.textSearchIndex.getStats();
+    
     if (!this.vectorIndex) {
-      return { enabled: false, totalChunks: 0, indexedFiles: [] };
+      return { 
+        enabled: false, 
+        totalChunks: 0, 
+        indexedFiles: [],
+        textSearch: textStats
+      };
     }
     return {
       enabled: true,
       totalChunks: this.vectorIndex.size,
       indexedFiles: this.vectorIndex.indexedFiles,
+      textSearch: textStats
     };
   }
 
@@ -473,18 +596,26 @@ export class MemoryManager {
 
   /**
    * Semantic search: hybrid vector + BM25.
-   * Falls back to BM25-only if embeddings fail, then to naive text search.
+   * Falls back to text-only search when embeddings are disabled or fail.
    */
   async semanticSearch(query: string, limit: number = 10): Promise<SearchResult[]> {
-    if (!this.vectorIndex || this.vectorIndex.size === 0) {
-      // Fallback: if no index yet, try BM25 on indexed chunks
-      if (this.vectorIndex && this.vectorIndex.size > 0) {
-        return this.vectorIndex.textSearch(query, limit);
-      }
-      // Ultimate fallback: use old text search, wrap in SearchResult format
-      return this._legacySearchAsResults(query, limit);
+    // No vector index at all (embeddings disabled) — use text search index
+    if (!this.vectorIndex) {
+      return this._textSearchAsResults(query, limit);
     }
 
+    // Vector index exists but empty — try BM25 on chunks if any, else text search
+    if (this.vectorIndex.size === 0) {
+      // Try BM25 on any indexed chunks
+      try {
+        const results = this.vectorIndex.textSearch(query, limit);
+        if (results.length > 0) return results;
+      } catch {}
+      // Fall back to text search index
+      return this._textSearchAsResults(query, limit);
+    }
+
+    // Have vector index with data — try hybrid search
     try {
       return await this.vectorIndex.search(query, limit);
     } catch {
@@ -492,10 +623,22 @@ export class MemoryManager {
       try {
         return this.vectorIndex.textSearch(query, limit);
       } catch {
-        // BM25 also failed — use legacy
-        return this._legacySearchAsResults(query, limit);
+        // BM25 also failed — use text search index
+        return this._textSearchAsResults(query, limit);
       }
     }
+  }
+
+  /** Convert text search results to SearchResult format */
+  private _textSearchAsResults(query: string, limit: number): SearchResult[] {
+    const results = this.textSearchIndex.search(query, limit, { fuzzy: true, wildcard: true });
+    return results.map(r => ({
+      file: r.file,
+      text: r.text,
+      score: r.score,
+      vectorScore: 0,
+      bm25Score: r.score,
+    }));
   }
 
   /** Convert legacy search results to SearchResult format */
@@ -512,31 +655,25 @@ export class MemoryManager {
     ).slice(0, limit);
   }
 
-  /** Legacy substring search — kept as fallback */
+  /** Search with Google-like query syntax.
+   *  Supports:
+   *  - word matching (AND logic - all words must match)
+   *  - "quoted phrase" for exact phrase match
+   *  - -word or -"phrase" to exclude
+   *  - word1 OR word2 for alternatives
+   *  - file:name to filter by filename
+   *  - config* for prefix matching (wildcard)
+   *  
+   *  Uses inverted index with TF-IDF + BM25 + stemming + fuzzy matching.
+   */
   search(query: string, limit: number = 10): { file: string; matches: string[] }[] {
-    const results: { file: string; matches: string[] }[] = [];
-    const files = readdirSync(this.dir).filter(f => f.endsWith('.md'));
-    const queryLower = query.toLowerCase();
-
-    for (const file of files) {
-      const content = readFileSync(join(this.dir, file), 'utf-8');
-      const lines = content.split('\n');
-      const matches: string[] = [];
-
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i].toLowerCase().includes(queryLower)) {
-          const start = Math.max(0, i - 1);
-          const end = Math.min(lines.length, i + 3);
-          matches.push(lines.slice(start, end).join('\n'));
-        }
-      }
-
-      if (matches.length > 0) {
-        results.push({ file, matches: matches.slice(0, 5) });
-      }
-    }
-
-    return results.slice(0, limit);
+    // Use text search index for fast results
+    const results = this.textSearchIndex.search(query, limit, { fuzzy: true, wildcard: true });
+    
+    return results.map(r => ({
+      file: r.file,
+      matches: [r.text]
+    }));
   }
 
   // ── File listing ──────────────────────────────────────────────────────

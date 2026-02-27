@@ -1,5 +1,7 @@
 import type { Tool } from '../tool-registry.js';
 import type { MemoryManager } from '../../memory/manager.js';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 let memoryManagerRef: MemoryManager | null = null;
 
@@ -7,51 +9,70 @@ export function setMemoryManager(mm: MemoryManager): void {
   memoryManagerRef = mm;
 }
 
-const IDENTITY_FILES = ['PERSONALITY.md', 'USER.md', 'IDENTITY.md', 'AGENTS.md', 'TOOLS.md', 'HEARTBEAT.md', 'MEMORY.md'];
+// Identity files (personality, user info, agent config) - NOT memory files
+// MEMORY.md is handled separately as Tier 1 core memory via memory tool read/write/append
+const IDENTITY_FILES = ['PERSONALITY.md', 'USER.md', 'IDENTITY.md', 'AGENTS.md', 'HEARTBEAT.md'];
+const OBJECTIVE_LOG_FILE = 'OBJECTIVE_LOG.md';
 
 // ── Unified memory tool ──────────────────────────────────────────────────
 
 const memoryTool: Tool = {
   name: 'memory',
   description: [
-    'Manage memory and daily logs. Actions:',
-    'search — semantic search across all memory (vector+BM25). Pass query, optional limit and mode (hybrid|vector|text|legacy).',
-    'read — read the curated MEMORY.md file (Tier 1 core memory).',
-    'write — replace entire MEMORY.md content. Pass content. Hard cap: ~4000 chars.',
-    'append — append to MEMORY.md without replacing. Pass entry.',
-    'log — append timestamped entry to today\'s daily log. Pass entry.',
-    'log_read — read a daily log. Pass query as date (YYYY-MM-DD), defaults to today.',
-    'files — list all memory files with sizes.',
-    'reindex — rebuild the semantic search index.',
-    'stats — show search index statistics.',
+    'Manage persistent memory and identity across sessions.',
     '',
-    'Tier 2 (topic-based reference memory, loaded on-demand):',
-    'tier2_list — list all Tier 2 topic files.',
-    'tier2_read — read a Tier 2 topic file. Pass topic (e.g. "discord", "reddit").',
-    'tier2_write — write/replace a Tier 2 topic file. Pass topic + content.',
-    'tier2_append — append to a Tier 2 topic file. Pass topic + entry.',
-    'tier2_delete — delete a Tier 2 topic file. Pass topic.',
+    'CORE MEMORY (MEMORY.md):',
+    '  read — show core memory',
+    '  append — add to core memory',
+    '  write — replace core memory',
     '',
-    'Archive (cold storage for recordkeeping, lower priority):',
-    'archive_list — list all archive files.',
-    'archive_read — read an archive file. Pass topic.',
-    'archive_write — write/replace an archive file. Pass topic + content.',
-    'archive_append — append to an archive file. Pass topic + entry.',
-    'archive_delete — delete an archive file. Pass topic.',
-  ].join(' '),
+    'IDENTITY FILES:',
+    '  identity_read — read PERSONALITY.md, USER.md, IDENTITY.md, AGENTS.md, or HEARTBEAT.md',
+    '  identity_write — update an identity file',
+    '',
+    'HEARTBEAT LOOP:',
+    '  heartbeat_read — read OBJECTIVE_LOG.md or HEARTBEAT.md',
+    '  heartbeat_write — write OBJECTIVE_LOG.md or HEARTBEAT.md',
+    '',
+    'TOPIC FILES (memory/*.md):',
+    '  tier2_list/read/write/append/delete',
+    '',
+    'ARCHIVE (archive/*.md):',
+    '  archive_list/read/write/append/delete',
+    '',
+    'SEARCH SYNTAX (Google-like):',
+    '  word — matches any document with "word"',
+    '  "exact phrase" — matches the exact phrase',
+    '  -word — excludes documents with "word"',
+    '  -"bad phrase" — excludes documents with phrase',
+    '  word1 OR word2 — matches either word',
+    '  file:name — filter by filename',
+    '',
+    'SEARCH EXAMPLES:',
+    '  discord — find any mention of discord',
+    '  "project alpha" — exact phrase match',
+    '  discord -bot — discord but not bot',
+    '  bug OR error — either bug or error',
+    '  file:2024-12 — search only December logs',
+    '',
+    'OTHER:',
+    '  log — add to daily log',
+    '  files — list all memory files',
+  ].join('\n'),
   parameters: {
     type: 'object',
     properties: {
       action: {
         type: 'string',
-        description: 'Action: search|read|write|append|log|log_read|files|reindex|stats|tier2_list|tier2_read|tier2_write|tier2_append|tier2_delete|archive_list|archive_read|archive_write|archive_append|archive_delete',
+        description: 'Action: read|write|append|search|log|log_read|files|reindex|stats|tier2_list|tier2_read|tier2_write|tier2_append|tier2_delete|archive_list|archive_read|archive_write|archive_append|archive_delete|identity_read|identity_write|heartbeat_read|heartbeat_write',
       },
-      query: { type: 'string', description: 'Search query (for search)' },
-      content: { type: 'string', description: 'Full content (for write, tier2_write)' },
+      query: { type: 'string', description: 'Search query (for search, log_read)' },
+      content: { type: 'string', description: 'Full content (for write, tier2_write, identity_write, heartbeat_write)' },
       entry: { type: 'string', description: 'Text to append (for append, log, tier2_append)' },
-      topic: { type: 'string', description: 'Topic name for Tier 2 files (e.g. "discord", "reddit", "workshop")' },
-      limit: { type: 'number', description: 'Max results (for search, default 10)' },
-      mode: { type: 'string', description: 'Search mode: hybrid|vector|text|legacy (default hybrid)' },
+      topic: { type: 'string', description: 'Topic name for Tier 2 files' },
+      file: { type: 'string', description: 'Identity file name (for identity_read/write)' },
+      target: { type: 'string', description: 'heartbeat target: objective|heartbeat (for heartbeat_read/write)' },
+      limit: { type: 'number', description: 'Max search results (default 10)' },
     },
     required: ['action'],
   },
@@ -64,23 +85,29 @@ const memoryTool: Tool = {
         const query = params.query as string;
         if (!query) return { output: '', error: 'query is required for search' };
         const limit = (params.limit as number) || 10;
-        const mode = (params.mode as string) || 'hybrid';
-        if (mode === 'legacy') {
+        const stats = memoryManagerRef.getIndexStats();
+        
+        // Auto-fallback to legacy search if embeddings disabled
+        if (!stats.enabled || stats.totalChunks === 0) {
           const results = memoryManagerRef.search(query, limit);
           if (results.length === 0) return { output: `No results found for "${query}"` };
-          return { output: results.map(r => `### ${r.file}\n${r.matches.join('\n---\n')}`).join('\n\n') };
+          return { output: `_Legacy search_\n\n` + results.map(r => `### ${r.file}\n${r.matches.join('\n---\n')}`).join('\n\n') };
         }
+        
+        // Try semantic search, fallback to legacy on error
         try {
           const results = await memoryManagerRef.semanticSearch(query, limit);
           if (results.length === 0) return { output: `No results found for "${query}"` };
           const formatted = results.map((r, i) => {
-            const scoreStr = `score: ${r.score.toFixed(3)} (vec: ${r.vectorScore.toFixed(3)}, bm25: ${r.bm25Score.toFixed(3)})`;
+            const scoreStr = `score: ${r.score.toFixed(3)}`;
             return `### ${i + 1}. ${r.file} [${scoreStr}]\n${r.text}`;
           });
-          const stats = memoryManagerRef.getIndexStats();
-          return { output: `_Searched ${stats.totalChunks} chunks across ${stats.indexedFiles.length} files_\n` + formatted.join('\n\n---\n\n') };
+          return { output: `_Searched ${stats.totalChunks} chunks_\n` + formatted.join('\n\n---\n\n') };
         } catch (err) {
-          return { output: '', error: `Semantic search failed: ${(err as Error).message}. Try mode: "legacy" as fallback.` };
+          // Fallback to legacy search on any error
+          const results = memoryManagerRef.search(query, limit);
+          if (results.length === 0) return { output: `No results found for "${query}"` };
+          return { output: `_Legacy search (semantic failed)_\n\n` + results.map(r => `### ${r.file}\n${r.matches.join('\n---\n')}`).join('\n\n') };
         }
       }
       case 'read': {
@@ -129,8 +156,8 @@ const memoryTool: Tool = {
       }
       case 'stats': {
         const stats = memoryManagerRef.getIndexStats();
-        if (!stats.enabled) return { output: 'Semantic search: DISABLED (legacy substring only). Enable: memory.embedding.enabled = true' };
-        return { output: [`Semantic search: ENABLED`, `Chunks: ${stats.totalChunks}`, `Files: ${stats.indexedFiles.join(', ')}`].join('\n') };
+        if (!stats.enabled) return { output: 'Semantic search: DISABLED (using legacy substring search)' };
+        return { output: `Semantic search: ENABLED\nChunks: ${stats.totalChunks}\nFiles: ${stats.indexedFiles.join(', ')}` };
       }
 
       // ── Tier 2 operations ──
@@ -205,50 +232,61 @@ const memoryTool: Tool = {
         return { output: `Archive "${topic}" deleted.` };
       }
 
+      // ── Identity file access ──
+      case 'identity_read': {
+        const file = params.file as string;
+        if (!file) return { output: '', error: 'file is required (PERSONALITY.md, USER.md, IDENTITY.md, AGENTS.md, HEARTBEAT.md)' };
+        if (!IDENTITY_FILES.includes(file)) {
+          return { output: '', error: `Invalid file. Choose from: ${IDENTITY_FILES.join(', ')}` };
+        }
+        const content = memoryManagerRef.getIdentityFile(file);
+        if (!content) return { output: `${file} does not exist or is empty.` };
+        return { output: content };
+      }
+      case 'identity_write': {
+        const file = params.file as string;
+        const content = params.content as string;
+        if (!file) return { output: '', error: 'file is required' };
+        if (!IDENTITY_FILES.includes(file)) {
+          return { output: '', error: `Invalid file. Choose from: ${IDENTITY_FILES.join(', ')}` };
+        }
+        if (!content) return { output: '', error: 'content is required' };
+        memoryManagerRef.saveIdentityFile(file, content);
+        return { output: `${file} updated (${content.length} chars). Changes take effect on next message.` };
+      }
+      case 'heartbeat_read': {
+        const target = ((params.target as string) || 'objective').toLowerCase();
+        if (target === 'heartbeat') {
+          const content = memoryManagerRef.getIdentityFile('HEARTBEAT.md');
+          return { output: content || 'HEARTBEAT.md is empty.' };
+        }
+        if (target === 'objective') {
+          const path = join(memoryManagerRef.getDirectory(), OBJECTIVE_LOG_FILE);
+          if (!existsSync(path)) return { output: `${OBJECTIVE_LOG_FILE} does not exist yet.` };
+          const content = readFileSync(path, 'utf-8');
+          return { output: content || `${OBJECTIVE_LOG_FILE} is empty.` };
+        }
+        return { output: '', error: 'Invalid target. Use objective or heartbeat.' };
+      }
+      case 'heartbeat_write': {
+        const target = ((params.target as string) || 'objective').toLowerCase();
+        const content = params.content as string;
+        if (!content) return { output: '', error: 'content is required' };
+        if (target === 'heartbeat') {
+          memoryManagerRef.saveIdentityFile('HEARTBEAT.md', content);
+          return { output: `HEARTBEAT.md updated (${content.length} chars)` };
+        }
+        if (target === 'objective') {
+          const path = join(memoryManagerRef.getDirectory(), OBJECTIVE_LOG_FILE);
+          writeFileSync(path, content);
+          return { output: `${OBJECTIVE_LOG_FILE} updated (${content.length} chars)` };
+        }
+        return { output: '', error: 'Invalid target. Use objective or heartbeat.' };
+      }
+
       default:
-        return { output: '', error: `Unknown action "${action}". Valid: search, read, write, append, log, log_read, files, reindex, stats, tier2_list, tier2_read, tier2_write, tier2_append, tier2_delete, archive_list, archive_read, archive_write, archive_append, archive_delete` };
+        return { output: '', error: `Unknown action "${action}". Valid: read, write, append, search, log, log_read, files, reindex, stats, tier2_*, archive_*, identity_read, identity_write, heartbeat_read, heartbeat_write` };
     }
-  },
-};
-
-// ── Unified identity tool ────────────────────────────────────────────────
-
-const identityTool: Tool = {
-  name: 'identity',
-  description: [
-    'Read or write identity/personality files that define who you are.',
-    'Files: PERSONALITY.md, USER.md, IDENTITY.md, AGENTS.md, TOOLS.md, HEARTBEAT.md, MEMORY.md.',
-    'Actions: read (pass file), write (pass file + content). If updating PERSONALITY.md, tell the user.',
-    'Note: For topic-based reference memory (Tier 2), use the memory tool with tier2_* actions instead.',
-  ].join(' '),
-  parameters: {
-    type: 'object',
-    properties: {
-      action: { type: 'string', description: 'Action: read|write' },
-      file: { type: 'string', description: 'File name (e.g. "PERSONALITY.md", "USER.md")' },
-      content: { type: 'string', description: 'Content to write (for write action)' },
-    },
-    required: ['action', 'file'],
-  },
-  async execute(params) {
-    if (!memoryManagerRef) return { output: '', error: 'Memory manager not available' };
-    const action = params.action as string;
-    const file = params.file as string;
-    if (!IDENTITY_FILES.includes(file)) {
-      return { output: '', error: `Invalid file. Choose from: ${IDENTITY_FILES.join(', ')}` };
-    }
-    if (action === 'read') {
-      const content = memoryManagerRef.getIdentityFile(file);
-      if (!content) return { output: `${file} does not exist or is empty.` };
-      return { output: content };
-    }
-    if (action === 'write') {
-      const content = params.content as string;
-      if (!content) return { output: '', error: 'content is required for write' };
-      memoryManagerRef.saveIdentityFile(file, content);
-      return { output: `${file} updated (${content.length} chars). Changes take effect on next message.` };
-    }
-    return { output: '', error: `Unknown action "${action}". Valid: read, write` };
   },
 };
 
@@ -256,7 +294,36 @@ const identityTool: Tool = {
 
 const bootstrapCompleteTool: Tool = {
   name: 'bootstrap_complete',
-  description: 'Mark first-run bootstrap as complete by deleting BOOTSTRAP.md. Call after intro conversation: you know your name, the user\'s name, and have filled in IDENTITY.md and USER.md.',
+  description: [
+    'Mark first-run bootstrap as complete by deleting BOOTSTRAP.md.',
+    '',
+    'WHEN TO USE:',
+    '- After completing the initial introduction conversation',
+    '- When you have learned the user\'s name and preferences',
+    '- When you have set up your identity in IDENTITY.md',
+    '- When you have recorded user information in USER.md',
+    '- To transition from setup mode to normal operation',
+    '',
+    'HOW TO USE:',
+    '- Call without parameters: bootstrap_complete()',
+    '- Should be called only once during initial setup',
+    '',
+    'PREREQUISITES:',
+    '- You know the user\'s name and basic information',
+    '- Your identity is set up in IDENTITY.md',
+    '- Core personality traits are defined in PERSONALITY.md',
+    '- User preferences are recorded in USER.md',
+    '',
+    'SAFETY NOTES:',
+    '- This action is irreversible - BOOTSTRAP.md is permanently deleted',
+    '- Transitions system to normal operation mode',
+    '- Only call when truly ready to complete setup',
+    '',
+    'AFTER EXECUTION:',
+    '- System operates in normal mode',
+    '- No longer prompts for initial setup information',
+    '- Regular memory and conversation flow begins',
+  ].join('\n'),
   parameters: { type: 'object', properties: {} },
   async execute() {
     if (!memoryManagerRef) return { output: '', error: 'Memory manager not available' };
@@ -268,7 +335,7 @@ const bootstrapCompleteTool: Tool = {
   },
 };
 
-// ── Export all (3 tools instead of 11) ───────────────────────────────────
+// ── Exports ───────────────────────────────────────────────────────────────
 
 export {
   memoryTool as memorySearchTool,      // keep old export name for agent.ts compatibility
@@ -279,13 +346,12 @@ export {
   memoryTool as memoryFilesTool,
   memoryTool as memoryReindexTool,
   memoryTool as memoryIndexStatsTool,
-  identityTool as identityReadTool,
-  identityTool as identityWriteTool,
+  memoryTool as identityReadTool,      // now part of memory tool (identity_read action)
+  memoryTool as identityWriteTool,     // now part of memory tool (identity_write action)
   bootstrapCompleteTool,
 };
 
 export const memoryTools = [
   memoryTool,
-  identityTool,
   bootstrapCompleteTool,
 ];

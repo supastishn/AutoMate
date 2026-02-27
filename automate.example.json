@@ -37,7 +37,10 @@
   },
   "browser": {
     "enabled": true,
-    "headless": false
+    "engine": "playwright",
+    "headless": false,
+    "chromiumPath": "/usr/bin/chromium",
+    "chromeDriverPath": "/usr/bin/chromedriver"
   },
   "skills": {
     "directory": "~/.automate/skills"

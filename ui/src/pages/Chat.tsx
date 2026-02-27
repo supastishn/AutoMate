@@ -20,22 +20,140 @@ interface ChatMessage {
   role: 'user' | 'assistant' | 'system'
   content: string
   toolCalls?: { name: string; result: string; arguments?: string }[]
-  images?: { url?: string; base64?: string; mimeType: string; alt?: string; filename?: string }[]
+  askUserQuestion?: {
+    id: string
+    options?: string[]
+    allowCustomInput?: boolean
+    multiSelect?: boolean
+  }
+  images?: { url?: string; base64?: string; mimeType: string; alt?: string; filename?: string; id?: string }[]
   reactions?: string[]
   timestamp: number
   serverIndex?: number  // Index in server-side messages array
-  isPowerSteering?: boolean  // True for power steering system messages
+  _meta?: {
+    hidden?: boolean
+    isPowerSteering?: boolean
+  }
+}
+
+// Helper function to normalize content from backend format to UI string format
+function normalizeContent(content: any): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  
+  if (Array.isArray(content)) {
+    // Handle ContentPart[] array
+    return content
+      .map((part: any) => {
+        if (part.type === 'text' && typeof part.text === 'string') {
+          return part.text;
+        } else if (part.type === 'image_url' && part.image_url?.url) {
+          return `[Image: ${part.image_url.url}]`;
+        }
+        return `[${part.type || 'content'}]`;
+      })
+      .join(' ');
+  }
+  
+  // Fallback for other content types
+  return String(content || '');
+}
+
+function extractAskUserQuestion(meta: any): ChatMessage['askUserQuestion'] | undefined {
+  const raw = meta?.askUserQuestion;
+  if (!raw || typeof raw !== 'object') return undefined;
+  const id = typeof raw.id === 'string' && raw.id
+    ? raw.id
+    : `ask_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const options = Array.isArray(raw.options)
+    ? raw.options.map((opt: any) => String(opt)).filter(Boolean)
+    : undefined;
+  return {
+    id,
+    options,
+    allowCustomInput: raw.allowCustomInput !== false,
+    multiSelect: !!raw.multiSelect,
+  };
 }
 
 // Simple markdown renderer (no external dep runtime - we parse ourselves)
-function renderMarkdown(text: string): React.ReactNode[] {
+function renderMarkdown(text: string, colors?: any): React.ReactNode[] {
   const nodes: React.ReactNode[] = []
-  const lines = text.split('\n')
-  let i = 0
   let key = 0
+
+  // Pre-process: extract and merge [think]...[/think] or [reasoning]...[/reasoning] blocks
+  // Streaming sends many small chunks - merge consecutive ones into single block
+  const reasoningBlocks: { id: string; content: string }[] = []
+  let processedText = text
+  // Match both [think] and [reasoning] markers, merge consecutive ones
+  const thinkRegex = /\[(think|reasoning)\]([\s\S]*?)\[\/(think|reasoning)\]/g
+  let match
+  let lastReasoningContent = ''
+  // Use text (not processedText) for extraction
+  while ((match = thinkRegex.exec(text)) !== null) {
+    lastReasoningContent += match[2]
+  }
+  // If we have reasoning content, create one merged block at the start
+  if (lastReasoningContent.trim()) {
+    const id = `__reasoning_0__`
+    reasoningBlocks.push({ id, content: lastReasoningContent.trim() })
+    // Remove all think/reasoning markers from text - create NEW regex to reset lastIndex
+    processedText = processedText.replace(/\[(think|reasoning)\][\s\S]*?\[\/(think|reasoning)\]/g, '').trim()
+    // Prepend placeholder at start
+    processedText = id + '\n' + processedText
+  }
+
+  const lines = processedText.split('\n')
+  let i = 0
 
   while (i < lines.length) {
     const line = lines[i]
+
+    // Reasoning block placeholder
+    const reasoningMatch = line.match(/^__reasoning_(\d+)__$/)
+    if (reasoningMatch) {
+      const idx = parseInt(reasoningMatch[1])
+      const block = reasoningBlocks[idx]
+      if (block) {
+        const reasoningKey = `reasoning_${key++}`
+        nodes.push(
+          <details key={reasoningKey} style={{ margin: '8px 0' }}>
+            <summary style={{ 
+              cursor: 'pointer', 
+              fontSize: 12, 
+              color: colors?.textMuted || 'var(--textMuted)',
+              padding: '4px 8px',
+              background: colors?.bgTertiary || 'var(--bgTertiary)',
+              borderRadius: 4,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+            }}>
+              <span>🧠</span>
+              <span>Reasoning</span>
+              <span style={{ fontSize: 10, opacity: 0.7 }}>({block.content.length} chars)</span>
+            </summary>
+            <div style={{
+              marginTop: 4,
+              padding: '8px 12px',
+              background: colors?.bgSecondary || 'var(--bgSecondary)',
+              borderRadius: 4,
+              fontSize: 12,
+              lineHeight: 1.5,
+              whiteSpace: 'pre-wrap',
+              fontFamily: 'monospace',
+              color: colors?.textSecondary || 'var(--textSecondary)',
+              maxHeight: 300,
+              overflow: 'auto',
+            }}>
+              {block.content}
+            </div>
+          </details>
+        )
+      }
+      i++; continue
+    }
 
     // Code block
     if (line.startsWith('```')) {
@@ -371,6 +489,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
   const [models, setModels] = useState<{name: string; model: string; active: boolean}[]>([])
   const [showModelPicker, setShowModelPicker] = useState(false)
   const [multiAgent, setMultiAgent] = useState(false)
+  const [showHiddenMessages, setShowHiddenMessages] = useState(false) // Toggle for power steering visibility
   const [agentsList, setAgentsList] = useState<{ name: string; isDefault: boolean; model: string }[]>([])
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
   const [showAgentPicker, setShowAgentPicker] = useState(false)
@@ -485,7 +604,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
     toolCalls: { name: string; arguments?: string; result: string }[] | undefined,
     keyPrefix: string,
   ) => {
-    const nodes = renderMarkdown(text)
+    const nodes = renderMarkdown(text, colors)
     if (!toolCalls || toolCalls.length === 0) return nodes
     // Map tool names to their data (use first match, consume in order)
     const toolQueue = [...toolCalls]
@@ -556,13 +675,14 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
     return () => clearInterval(interval)
   }, [loadSessionId])
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, streaming])
-
   const connect = () => {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const ws = new WebSocket(`${proto}//${location.host}/ws`)
+    // Try to rejoin previous session on reconnect (e.g., after page refresh)
+    const savedSessionId = localStorage.getItem('automate_session_id')
+    const wsUrl = savedSessionId
+      ? `${proto}//${location.host}/ws?rejoin_session_id=${encodeURIComponent(savedSessionId)}`
+      : `${proto}//${location.host}/ws`
+    const ws = new WebSocket(wsUrl)
 
     ws.onopen = () => {
       setConnected(true)
@@ -582,6 +702,8 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
       if (msg.type === 'connected') {
         setCurrentSessionId(msg.session_id)
         currentSessionIdRef.current = msg.session_id
+        // Save session ID to localStorage for reconnection
+        localStorage.setItem('automate_session_id', msg.session_id)
         if (msg.context) setContextInfo(msg.context)
         // If the server is still processing this session (e.g. page refresh mid-stream),
         // show the thinking indicator and start polling for completion.
@@ -638,20 +760,20 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         if (msg.context) setContextInfo(msg.context)
         // Merge consecutive assistant messages into one: tool-call-only messages
         // get folded into the previous assistant message (tools belong to that turn).
-        // Keep power steering messages (isPowerSteering: true) but filter other system messages
-        const rawMsgs = (msg.messages || []).filter((m: any) => m.role !== 'system' || m.isPowerSteering)
+        // Filter: show only user and assistant messages (not system or tool results)
+        const rawMsgs = (msg.messages || []).filter((m: any) => m.role !== 'system' && m.role !== 'tool')
         const merged: ChatMessage[] = []
 
         for (const m of rawMsgs) {
-          // Handle power steering messages
-          if (m.isPowerSteering) {
+          // Handle power steering messages - they come as user messages with _meta
+          if (m._meta?.isPowerSteering) {
             merged.push({
               id: makeId(),
-              role: 'system',
-              content: m.content || '',
+              role: m.role as 'user' | 'system', // Use the actual role from server
+              content: normalizeContent(m.content),
               timestamp: Date.now(),
               serverIndex: m.serverIndex,
-              isPowerSteering: true,
+              _meta: m._meta,
             })
             continue
           }
@@ -660,17 +782,33 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
             const toolCalls = m.tool_calls
               ? m.tool_calls.map((tc: any) => ({ name: tc.name, result: tc.result || '', arguments: tc.arguments || '' }))
               : []
+            const askUserQuestion = extractAskUserQuestion(m._meta)
             // Inject [used tool: X] markers if toolCalls exist but markers don't
             // (markers are streamed to UI but not stored in session)
-            let content = (m.content || '').trim()
+            // Put content FIRST, then tool markers at the end
+            let content = normalizeContent(m.content).trim()
             if (toolCalls.length > 0) {
               const markers = toolCalls
                 .filter(tc => !content.includes(`[used tool: ${tc.name}]`))
                 .map(tc => `[used tool: ${tc.name}]`)
                 .join('\n')
               if (markers) {
-                content = markers + (content ? '\n\n' + content : '')
+                content = content ? content + '\n\n' + markers : markers
               }
+            }
+
+            if (askUserQuestion) {
+              merged.push({
+                id: makeId(),
+                role: 'assistant',
+                content,
+                toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+                askUserQuestion,
+                timestamp: Date.now(),
+                serverIndex: m.serverIndex,
+                _meta: m._meta,
+              })
+              continue
             }
 
             // If the last merged message is also assistant, merge into it
@@ -692,13 +830,14 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
                 toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
                 timestamp: Date.now(),
                 serverIndex: m.serverIndex,
+                _meta: m._meta,
               })
             }
           } else {
             merged.push({
               id: makeId(),
               role: m.role as 'user',
-              content: m.content || '',
+              content: normalizeContent(m.content),
               timestamp: Date.now(),
               serverIndex: m.serverIndex,
             })
@@ -744,6 +883,32 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           }, 100)
         }
       }
+      if (msg.type === 'ask_user_question') {
+        const questionText = normalizeContent(msg.question || '')
+        if (questionText) {
+          const questionId = typeof msg.questionId === 'string' && msg.questionId
+            ? msg.questionId
+            : `ask_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+          const options = Array.isArray(msg.options)
+            ? msg.options.map((o: any) => String(o)).filter(Boolean)
+            : undefined
+          setMessages(prev => {
+            if (prev.some(m => m.askUserQuestion?.id === questionId)) return prev
+            return [...prev, {
+              id: makeId(),
+              role: 'assistant',
+              content: questionText,
+              askUserQuestion: {
+                id: questionId,
+                options,
+                allowCustomInput: msg.allowCustomInput !== false,
+                multiSelect: !!msg.multiSelect,
+              },
+              timestamp: Date.now(),
+            }]
+          })
+        }
+      }
       if (msg.type === 'response') {
         stopProcessingPoll()
         setTyping(false)
@@ -763,28 +928,29 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         // Update message count and hash for automated message polling
         const lastServerMsg = serverMsgs[serverMsgs.length - 1]
         lastMessageCountRef.current = serverMsgs.length
-        lastMessageHashRef.current = lastServerMsg ? `${lastServerMsg.role}:${(lastServerMsg.content || '').length}:${(lastServerMsg.content || '').slice(0, 50)}` : ''
+        lastMessageHashRef.current = lastServerMsg ? `${lastServerMsg.role}:${(normalizeContent(lastServerMsg.content) || '').length}:${(normalizeContent(lastServerMsg.content) || '').slice(0, 50)}` : ''
         // Use accumulated streaming content if available — msg.content only has the
         // final LLM response (after tool calls), so it would wipe earlier streamed text.
         setStreaming(prev => {
           // Keep [used tool: X] markers — renderContentWithTools replaces them with accordions
-          const finalContent = (prev || msg.content || '').trim()
+          const finalContent = (prev || normalizeContent(msg.content)).trim()
 
           // If server sent messages, rebuild from server list to get correct ordering
           // (important when messages were injected mid-conversation)
           if (serverMsgs.length > 0) {
             // Convert server messages to client format, adding the final assistant response
-            // Keep power steering messages but skip other system messages
+            // Filter: show only user and assistant messages
             const rebuilt: Message[] = serverMsgs
-              .filter((sm: any) => sm.role !== 'system' || sm.isPowerSteering)
+              .filter((sm: any) => sm.role !== 'system' && sm.role !== 'tool')
               .map((sm: any) => ({
                 id: makeId(),
                 role: sm.role as 'user' | 'assistant' | 'tool' | 'system',
-                content: sm.content || '',
+                content: normalizeContent(sm.content),
                 toolCalls: sm.tool_calls,
+                askUserQuestion: extractAskUserQuestion(sm._meta),
                 serverIndex: sm.serverIndex,
                 timestamp: Date.now(),
-                isPowerSteering: sm.isPowerSteering,
+                _meta: sm._meta,
               }))
 
             // Check if the last message is already the assistant response we're about to add
@@ -911,14 +1077,30 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           mimeType: msg.mimeType,
           alt: msg.alt,
           filename: msg.filename,
+          id: msg.id, // For replacing previous images
         }
         setMessages(prev => {
           // Attach to last assistant message or create new
           const last = prev[prev.length - 1]
           if (last && last.role === 'assistant') {
+            // If image has an id, replace existing image with same id
+            const existingImages = last.images || []
+            let newImages: typeof existingImages
+            if (msg.id) {
+              const existingIdx = existingImages.findIndex(img => img.id === msg.id)
+              if (existingIdx >= 0) {
+                // Replace existing image with same id
+                newImages = [...existingImages]
+                newImages[existingIdx] = imgData
+              } else {
+                newImages = [...existingImages, imgData]
+              }
+            } else {
+              newImages = [...existingImages, imgData]
+            }
             return [...prev.slice(0, -1), {
               ...last,
-              images: [...(last.images || []), imgData],
+              images: newImages,
             }]
           }
           return [...prev, {
@@ -947,13 +1129,14 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         currentSessionIdRef.current = msg.session_id
         if (msg.context) setContextInfo(msg.context)
         const loaded: ChatMessage[] = (msg.messages || [])
-          .filter((m: any) => m.role !== 'system' || m.isPowerSteering)
+          .filter((m: any) => m.role !== 'system' && m.role !== 'tool')
           .map((m: any) => ({
             id: makeId(),
             role: m.role as 'user' | 'assistant' | 'system',
             content: m.content || '',
             toolCalls: m.tool_calls?.map((tc: any) => ({ name: tc.name, arguments: tc.arguments, result: tc.result || '' })),
-            isPowerSteering: m.isPowerSteering,
+            askUserQuestion: extractAskUserQuestion(m._meta),
+            _meta: m._meta,
             timestamp: Date.now(),
             serverIndex: m.serverIndex,
           }))
@@ -968,15 +1151,16 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
         setAwaitingResponse(false)
         awaitingResponseRef.current = false
         if (msg.context) setContextInfo(msg.context)
-        // Reload all messages from server
+        // Reload all messages from server - filter out system and tool messages
         const loaded: ChatMessage[] = (msg.messages || [])
-          .filter((m: any) => m.role !== 'system' || m.isPowerSteering)
+          .filter((m: any) => m.role !== 'system' && m.role !== 'tool')
           .map((m: any) => ({
             id: makeId(),
             role: m.role as 'user' | 'assistant' | 'system',
             content: m.content || '',
             toolCalls: m.tool_calls?.map((tc: any) => ({ name: tc.name, arguments: tc.arguments, result: tc.result || '' })),
-            isPowerSteering: m.isPowerSteering,
+            askUserQuestion: extractAskUserQuestion(m._meta),
+            _meta: m._meta,
             timestamp: Date.now(),
             serverIndex: m.serverIndex,
           }))
@@ -988,27 +1172,32 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
     wsRef.current = ws
   }
 
-  const send = () => {
-    if (!input.trim() || !wsRef.current) return
-    const trimmed = input.trim()
+  const sendUserMessage = (raw: string) => {
+    if (!wsRef.current) return
+    const trimmed = raw.trim()
+    if (!trimmed) return
 
     // If user resets session, clear agent selection and re-show picker
     if ((trimmed === '/new' || trimmed === '/reset') && multiAgent) {
       setSelectedAgent(null)
-      // Picker will re-show after the response completes
       setTimeout(() => setShowAgentPicker(true), 300)
     }
 
-    setMessages(prev => [...prev, { id: makeId(), role: 'user', content: input, timestamp: Date.now() }])
+    setMessages(prev => [...prev, { id: makeId(), role: 'user', content: trimmed, timestamp: Date.now() }])
     const payload: any = { type: 'message', content: trimmed }
     if (selectedAgent) payload.agent = selectedAgent
     wsRef.current.send(JSON.stringify(payload))
-    setInput('')
     setStreaming('')
     pendingToolCallsRef.current = []
     setStreamingToolCalls([])
     setAwaitingResponse(true)
     awaitingResponseRef.current = true
+  }
+
+  const send = () => {
+    if (!input.trim()) return
+    sendUserMessage(input)
+    setInput('')
     inputRef.current?.focus()
   }
 
@@ -1199,20 +1388,22 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
   /** Group messages: consecutive heartbeat msgs become groups, others stay solo */
   type RenderItem = { kind: 'message'; msg: ChatMessage } | { kind: 'heartbeat'; msgs: ChatMessage[]; ts: number }
   const buildRenderItems = (): RenderItem[] => {
-    if (!hideHeartbeats) return messages.map(msg => ({ kind: 'message' as const, msg }))
+    // Filter hidden messages unless explicitly shown
+    const visibleMsgs = messages.filter(m => !m._meta?.hidden || showHiddenMessages)
+    if (!hideHeartbeats) return visibleMsgs.map(msg => ({ kind: 'message' as const, msg }))
     const items: RenderItem[] = []
     let i = 0
-    while (i < messages.length) {
-      if (isHeartbeatMsg(messages[i])) {
+    while (i < visibleMsgs.length) {
+      if (isHeartbeatMsg(visibleMsgs[i])) {
         const group: ChatMessage[] = []
-        const ts = messages[i].timestamp
-        while (i < messages.length && isHeartbeatMsg(messages[i])) {
-          group.push(messages[i])
+        const ts = visibleMsgs[i].timestamp
+        while (i < visibleMsgs.length && isHeartbeatMsg(visibleMsgs[i])) {
+          group.push(visibleMsgs[i])
           i++
         }
         items.push({ kind: 'heartbeat', msgs: group, ts })
       } else {
-        items.push({ kind: 'message', msg: messages[i] })
+        items.push({ kind: 'message', msg: visibleMsgs[i] })
         i++
       }
     }
@@ -1290,6 +1481,16 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
             borderRadius: 4, cursor: 'pointer', fontSize: 13,
           }}>
             {hideHeartbeats ? '💔' : '💜'}
+          </button>
+          {/* Power steering visibility toggle */}
+          <button onClick={() => {
+            setShowHiddenMessages(!showHiddenMessages)
+          }} title={showHiddenMessages ? 'Power Steering: Visible' : 'Power Steering: Hidden'} style={{
+            padding: '4px 10px', background: showHiddenMessages ? colors.bgHover : colors.bgTertiary,
+            color: showHiddenMessages ? colors.warning : colors.textSecondary, border: `1px solid ${colors.borderLight}`,
+            borderRadius: 4, cursor: 'pointer', fontSize: 13,
+          }}>
+            {showHiddenMessages ? '⚡' : '🔒'}
           </button>
           {/* Model picker */}
           <div style={{ position: 'relative' }}>
@@ -1706,7 +1907,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
                             {new Date(m.timestamp).toLocaleTimeString()}
                           </span>
                         </div>
-                        <div>{m.role === 'assistant' ? renderContentWithTools(m.content, m.toolCalls, m.id) : m.content}</div>
+                        <div>{m.role === 'assistant' ? renderContentWithTools(m.content, m.toolCalls, `msg_${m.serverIndex ?? m.id}`) : m.content}</div>
                       </div>
                     ))}
                   </div>
@@ -1717,7 +1918,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
 
           // ---- Power Steering accordion ----
           const m = item.msg
-          if (m.isPowerSteering) {
+          if (m._meta?.isPowerSteering) {
             const psKey = `ps_${itemIdx}_${m.id}`
             const isOpen = expandedTools[psKey] || false
             return (
@@ -1814,7 +2015,52 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
               </div>
             ) : (
               <div style={{ fontFamily: m.role === 'user' ? 'inherit' : 'inherit' }}>
-                {m.role === 'assistant' ? renderContentWithTools(m.content, m.toolCalls, m.id) : m.content}
+                {m.role === 'assistant' ? renderContentWithTools(m.content, m.toolCalls, `msg_${m.serverIndex ?? m.id}`) : m.content}
+              </div>
+            )}
+
+            {/* Ask-user quick options */}
+            {m.role === 'assistant' && m.askUserQuestion && (
+              <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {(m.askUserQuestion.options || []).map((opt, idx) => (
+                  <button
+                    key={`${m.askUserQuestion?.id}_opt_${idx}`}
+                    onClick={() => sendUserMessage(opt)}
+                    style={{
+                      padding: '4px 10px',
+                      background: colors.bgTertiary,
+                      color: colors.textPrimary,
+                      border: `1px solid ${colors.border}`,
+                      borderRadius: 14,
+                      cursor: 'pointer',
+                      fontSize: 12,
+                    }}
+                  >
+                    {opt}
+                  </button>
+                ))}
+                {m.askUserQuestion.allowCustomInput !== false && (
+                  <button
+                    onClick={() => {
+                      if (!input.trim()) return
+                      sendUserMessage(input)
+                      setInput('')
+                      inputRef.current?.focus()
+                    }}
+                    style={{
+                      padding: '4px 10px',
+                      background: colors.bgHover,
+                      color: colors.textSecondary,
+                      border: `1px dashed ${colors.borderLight}`,
+                      borderRadius: 14,
+                      cursor: 'pointer',
+                      fontSize: 12,
+                    }}
+                    title="Send current composer text as your custom answer"
+                  >
+                    Send custom answer
+                  </button>
+                )}
               </div>
             )}
 
@@ -1822,7 +2068,7 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
             {m.images && m.images.length > 0 && (
               <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                 {m.images.map((img, j) => (
-                  <div key={j} style={{ position: 'relative' }}>
+                  <div key={img.id || `img_${m.serverIndex ?? m.id}_${j}`} style={{ position: 'relative' }}>
                     <img
                       src={img.base64 ? `data:${img.mimeType};base64,${img.base64}` : img.url}
                       alt={img.alt || img.filename || 'image'}

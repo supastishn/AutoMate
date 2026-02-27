@@ -1,27 +1,30 @@
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Config } from '../config/schema.js';
-import { LLMClient, type LLMMessage, type StreamChunk } from './llm-client.js';
+import { LLMClient, type LLMMessage, type StreamChunk, type ContentPart } from './llm-client.js';
 import { ToolRegistry, type ToolContext, type Tool, type SessionToolView, type ToolRegistryStats } from './tool-registry.js';
 import { bashTool, bashTools, setBackgroundShellNotifier } from './tools/bash.js';
-import { readFileTool, writeFileTool, editFileTool, applyPatchTool, hashlineEditTool } from './tools/files.js';
+import { readFileTool, writeFileTool, editFileTool, applyPatchTool, listFilesTool, searchInFileTool } from './tools/files.js';
 import { browserTools, setBrowserConfig, setBrowserImageBroadcaster } from './tools/browser.js';
 import { sessionTools, setSessionManager, setAgent } from './tools/sessions.js';
 import { memoryTools, setMemoryManager } from './tools/memory.js';
 import { webTools } from './tools/web.js';
-import { imageTools, setImageConfig, setImageBroadcaster } from './tools/image.js';
+import { imageTools, setImageConfig, setImageBroadcaster, setAddMessageToSession } from './tools/image.js';
 import { cronTools, setScheduler } from './tools/cron.js';
 import { processTools } from './tools/process.js';
 import { canvasTools, setCanvasBroadcaster } from '../canvas/canvas-manager.js';
 import { clawHubTools, setClawHubConfig } from '../clawhub/registry.js';
 import { skillBuilderTools, setSkillBuilderConfig } from './tools/skill-builder.js';
 import { subAgentTools, setSubAgentSpawner, setSubAgentNotifier, isSubAgentFinished, consumeSubAgentFinish } from './tools/subagent.js';
-import { skillTools, setSkillsLoader as setSkillToolLoader, getSessionSkillsInjection } from './tools/skills.js';
+import { skillTools, setSkillsLoader as setSkillToolLoader, getSessionSkillsInjection, autoLoadSessionSkills } from './tools/skills.js';
 import { sharedMemoryTools, setSharedMemoryDir } from './tools/shared-memory.js';
 import { pluginTools, setPluginManager, setPluginReloadCallback } from '../plugins/manager.js';
 import { ttsTools, setTTSConfig } from './tools/tts.js';
-import { puterTools } from './tools/puter.js';
 import { gatewayTools, setGatewayControls } from './tools/gateway.js';
 import { messageTools, setMessageAgent } from './tools/message.js';
 import { agentsListTools, setAgentsRouter } from './tools/agents-list.js';
+import { goalsTools, setGoalsMemoryManager } from './tools/goals.js';
+import { autonomyTools, setAutonomyMemoryManager, getLearnedPatterns, getCurrentMetacognition } from './tools/autonomy.js';
 import type { PluginManager } from '../plugins/manager.js';
 import type { PresenceManager } from '../gateway/presence.js';
 import type { SessionManager } from '../gateway/session-manager.js';
@@ -29,6 +32,44 @@ import type { MemoryManager } from '../memory/manager.js';
 import type { Scheduler } from '../cron/scheduler.js';
 import type { SkillsLoader } from '../skills/loader.js';
 import type { AgentRouter } from '../agents/router.js';
+
+/** Helper to get text from content (handles both string and ContentPart[]) */
+function getTextFromContent(content: string | ContentPart[] | null): string {
+  if (!content) return '';
+  if (typeof content === 'string') return content;
+  // ContentPart[] - extract text parts
+  return content
+    .filter(part => part.type === 'text' && part.text)
+    .map(part => part.text)
+    .join(' ');
+}
+
+/** Build a structured runtime line (OpenClaw-style). */
+function buildRuntimeLine(params: {
+  sessionId?: string;
+  model?: string;
+  defaultModel?: string;
+  os?: string;
+  arch?: string;
+  node?: string;
+  shell?: string;
+  elevated?: boolean;
+  thinkingLevel?: string;
+}): string {
+  const parts: string[] = [];
+  if (params.sessionId) parts.push(`session=${params.sessionId.slice(0, 8)}`);
+  if (params.os) parts.push(`os=${params.os}${params.arch ? ` (${params.arch})` : ''}`);
+  else if (params.arch) parts.push(`arch=${params.arch}`);
+  if (params.node) parts.push(`node=${params.node}`);
+  if (params.model) parts.push(`model=${params.model}`);
+  if (params.defaultModel && params.defaultModel !== params.model) {
+    parts.push(`default_model=${params.defaultModel}`);
+  }
+  if (params.shell) parts.push(`shell=${params.shell}`);
+  if (params.elevated !== undefined) parts.push(`elevated=${params.elevated}`);
+  parts.push(`thinking=${params.thinkingLevel ?? 'off'}`);
+  return `Runtime: ${parts.join(' | ')}`;
+}
 
 export interface AgentResponse {
   content: string;
@@ -55,6 +96,7 @@ export class Agent {
   private llm: LLMClient;
   private tools: ToolRegistry;
   private config: Config;
+  private useDeferredTools: boolean;
   private sessionManager: SessionManager;
   private memoryManager: MemoryManager | null = null;
   private skillsLoader: SkillsLoader | null = null;
@@ -104,6 +146,7 @@ export class Agent {
 
   constructor(config: Config, sessionManager: SessionManager) {
     this.config = config;
+    this.useDeferredTools = config.tools.deferredLoading !== false;
     this.llm = new LLMClient(config);
     this.tools = new ToolRegistry();
     this.sessionManager = sessionManager;
@@ -122,11 +165,13 @@ export class Agent {
     for (const tool of bashTools.slice(1)) { // skip bashTool (already registered)
       this.tools.register(tool);
     }
+    // File operations (read, write, edit, patch)
     this.tools.register(readFileTool);
     this.tools.register(writeFileTool);
     this.tools.register(editFileTool);
-    this.tools.register(hashlineEditTool);
     this.tools.register(applyPatchTool);
+    this.tools.register(listFilesTool);
+    this.tools.register(searchInFileTool);
 
     // Memory & identity — always available
     for (const tool of memoryTools) {
@@ -136,8 +181,11 @@ export class Agent {
     // ── Meta-tools for lazy loading ──────────────────────────────────────
 
     this.tools.register(this._createListToolsTool());
-    this.tools.register(this._createLoadToolTool());
-    this.tools.register(this._createUnloadToolTool());
+    // load_tool and unload_tool only available when deferredLoading is enabled
+    if (config.tools.deferredLoading !== false) {
+      this.tools.register(this._createLoadToolTool());
+      this.tools.register(this._createUnloadToolTool());
+    }
 
     // ── Wire module-level setters (needed even before tools are promoted) ─
 
@@ -148,96 +196,82 @@ export class Agent {
       setSharedMemoryDir(config.memory.sharedDirectory);
     }
 
-    // ── Deferred tools (discoverable via list_tools, loaded via load_tool) ─
+    // Helper: register tool as deferred or core based on config
+    const registerTool = (tool: any, summary: string, actions?: string[]) => {
+      if (this.useDeferredTools) {
+        this.tools.registerDeferred({ tool, summary, actions });
+      } else {
+        this.tools.register(tool);
+      }
+    };
+
+    // ── Deferred tools (or core if deferredLoading is false) ──────────────
 
     // Session management
     for (const tool of sessionTools) {
-      this.tools.registerDeferred({
-        tool,
-        summary: 'Manage chat sessions: list, view history, send messages, spawn sub-sessions',
-        actions: ['list', 'history', 'send', 'spawn'],
-      });
+      registerTool(tool, 'Manage chat sessions: list, view history, send messages, spawn sub-sessions',
+        ['list', 'history', 'send', 'spawn']);
     }
 
     // Web search & fetch
     for (const tool of webTools) {
-      this.tools.registerDeferred({
-        tool,
-        summary: 'Search the web and fetch/scrape URLs',
-        actions: ['search', 'fetch'],
-      });
+      registerTool(tool, 'Search the web and fetch/scrape URLs', ['search', 'fetch']);
     }
 
     // Image tools
     for (const tool of imageTools) {
-      this.tools.registerDeferred({
-        tool,
-        summary: 'Analyze images (vision), generate images (DALL-E), send images to chat',
-        actions: ['analyze', 'generate', 'send'],
-      });
+      registerTool(tool, 'Analyze images (vision), generate images (DALL-E), send images to chat',
+        ['analyze', 'generate', 'send']);
     }
 
     // Browser automation
     if (config.browser.enabled) {
-      setBrowserConfig({ profileDir: config.browser.profileDir });
+      setBrowserConfig({ 
+        profileDir: config.browser.profileDir,
+        extensions: config.browser.extensions,
+        headless: config.browser.headless,
+        engine: config.browser.engine,
+        chromiumPath: config.browser.chromiumPath,
+        chromeDriverPath: config.browser.chromeDriverPath,
+      });
       for (const tool of browserTools) {
-        this.tools.registerDeferred({
-          tool,
-          summary: 'Control a headless browser: navigate, click, type, screenshot, execute JS, fill forms',
-          actions: ['navigate', 'back', 'screenshot', 'click', 'type', 'find', 'scroll', 'get_page', 'get_html', 'execute_js', 'fill_form', 'select', 'wait_element', 'press_key', 'human_click', 'human_type', 'upload', 'close'],
-          conditional: 'browser.enabled',
-        });
+        registerTool(tool, 'Control a headless browser: navigate, click, type, screenshot, execute JS, fill forms',
+          ['navigate', 'back', 'screenshot', 'click', 'type', 'find', 'scroll', 'get_page', 'get_html', 'execute_js', 'fill_form', 'select', 'wait_element', 'press_key', 'human_click', 'human_type', 'upload', 'close']);
       }
     }
 
     // Cron scheduling
     if (config.cron.enabled) {
       for (const tool of cronTools) {
-        this.tools.registerDeferred({
-          tool,
-          summary: 'Schedule recurring tasks with cron expressions',
-          actions: ['create', 'list', 'delete', 'toggle'],
-          conditional: 'cron.enabled',
-        });
+        registerTool(tool, 'Schedule recurring tasks with cron expressions',
+          ['create', 'list', 'delete', 'toggle']);
       }
     }
 
     // Background processes
     for (const tool of processTools) {
-      this.tools.registerDeferred({
-        tool,
-        summary: 'Run and manage long-running background processes',
-        actions: ['start', 'poll', 'write', 'kill', 'list'],
-      });
+      registerTool(tool, 'Run and manage long-running background processes',
+        ['start', 'poll', 'write', 'kill', 'list']);
     }
 
     // Canvas (collaborative document)
     if (config.canvas?.enabled !== false) {
       for (const tool of canvasTools) {
-        this.tools.registerDeferred({
-          tool,
-          summary: 'Push content to a live canvas document visible in the Web UI',
-          actions: ['push', 'reset', 'snapshot'],
-        });
+        registerTool(tool, 'Push content to a live canvas document visible in the Web UI',
+          ['push', 'reset', 'snapshot']);
       }
     }
 
     // ClawHub (skill marketplace)
     for (const tool of clawHubTools) {
-      this.tools.registerDeferred({
-        tool,
-        summary: 'Browse and install community skills from ClawHub marketplace',
-        actions: ['browse', 'search', 'preview', 'install', 'uninstall', 'update', 'list'],
-      });
+      registerTool(tool, 'Browse and install community skills from ClawHub marketplace',
+        ['browse', 'search', 'preview', 'install', 'uninstall', 'update', 'list']);
     }
 
     // Skill builder (self-modification)
     for (const tool of skillBuilderTools) {
-      this.tools.registerDeferred({
-        tool,
-        summary: 'Create and manage hot-reloadable SKILL.md files that extend your capabilities',
-        actions: ['create', 'edit', 'read', 'delete', 'list'],
-      });
+      registerTool(tool, 'Create and manage hot-reloadable SKILL.md files that extend your capabilities',
+        ['create', 'edit', 'read', 'delete', 'list']);
     }
 
     // Sub-agents (subagent + subagent_poll + subagent_finish)
@@ -247,7 +281,7 @@ export class Agent {
         : tool.name === 'subagent_finish'
         ? 'Signal that you (a sub-agent) have completed your task and return a final result'
         : 'Spawn autonomous sub-agents — blocking (wait) or parallel (background, poll later)';
-      this.tools.registerDeferred({ tool, summary });
+      registerTool(tool, summary);
     }
 
     // Skill management (list, load, unload, show skills)
@@ -257,21 +291,15 @@ export class Agent {
 
     // Shared memory
     for (const tool of sharedMemoryTools) {
-      this.tools.registerDeferred({
-        tool,
-        summary: 'Read/write shared memory files accessible across sessions and agents',
-        actions: ['read', 'write', 'append', 'list', 'delete'],
-      });
+      registerTool(tool, 'Read/write shared memory files accessible across sessions and agents',
+        ['read', 'write', 'append', 'list', 'delete']);
     }
 
     // Plugin management
     if (config.plugins?.enabled !== false) {
       for (const tool of pluginTools) {
-        this.tools.registerDeferred({
-          tool,
-          summary: 'Create, scaffold, and manage runtime plugins that add new tools/channels/middleware',
-          actions: ['list', 'scaffold', 'reload', 'create'],
-        });
+        registerTool(tool, 'Create, scaffold, and manage runtime plugins that add new tools/channels/middleware',
+          ['list', 'scaffold', 'reload', 'create']);
       }
     }
 
@@ -284,44 +312,47 @@ export class Agent {
         outputDir: config.tts.outputDir,
       });
       for (const tool of ttsTools) {
-        this.tools.registerDeferred({
-          tool,
-          summary: 'Convert text to speech audio using ElevenLabs',
-          actions: ['speak', 'voices'],
-        });
+        registerTool(tool, 'Convert text to speech audio using ElevenLabs', ['speak', 'voices']);
       }
     }
 
     // Gateway control
     setGatewayControls(config);
     for (const tool of gatewayTools) {
-      this.tools.registerDeferred({
-        tool,
-        summary: 'Control gateway: view status, config, apply patches, reload',
-        actions: ['status', 'config', 'patch', 'reload'],
-      });
+      registerTool(tool, 'Control gateway: view status, config, apply patches, reload',
+        ['status', 'config', 'patch', 'reload']);
     }
 
     // Message tool (cross-session)
     setMessageAgent(this);
     for (const tool of messageTools) {
-      this.tools.registerDeferred({
-        tool,
-        summary: 'Send messages to other sessions or agents',
-        actions: ['send', 'broadcast'],
-      });
+      registerTool(tool, 'Send messages and interactive questions to sessions', ['send', 'broadcast', 'ask_user_question']);
     }
 
     // Agents list
     for (const tool of agentsListTools) {
-      this.tools.registerDeferred({
-        tool,
-        summary: 'List all configured agents in multi-agent mode',
-      });
+      registerTool(tool, 'List all configured agents in multi-agent mode');
+    }
+
+
+    // Goals (persistent goal queue for autonomous operation)
+    for (const tool of goalsTools) {
+      this.tools.register(tool);  // Always available - core autonomy feature
+    }
+
+    // Autonomy tools (self-eval, self-test, metacognition)
+    for (const tool of autonomyTools) {
+      this.tools.register(tool);  // Always available - core autonomy features
     }
 
     // Apply tool policy (allow/deny lists)
     this.tools.setPolicy(config.tools.allow, config.tools.deny);
+
+    // Debug: log tool registration stats
+    const stats = this.tools.getStats();
+    console.log(`[DEBUG] Agent initialized: coreTools=${stats.coreToolCount}, deferredTools=${stats.deferredToolCount}`);
+    console.log(`[DEBUG] Core tools: ${stats.coreTools.join(', ')}`);
+    console.log(`[DEBUG] Tool policy: allow=${JSON.stringify(config.tools.allow)}, deny=${JSON.stringify(config.tools.deny)}`);
 
     // Wire sub-agent spawner
     this._wireSubAgentSpawner();
@@ -332,49 +363,90 @@ export class Agent {
     setAgentsRouter(router);
   }
 
-  /** Rebuild full system prompt content (base + environment + catalog + skills + memory). */
+  /** Rebuild full system prompt content with structured sections. */
   private _rebuildSystemContent(sessionView?: SessionToolView, sessionId?: string): string {
-    let systemContent = this.config.agent.systemPrompt;
+    const lines: string[] = [];
+    const isElevated = sessionId ? this.elevatedSessions.has(sessionId) : false;
 
-    // Inject environment context
+    // ── Core identity ──────────────────────────────────────────────────────
+    lines.push(this.config.agent.systemPrompt || 'You are a personal assistant running inside AutoMate.');
+    lines.push('');
+
+    // ── Tooling ────────────────────────────────────────────────────────────
+    lines.push('## Tooling');
+    lines.push('Tool availability (filtered by policy):');
+    lines.push('Tool names are case-sensitive. Call tools exactly as listed.');
+    
+    // List core tools
+    const coreTools = ['bash', 'read_file', 'write_file', 'edit', 'apply_patch', 'list_files', 'search_in_file', 'memory', 'goals'];
+    lines.push('');
+    lines.push('Core tools (always available):');
+    for (const name of coreTools) {
+      lines.push(`- ${name}`);
+    }
+
+    // Inject tool catalog (deferred tools)
+    const toolCatalog = this._buildToolCatalog(sessionView);
+    if (toolCatalog) {
+      lines.push(toolCatalog);
+    }
+    lines.push('');
+
+    // ── Tool Call Style ────────────────────────────────────────────────────
+    lines.push('## Tool Call Style');
+    lines.push('Default: do not narrate routine, low-risk tool calls (just call the tool).');
+    lines.push('Narrate only when it helps: multi-step work, complex/challenging problems, sensitive actions (e.g., deletions), or when the user explicitly asks.');
+    lines.push('Keep narration brief and value-dense; avoid repeating obvious steps.');
+    lines.push('Use plain human language for narration unless in a technical context.');
+    lines.push('');
+
+    // ── Workspace ──────────────────────────────────────────────────────────
+    lines.push('## Workspace');
+    lines.push(`Your working directory is: ${process.cwd()}`);
+    lines.push('Treat this directory as the single global workspace for file operations unless explicitly instructed otherwise.');
+    lines.push('');
+
+    // ── Runtime ────────────────────────────────────────────────────────────
     const now = new Date();
     const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
     const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
     const dateStr = `${days[now.getDay()]}, ${months[now.getMonth()]} ${now.getDate()}, ${now.getFullYear()}`;
     const timeStr = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
 
-    systemContent += '\n\n# Environment';
-    systemContent += `\n- Date: ${dateStr}`;
-    systemContent += `\n- Time: ${timeStr}`;
-    systemContent += `\n- Platform: ${process.platform}`;
-    systemContent += `\n- Working Directory: ${process.cwd()}`;
-    systemContent += `\n- Node: ${process.version}`;
+    lines.push('## Runtime');
+    lines.push(buildRuntimeLine({
+      sessionId,
+      model: this.config.agent.model,
+      os: process.platform,
+      arch: process.arch,
+      node: process.version.replace('v', ''),
+      shell: process.env.SHELL?.split('/').pop(),
+      elevated: isElevated,
+      thinkingLevel: (this.config.agent as any).thinkingLevel ?? 'off',
+    }));
+    lines.push(`Date: ${dateStr}, ${timeStr}`);
+    lines.push('');
 
-    // Session context
-    if (sessionId) {
-      const isElevated = this.elevatedSessions.has(sessionId);
-      systemContent += '\n\n# Session Context';
-      systemContent += `\n- Session: ${sessionId}`;
-      systemContent += `\n- Elevated: ${isElevated ? 'yes' : 'no'}`;
+    // ── Model Aliases ──────────────────────────────────────────────────────
+    const modelsInfo = this._buildModelsInfo();
+    if (modelsInfo) {
+      lines.push(modelsInfo);
+      lines.push('');
     }
 
-    // Inject tool catalog (deferred tools the agent can load on demand)
-    const toolCatalog = this._buildToolCatalog(sessionView);
-    if (toolCatalog) {
-      systemContent += toolCatalog;
-    }
-
-    // Inject skill catalog (list available skills)
+    // ── Skills ─────────────────────────────────────────────────────────────
     if (this.skillsLoader) {
       this.skillsLoader.reloadIfChanged();
       const allSkills = this.skillsLoader.listSkills();
       if (allSkills.length > 0) {
-        systemContent += '\n\n# Available Skills\n';
-        systemContent += 'Use `skill action=list` to see all skills, `skill action=load name="..."` to load one.\n\n';
+        lines.push('## Skills');
+        lines.push('Use `skill action=list` to see all skills, `skill action=load name="..."` to load one.');
+        lines.push('');
         for (const s of allSkills) {
           const emoji = s.metadata?.emoji || '';
-          systemContent += `- ${emoji} **${s.name}**: ${s.description.slice(0, 80)}\n`;
+          lines.push(`- ${emoji} **${s.name}**: ${s.description.slice(0, 80)}`);
         }
+        lines.push('');
       }
     }
 
@@ -382,26 +454,70 @@ export class Agent {
     if (sessionId) {
       const sessionSkillsPrompt = getSessionSkillsInjection(sessionId);
       if (sessionSkillsPrompt) {
-        systemContent += sessionSkillsPrompt;
+        lines.push(sessionSkillsPrompt);
+        lines.push('');
       }
     }
 
-    // Inject memory & identity files
+    // ── Memory Recall ──────────────────────────────────────────────────────
+    if (this.memoryManager) {
+      lines.push('## Memory Recall');
+      lines.push('Before answering anything about prior work, decisions, dates, people, preferences, or todos: use memory tools to search MEMORY.md + memory/*.md.');
+      lines.push('Then use read_file to pull only the needed lines. If low confidence after search, say you checked.');
+      lines.push('');
+
+      // Inject learned patterns from self-evaluation
+      const patterns = getLearnedPatterns(this.memoryManager.getDirectory());
+      if (patterns.length > 0) {
+        lines.push('## Learned Patterns');
+        lines.push('Recurring lessons from past tasks:');
+        for (const p of patterns) {
+          lines.push(`- ${p}`);
+        }
+        lines.push('');
+      }
+
+      // Inject current metacognitive state if set
+      const meta = getCurrentMetacognition(this.memoryManager.getDirectory());
+      if (meta && Date.now() - meta.lastReflection < 30 * 60 * 1000) {
+        lines.push('## Current Focus');
+        if (meta.currentFocus) {
+          lines.push(`**Task**: ${meta.currentFocus}`);
+        }
+        if (meta.uncertainty > 0.7) {
+          lines.push('**Uncertainty**: HIGH — consider gathering more info');
+        }
+        if (meta.shouldEscalate) {
+          lines.push(`**Alert**: This task was flagged for review: ${meta.escalateReason || 'reason unknown'}`);
+        }
+        if (meta.neededInfo.length > 0) {
+          lines.push(`**Needed Info**: ${meta.neededInfo.join(', ')}`);
+        }
+        lines.push('');
+      }
+    }
+
+    // ── Project Context (Memory Files) ─────────────────────────────────────
     if (this.memoryManager) {
       const memoryPrompt = this.memoryManager.getPromptInjection();
       if (memoryPrompt) {
-        systemContent += memoryPrompt;
+        lines.push('# Project Context');
+        lines.push('');
+        lines.push('The following context files have been loaded:');
+        lines.push(memoryPrompt);
       }
     }
 
-    return systemContent;
+    return lines.join('\n');
   }
 
-  /** Build a lightweight power steering prompt (system prompt + environment, NO memory/skills/catalog).
+  /** Build a lightweight power steering prompt (reminder prompt + environment, NO memory/skills/catalog).
    *  Used to periodically re-anchor the model in long conversations. */
-  private _buildPowerSteeringPrompt(): string {
-    let content = '[SYSTEM REMINDER]\n\n';
-    content += this.config.agent.systemPrompt;
+  private _buildPowerSteeringPrompt(options?: { skipHeader?: boolean }): string {
+    let content = options?.skipHeader ? '' : '';
+    // Use reminderPrompt if set, otherwise fall back to systemPrompt
+    const reminderPrompt = (this.config.agent as any).reminderPrompt || this.config.agent.systemPrompt;
+    content += reminderPrompt;
 
     // Add current environment context
     const now = new Date();
@@ -416,66 +532,152 @@ export class Agent {
     return content;
   }
 
-  /** Inject power steering messages into a message array if needed.
-   *  Returns the modified array with steering messages inserted.
-   *  IMPORTANT: Only injects at safe points to avoid breaking tool_call/tool_result pairs. */
-  private _applyPowerSteering(messages: LLMMessage[]): LLMMessage[] {
+  /** Inject power steering messages into session if needed.
+   *  Power steering messages are stored as hidden user messages with _meta.isPowerSteering=true.
+   *  They appear in the UI as actual user messages but can be hidden via toggle. */
+  private _injectPowerSteeringIfNeeded(sessionId: string): void {
     const ps = (this.config.agent as any).powerSteering;
     if (!ps?.enabled || !ps.interval || ps.interval <= 0) {
-      return messages;
+      return;
     }
 
     const interval = ps.interval;
-    const role = ps.role || 'system';
-    const steeringContent = this._buildPowerSteeringPrompt();
+    const messages = this.sessionManager.getMessages(sessionId);
 
-    // Find positions where we should inject (every N messages, not counting the first system message)
-    const result: LLMMessage[] = [];
-    let msgCount = 0;
+    // Count non-hidden, non-power-steering messages (excluding initial system)
+    let visibleMsgCount = 0;
+    let lastPSIndex = -1;
 
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
-      result.push(msg);
+      const isHidden = msg._meta?.hidden;
+      const isPS = msg._meta?.isPowerSteering;
 
-      // Don't count the initial system message
-      if (msg.role !== 'system' || msgCount > 0) {
-        msgCount++;
-      }
-
-      // Check if this is a safe injection point:
-      // - NOT after an assistant message with tool_calls (tool results must follow immediately)
-      // - After tool results: only safe if the NEXT message is NOT another tool result
-      // - Safe after: user messages, assistant messages without tool_calls, last tool result in sequence
-      const hasToolCalls = msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0;
-      const isToolResult = msg.role === 'tool';
-      const nextMsg = messages[i + 1];
-      const nextIsToolResult = nextMsg?.role === 'tool';
-
-      // Safe if: not after tool_calls, and if it's a tool result only when next is NOT a tool result
-      const isSafePoint = !hasToolCalls && (!isToolResult || !nextIsToolResult);
-
-      // Inject power steering after every interval messages, but only at safe points
-      if (msgCount > 0 && msgCount % interval === 0 && isSafePoint) {
-        if (role === 'both') {
-          // Maximum effect: inject as both system AND user message
-          result.push({
-            role: 'system',
-            content: steeringContent,
-          });
-          result.push({
-            role: 'user',
-            content: '[SYSTEM INSTRUCTION - ACKNOWLEDGE AND FOLLOW]\n\n' + steeringContent,
-          });
-        } else {
-          result.push({
-            role: role as 'system' | 'user',
-            content: steeringContent,
-          });
-        }
+      if (isPS) {
+        lastPSIndex = i;
+      } else if (msg.role !== 'system' && !isHidden) {
+        visibleMsgCount++;
       }
     }
 
+    // Check if we need to inject a new power steering message
+    // Count messages since last power steering
+    let msgSinceLastPS = 0;
+    if (lastPSIndex >= 0) {
+      for (let i = lastPSIndex + 1; i < messages.length; i++) {
+        const msg = messages[i];
+        if (msg.role !== 'system' && !msg._meta?.hidden && !msg._meta?.isPowerSteering) {
+          msgSinceLastPS++;
+        }
+      }
+    } else {
+      msgSinceLastPS = visibleMsgCount;
+    }
+
+    // Only inject if we've passed the interval threshold
+    if (msgSinceLastPS >= interval) {
+      const mode = ps.mode || 'separate';
+      const steeringContent = this._buildPowerSteeringPrompt({ skipHeader: mode === 'append' });
+
+      if (mode === 'append') {
+        // Append to the last user message instead of creating a separate message
+        const messages = this.sessionManager.getMessages(sessionId);
+        // Find the last visible user message
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const msg = messages[i];
+          if (msg.role === 'user' && !msg._meta?.hidden && !msg._meta?.isPowerSteering) {
+            // Append power steering content to this message
+            const originalContent = msg.content;
+            const newContent = `${originalContent}\n\n(prompt)\n${steeringContent}`;
+
+            // Update the message
+            this.sessionManager.updateMessage(sessionId, i, {
+              ...msg,
+              content: newContent,
+              _meta: {
+                ...msg._meta,
+                originalContent,
+                hasPowerSteering: true,
+              },
+            });
+
+            console.log(`[agent] Appended power steering to last user message after ${msgSinceLastPS} messages`);
+            break;
+          }
+        }
+      } else {
+        // Default: inject as separate hidden message
+        this.sessionManager.addMessage(sessionId, {
+          role: 'user',
+          content: steeringContent,
+          _meta: {
+            hidden: true,
+            isPowerSteering: true,
+          },
+        });
+
+        console.log(`[agent] Injected power steering message (hidden) after ${msgSinceLastPS} messages`);
+      }
+    }
+  }
+
+  /** Normalize punctuation in text: replace em dash, colon, semicolon, dash with comma */
+  private _normalizePunctuation(text: string): string {
+    const np = (this.config.agent as any).normalizePunctuation;
+    if (!np?.enabled) return text;
+
+    const charsToReplace = np.replace || ['—', '–', ':', ';', '-'];
+    let result = text;
+    for (const char of charsToReplace) {
+      // Replace with comma and space for readability
+      result = result.split(char).join(', ');
+    }
+    // Clean up double spaces that might result
+    result = result.replace(/,\s*,/g, ',').replace(/\s{2,}/g, ' ');
     return result;
+  }
+
+  /** Strip _meta from messages before sending to LLM (LLM doesn't need our UI metadata) */
+  private _stripMeta(messages: LLMMessage[]): LLMMessage[] {
+    return messages.map(m => {
+      const { _meta, ...rest } = m as any;
+      return rest;
+    });
+  }
+
+  /** Build models info section for system prompt (shows available models for subagent selection). */
+  private _buildModelsInfo(): string {
+    const providers = this.llm.listProviders();
+    const aliases = this.config.agent.aliases || [];
+    
+    if (providers.length <= 1 && aliases.length === 0) {
+      return ''; // No additional models or aliases
+    }
+    
+    const lines: string[] = ['', '# Available Models'];
+    lines.push('When spawning subagents, you can specify a model using the `model` parameter. Available options:');
+    lines.push('');
+    
+    // List providers
+    for (const p of providers) {
+      const active = p.active ? ' (active)' : '';
+      lines.push(`- "${p.name}" or "${p.model}"${active}`);
+    }
+    
+    // List aliases
+    if (aliases.length > 0) {
+      lines.push('');
+      lines.push('Model Aliases:');
+      for (const a of aliases) {
+        lines.push(`- "${a.name}" → ${a.model}`);
+      }
+    }
+    
+    lines.push('');
+    lines.push('Example: `subagent name="researcher" task="..." model="gpt-4"`');
+    lines.push('Example: `subagent name="fast-check" task="..." model="fast"`');
+    
+    return lines.join('\n');
   }
 
   /** Estimate the token overhead (system prompt + tool definitions) for a session.
@@ -615,11 +817,22 @@ export class Agent {
   setMemoryManager(mm: MemoryManager): void {
     this.memoryManager = mm;
     setMemoryManager(mm);
+    setGoalsMemoryManager(mm);
+    setAutonomyMemoryManager(mm);
 
     // Wire pre-compaction memory flush
     this.sessionManager.setBeforeCompactHook(async (sessionId, messages) => {
       if (this.pluginManager) this.pluginManager.fireCompact(sessionId);
       await this.preCompactionFlush(sessionId, messages);
+    });
+
+    // Wire auto-compact continuation handler
+    this.sessionManager.setAutoCompactContinuationCallback((sessionId, continuationMessage) => {
+      console.log(`[agent] Auto-compact continuation triggered for ${sessionId}`);
+      // Process the continuation message asynchronously (don't await - fire and forget)
+      this.processContinuationAfterCompact(sessionId, continuationMessage).catch(err => {
+        console.error(`[agent] Continuation processing failed for ${sessionId}:`, err);
+      });
     });
   }
 
@@ -656,6 +869,34 @@ export class Agent {
     this.sendToSessionFn = fn;
   }
 
+  /** Send an out-of-band event to a session (used by interactive tools). */
+  sendEventToSession(sessionId: string, payload: Record<string, unknown>): boolean {
+    if (!this.sendToSessionFn) return false;
+    this.sendToSessionFn(sessionId, payload);
+    return true;
+  }
+
+  /** Persist an ask-user question card into session history so it survives reloads and gets indexed. */
+  recordAskUserQuestion(
+    sessionId: string,
+    payload: { questionId: string; question: string; options?: string[]; allowCustomInput?: boolean; multiSelect?: boolean },
+  ): void {
+    const question = payload.question?.trim();
+    if (!question) return;
+    this.sessionManager.addMessage(sessionId, {
+      role: 'assistant',
+      content: question,
+      _meta: {
+        askUserQuestion: {
+          id: payload.questionId,
+          options: payload.options && payload.options.length > 0 ? payload.options : undefined,
+          allowCustomInput: payload.allowCustomInput !== false,
+          multiSelect: !!payload.multiSelect,
+        },
+      },
+    });
+  }
+
   /** Create stream/toolCall callbacks for a given session using sendToSession */
   private makeStreamCallbacks(sessionId: string): { onStream?: StreamCallback; onToolCall?: ToolCallCallback } {
     if (!this.sendToSessionFn) return {};
@@ -680,10 +921,23 @@ export class Agent {
     this.config.agent.thinkingLevel = newConfig.agent.thinkingLevel;
     (this.config.agent as any).powerSteering = (newConfig.agent as any).powerSteering;
 
+    // Update browser config (requires restart for extensions)
+    if (newConfig.browser.enabled) {
+      setBrowserConfig({ 
+        profileDir: newConfig.browser.profileDir,
+        extensions: newConfig.browser.extensions,
+        headless: newConfig.browser.headless,
+        engine: newConfig.browser.engine,
+        chromiumPath: newConfig.browser.chromiumPath,
+        chromeDriverPath: newConfig.browser.chromeDriverPath,
+      });
+    }
+
     // Update LLM client settings
     this.llm.updateSettings({
       temperature: newConfig.agent.temperature,
       maxTokens: newConfig.agent.maxTokens,
+      thinkingLevel: newConfig.agent.thinkingLevel,
     });
   }
 
@@ -692,9 +946,13 @@ export class Agent {
     this.pluginManager = pm;
     setPluginManager(pm);
     setPluginReloadCallback(() => this.refreshPluginTools());
-    // Register plugin-provided tools as deferred (dynamically loadable)
+    // Register plugin-provided tools as deferred or core based on config
     for (const tool of pm.getAllTools()) {
-      this.tools.registerDynamic(tool, `Plugin tool: ${tool.description.slice(0, 80)}`);
+      if (this.useDeferredTools) {
+        this.tools.registerDynamic(tool, `Plugin tool: ${tool.description.slice(0, 80)}`);
+      } else {
+        this.tools.register(tool);
+      }
     }
   }
 
@@ -702,16 +960,36 @@ export class Agent {
   refreshPluginTools(): void {
     if (!this.pluginManager) return;
     const currentPluginToolNames = new Set(this.pluginManager.getAllTools().map(t => t.name));
-    // Remove stale dynamic tools no longer provided by any plugin
-    for (const entry of this.tools.getGlobalDeferredCatalog()) {
-      if (entry.summary?.startsWith('Plugin tool:') && !currentPluginToolNames.has(entry.tool.name)) {
-        this.tools.removeDynamic(entry.tool.name);
+    
+    if (this.useDeferredTools) {
+      // Remove stale dynamic tools no longer provided by any plugin
+      for (const entry of this.tools.getGlobalDeferredCatalog()) {
+        if (entry.summary?.startsWith('Plugin tool:') && !currentPluginToolNames.has(entry.tool.name)) {
+          this.tools.removeDynamic(entry.tool.name);
+        }
       }
-    }
-    // Upsert current plugin tools (remove first to allow overwrite)
-    for (const tool of this.pluginManager.getAllTools()) {
-      this.tools.removeDynamic(tool.name);
-      this.tools.registerDynamic(tool, `Plugin tool: ${tool.description.slice(0, 80)}`);
+      // Upsert current plugin tools (remove first to allow overwrite)
+      for (const tool of this.pluginManager.getAllTools()) {
+        this.tools.removeDynamic(tool.name);
+        this.tools.registerDynamic(tool, `Plugin tool: ${tool.description.slice(0, 80)}`);
+      }
+    } else {
+      // Auto-load mode: plugin tools are core tools
+      // Remove stale core tools no longer provided by any plugin
+      for (const tool of this.tools.getCoreTools()) {
+        // Check if this looks like a plugin tool and is no longer in the current set
+        // We can't easily detect plugin tools in core, so we check by name
+        if (!currentPluginToolNames.has(tool.name)) {
+          // Only remove if it was registered by us (not a built-in tool)
+          // We use the description as a heuristic - plugin tools registered by us won't have special markers
+          // Actually, let's be safe and just unregister by name if it's in the plugin tool names that are gone
+          // But we need to know what was a plugin tool before. Let's use a different approach.
+        }
+      }
+      // For safety in auto-load mode, just register all current plugin tools (duplicates are ignored by Map.set)
+      for (const tool of this.pluginManager.getAllTools()) {
+        this.tools.register(tool);
+      }
     }
   }
 
@@ -743,6 +1021,66 @@ export class Agent {
       const taskWithPrompt = isResume
         ? `[System: ${subPrompt}]\n\n${opts.task}`
         : `[System: ${subPrompt}]\n\n${opts.task}`;
+
+      // Handle model selection for subagent
+      const originalLlm = this.llm;
+      let subagentLlm: LLMClient | null = null;
+      
+      if (opts.model) {
+        // Check if it's an alias first
+        const aliases = this.config.agent.aliases || [];
+        const alias = aliases.find(a => a.name.toLowerCase() === opts.model!.toLowerCase());
+        
+        if (alias) {
+          // Use alias - create a client with the aliased model
+          subagentLlm = LLMClient.forModel(
+            this.config,
+            alias.model,
+            alias.apiKey || this.config.agent.apiKey
+          );
+          // Override apiBase if specified in alias
+          if (alias.apiBase) {
+            (subagentLlm as any).providers[0].apiBase = alias.apiBase;
+          }
+          console.log(`[subagent] Using aliased model "${opts.model}" -> ${alias.model}`);
+        } else {
+          // Check if it's a known provider/model name
+          const providers = this.llm.listProviders();
+          const match = providers.find(p => 
+            p.name.toLowerCase() === opts.model!.toLowerCase() ||
+            p.model.toLowerCase() === opts.model!.toLowerCase()
+          );
+          
+          if (match) {
+            // Switch to this provider
+            this.llm.switchModel(match.name);
+            console.log(`[subagent] Using model "${match.name}" (${match.model})`);
+          } else {
+            // Unknown model - create a new client with this model name
+            subagentLlm = LLMClient.forModel(this.config, opts.model);
+            console.log(`[subagent] Using custom model "${opts.model}"`);
+          }
+        }
+      } else {
+        // Use default subagent model if configured
+        const defaultSubagentModel = (this.config.agent as any).subagent?.defaultModel;
+        if (defaultSubagentModel) {
+          const providers = this.llm.listProviders();
+          const match = providers.find(p => 
+            p.name.toLowerCase() === defaultSubagentModel.toLowerCase() ||
+            p.model.toLowerCase() === defaultSubagentModel.toLowerCase()
+          );
+          if (match) {
+            this.llm.switchModel(match.name);
+            console.log(`[subagent] Using default subagent model "${match.name}" (${match.model})`);
+          }
+        }
+      }
+
+      // Temporarily use the subagent LLM if created
+      if (subagentLlm) {
+        this.llm = subagentLlm;
+      }
 
       try {
         const result = await Promise.race([
@@ -792,6 +1130,11 @@ export class Agent {
           toolCalls: [],
           duration: Date.now() - startTime,
         };
+      } finally {
+        // Restore original LLM if we swapped it
+        if (subagentLlm) {
+          this.llm = originalLlm;
+        }
       }
     });
 
@@ -899,6 +1242,26 @@ export class Agent {
     return result.promoted;
   }
 
+  /** Promote all deferred tools for a session. Returns list of promoted tool names. */
+  promoteAllToolsForSession(sessionId: string): string[] {
+    const view = this.tools.getSessionView(sessionId);
+    const catalog = view.getDeferredCatalog();
+    const promoted: string[] = [];
+    for (const entry of catalog) {
+      const result = view.promote(entry.tool.name);
+      if (result.promoted) {
+        promoted.push(entry.tool.name);
+      }
+    }
+    return promoted;
+  }
+
+  /** Get list of deferred tool names available for loading. */
+  getDeferredToolNames(): string[] {
+    const catalog = this.tools.getDeferredCatalog();
+    return catalog.map(entry => entry.tool.name);
+  }
+
   /**
    * Queue a message injection to be inserted at the next safe point (after tool results).
    * This allows adding context or instructions mid-processing without breaking tool_call/tool_result pairs.
@@ -943,6 +1306,7 @@ export class Agent {
     userMessage: string,
     onStream?: StreamCallback,
     onToolCall?: ToolCallCallback,
+    options?: { skipAddMessage?: boolean },
   ): Promise<AgentResponse> {
     // Auto-elevate automated sessions (heartbeat, cron, plugins) so tools work without restrictions
     // Only webchat sessions require explicit /elevated on
@@ -979,7 +1343,7 @@ export class Agent {
         processedMessage = filtered;
       }
 
-      const result = await this._processMessage(sessionId, processedMessage, onStream, ac.signal, onToolCall);
+      const result = await this._processMessage(sessionId, processedMessage, onStream, ac.signal, onToolCall, options?.skipAddMessage);
 
       // Plugin middleware: afterResponse
       if (this.pluginManager && result.content) {
@@ -1029,6 +1393,11 @@ export class Agent {
     return this.processing.has(sessionId);
   }
 
+  /** Get all session IDs that are currently being processed. */
+  getProcessingSessions(): string[] {
+    return Array.from(this.processing);
+  }
+
   /** Interrupt/abort a currently processing session. Returns true if a request was aborted. */
   interruptSession(sessionId: string): boolean {
     const ac = this.abortControllers.get(sessionId);
@@ -1054,17 +1423,26 @@ export class Agent {
     onStream?: StreamCallback,
     signal?: AbortSignal,
     onToolCall?: ToolCallCallback,
+    skipAddMessage?: boolean,
   ): Promise<AgentResponse> {
     const session = this.sessionManager.getOrCreate(
       sessionId.split(':')[0] || 'direct',
       sessionId.split(':').slice(1).join(':') || sessionId,
     );
 
-    // Add user message
-    this.sessionManager.addMessage(sessionId, { role: 'user', content: userMessage });
+    // Add user message (skip if this is a retry)
+    if (!skipAddMessage) {
+      this.sessionManager.addMessage(sessionId, { role: 'user', content: userMessage });
+    }
 
     // Get per-session tool view
     const sessionView = this.tools.getSessionView(sessionId);
+    
+    // Auto-load configured skills for new sessions
+    const autoLoadSkills = this.config.skills.autoLoad || [];
+    if (autoLoadSkills.length > 0) {
+      autoLoadSessionSkills(sessionId, autoLoadSkills);
+    }
 
     // Build system prompt dynamically
     const systemMessage: LLMMessage = {
@@ -1091,27 +1469,111 @@ export class Agent {
 
       // Rebuild tool defs each iteration using session view (load/unload may change set)
       const toolDefs = sessionView.getToolDefs();
+      console.log(`[DEBUG] _processMessage: toolDefs.length=${toolDefs.length}, coreTools=${this.tools.getStats().coreToolCount}, deferredTools=${this.tools.getStats().deferredToolCount}`);
+      if (toolDefs.length === 0) {
+        console.log(`[DEBUG] _processMessage: WARNING - no tools available! Checking sessionView state...`);
+        const activeTools = sessionView.getActiveTools();
+        console.log(`[DEBUG] _processMessage: sessionView.getActiveTools().length=${activeTools.length}`);
+        console.log(`[DEBUG] _processMessage: sessionView.getPromotedNames()=${JSON.stringify(sessionView.getPromotedNames())}`);
+      }
       // Rebuild system prompt too (catalog shrinks/grows as tools are loaded/unloaded)
       systemMessage.content = this._rebuildSystemContent(sessionView, sessionId);
+      
+      // NEW: Fire beforeLLM hook for plugin context injection
+      let prependedSystem = '';
+      let prependedReminder = '';
+      if (this.pluginManager) {
+        const rawMessages = this.sessionManager.getMessages(sessionId);
+        const usage = (this.pluginManager as any).sessionUsage?.get(sessionId);
+        const beforeCtx = {
+          sessionId,
+          messageCount: rawMessages.length,
+          toolCallCount: toolCallResults.length,
+          errorCount: usage?.errorCount || 0,
+          isMultiStep: toolCallResults.length > 0 || iterations > 1,
+          recentTools: toolCallResults.slice(-5).map(t => t.name),
+          systemPrompt: systemMessage.content || '',
+          messages: rawMessages.slice(-10).map(m => ({ role: m.role, contentPreview: String(m.content || '').slice(0, 100) })),
+        };
+        const beforeResult = await this.pluginManager.fireBeforeLLM(beforeCtx);
+        prependedSystem = beforeResult.prependSystem || '';
+        prependedReminder = beforeResult.prependReminder || '';
+        // Ensure requested tools are loaded
+        if (beforeResult.ensureTools?.length) {
+          for (const toolName of beforeResult.ensureTools) {
+            sessionView.promote(toolName);
+          }
+        }
+      }
+      // Apply prepended content to system message
+      if (prependedSystem) {
+        systemMessage.content = prependedSystem + '\n\n' + systemMessage.content;
+      }
+      
       // Auto-repair tool pairs before getting messages (prevents "tool_use without tool_result" API errors)
       this.sessionManager.repairToolPairs(sessionId);
+      // Inject power steering if needed (adds hidden user messages to session)
+      this._injectPowerSteeringIfNeeded(sessionId);
       // Get messages and prune old tool outputs to save context
-      const rawMessages = this.sessionManager.getMessages(sessionId);
+      let rawMessages = this.sessionManager.getMessages(sessionId);
       const prunedMessages = this.sessionManager.pruneOldToolOutputs(rawMessages, 50);
-      // Apply power steering (periodic system prompt re-injection)
-      const steeredMessages = this._applyPowerSteering([systemMessage, ...prunedMessages]);
-      const messages: LLMMessage[] = steeredMessages;
+      
+      // NEW: Insert reminder message after system if provided
+      let messages: LLMMessage[];
+      if (prependedReminder) {
+        messages = this._stripMeta([
+          systemMessage,
+          { role: 'user', content: prependedReminder },
+          ...prunedMessages
+        ]);
+      } else {
+        messages = this._stripMeta([systemMessage, ...prunedMessages]);
+      }
 
       if (onStream) {
         // Streaming mode
-        const { content, toolCalls, usage } = await this.streamCompletion(messages, toolDefs, onStream, signal);
+        let streamResult: { content: string; toolCalls: any[]; usage?: { promptTokens: number; completionTokens: number; totalTokens: number } };
+        try {
+          streamResult = await this.streamCompletion(messages, toolDefs, onStream, signal);
+        } catch (err) {
+          // Handle abort during streaming
+          if (signal?.aborted || (err as Error)?.message === 'Request aborted') {
+            this.sessionManager.saveSession(sessionId);
+            return { content: '(interrupted)', toolCalls: toolCallResults };
+          }
+          // NEW: Fire onError hook for LLM errors
+          if (this.pluginManager) {
+            this.pluginManager.fireError({
+              sessionId,
+              error: err as Error,
+              phase: 'llm',
+              retryCount: 0,
+            }).catch(() => {});
+          }
+          throw err;
+        }
+        const { content, toolCalls, usage } = streamResult;
+
+        // NEW: Fire afterLLM hook
+        if (this.pluginManager) {
+          this.pluginManager.fireAfterLLM({
+            sessionId,
+            responseTokens: usage?.completionTokens,
+            totalTokens: usage?.totalTokens,
+            hadToolCalls: toolCalls.length > 0,
+            duration: Date.now() - (ctx as any).startTime || 0,
+          }).catch(() => {});
+        }
 
         // Store actual API-reported token usage for accurate context tracking
         // Pass provider's contextWindow for per-model context limits
         const provider = this.llm.getCurrentProvider();
         if (usage) {
+          console.log(`[agent] Got usage: prompt=${usage.promptTokens}, completion=${usage.completionTokens}, total=${usage.totalTokens}`);
           this.sessionManager.setCurrentModel(provider.model);
           this.sessionManager.setSessionTokens(sessionId, usage, provider.contextWindow);
+        } else {
+          console.log(`[agent] WARNING: No usage data received from stream`);
         }
 
         if (toolCalls.length > 0) {
@@ -1122,28 +1584,43 @@ export class Agent {
             tool_calls: this.sanitizeToolCalls(toolCalls),
           });
 
-          // Execute tools in parallel for speed (using session view)
-          const results = await Promise.all(
-            toolCalls.map(async (tc) => {
-              let args: Record<string, unknown>;
-              try {
-                args = JSON.parse(tc.function.arguments);
-              } catch {
-                args = {};
-              }
-              // Notify stream that a tool is being used
-              if (onStream) {
-                onStream(`\n[used tool: ${tc.function.name}]\n`);
-              }
-              if (this.pluginManager) this.pluginManager.fireToolCall(tc.function.name, args);
-              const result = await sessionView.execute(tc.function.name, args, ctx);
-              if (this.pluginManager) this.pluginManager.fireToolResult(tc.function.name, result.output || result.error || '');
-              const toolResult = { name: tc.function.name, result: result.output || result.error || '', arguments: tc.function.arguments };
-              toolCallResults.push(toolResult);
-              if (onToolCall) onToolCall(toolResult);
-              return { id: tc.id, result };
-            })
-          );
+          // Execute tools sequentially with interrupt support (instead of parallel to allow interruption)
+          const results = [];
+          for (const tc of toolCalls) {
+            // Check for interrupt before each tool execution
+            if (signal?.aborted) {
+              this.sessionManager.saveSession(sessionId);
+              return { content: "(interrupted during tool execution)", toolCalls: toolCallResults };
+            }
+            let args: Record<string, unknown>;
+            try {
+              args = JSON.parse(tc.function.arguments);
+            } catch {
+              args = {};
+            }
+            // Notify stream that a tool is being used
+            if (onStream) {
+              onStream(`\n[used tool: ${tc.function.name}]\n`);
+            }
+            if (this.pluginManager) this.pluginManager.fireToolCall(tc.function.name, args);
+            const result = await sessionView.execute(tc.function.name, args, ctx);
+            if (this.pluginManager) this.pluginManager.fireToolResult(tc.function.name, result.output || result.error || "");
+            // NEW: Fire onError hook for tool errors
+            if (result.error && this.pluginManager) {
+              this.pluginManager.fireError({
+                sessionId,
+                error: new Error(result.error),
+                phase: 'tool',
+                toolName: tc.function.name,
+                toolParams: args,
+                retryCount: 0,
+              }).catch(() => {});
+            }
+            const toolResult = { name: tc.function.name, result: result.output || result.error || "", arguments: tc.function.arguments };
+            toolCallResults.push(toolResult);
+            if (onToolCall) onToolCall(toolResult);
+            results.push({ id: tc.id, result });
+          }
 
           // Add tool results - process pending injections after EACH result (safe point)
           for (const { id, result } of results) {
@@ -1163,7 +1640,7 @@ export class Agent {
               // Inject memory reminder as a system message
               this.sessionManager.addMessage(sessionId, {
                 role: 'user',
-                content: '[SYSTEM REMINDER] You have made 100+ tool calls without using memory tools. Commit every important fact, decision, file path, and ongoing task to memory in their proper tier (MEMORY.md for core facts, memory/topic.md for detailed topics, logs/ for daily progress).',
+                content: 'You have made 100+ tool calls without using memory tools. Commit every important fact, decision, file path, and ongoing task to memory in their proper tier (MEMORY.md for core facts, memory/topic.md for detailed topics, logs/ for daily progress).',
               });
             }
           }
@@ -1182,7 +1659,8 @@ export class Agent {
         // Check for pending injections before finalizing - if any, continue the loop
         if (this.hasPendingInjections(sessionId)) {
           if (content) {
-            this.sessionManager.addMessage(sessionId, { role: 'assistant', content });
+            const normalizedContent = this._normalizePunctuation(content);
+            this.sessionManager.addMessage(sessionId, { role: 'assistant', content: normalizedContent });
           }
           this._processPendingInjections(sessionId);
           continue;
@@ -1191,7 +1669,8 @@ export class Agent {
         // For subagent sessions: if subagent_finish hasn't been called, nudge to continue
         if (sessionId.startsWith('subagent:') && !isSubAgentFinished(sessionId)) {
           if (content) {
-            this.sessionManager.addMessage(sessionId, { role: 'assistant', content });
+            const normalizedContent = this._normalizePunctuation(content);
+            this.sessionManager.addMessage(sessionId, { role: 'assistant', content: normalizedContent });
           }
           this.sessionManager.addMessage(sessionId, {
             role: 'user',
@@ -1201,11 +1680,12 @@ export class Agent {
         }
 
         if (content) {
-          this.sessionManager.addMessage(sessionId, { role: 'assistant', content });
+          const normalizedContent = this._normalizePunctuation(content);
+          this.sessionManager.addMessage(sessionId, { role: 'assistant', content: normalizedContent });
           this.sessionManager.saveSession(sessionId);
         }
 
-        return { content: content || '', toolCalls: toolCallResults, usage };
+        return { content: this._normalizePunctuation(content) || '', toolCalls: toolCallResults, usage };
       } else {
         // Non-streaming mode
         const response = await this.llm.chat(messages, toolDefs, undefined, signal);
@@ -1238,24 +1718,28 @@ export class Agent {
             tool_calls: this.sanitizeToolCalls(msg.tool_calls),
           });
 
-          const results = await Promise.all(
-            msg.tool_calls.map(async (tc) => {
-              let args: Record<string, unknown>;
-              try {
-                args = JSON.parse(tc.function.arguments);
-              } catch {
-                args = {};
-              }
-              if (this.pluginManager) this.pluginManager.fireToolCall(tc.function.name, args);
-              const result = await sessionView.execute(tc.function.name, args, ctx);
-              if (this.pluginManager) this.pluginManager.fireToolResult(tc.function.name, result.output || result.error || '');
-              const toolResult = { name: tc.function.name, result: result.output || result.error || '', arguments: tc.function.arguments };
-              toolCallResults.push(toolResult);
-              if (onToolCall) onToolCall(toolResult);
-              return { id: tc.id, result };
-            })
-          );
-
+          // Execute tools sequentially with interrupt support (instead of parallel to allow interruption)
+          const results = [];
+          for (const tc of msg.tool_calls) {
+            // Check for interrupt before each tool execution
+            if (signal?.aborted) {
+              this.sessionManager.saveSession(sessionId);
+              return { content: "(interrupted during tool execution)", toolCalls: toolCallResults };
+            }
+            let args: Record<string, unknown>;
+            try {
+              args = JSON.parse(tc.function.arguments);
+            } catch {
+              args = {};
+            }
+            if (this.pluginManager) this.pluginManager.fireToolCall(tc.function.name, args);
+            const result = await sessionView.execute(tc.function.name, args, ctx);
+            if (this.pluginManager) this.pluginManager.fireToolResult(tc.function.name, result.output || result.error || "");
+            const toolResult = { name: tc.function.name, result: result.output || result.error || "", arguments: tc.function.arguments };
+            toolCallResults.push(toolResult);
+            if (onToolCall) onToolCall(toolResult);
+            results.push({ id: tc.id, result });
+          }
           for (const { id, result } of results) {
             this.sessionManager.addMessage(sessionId, {
               role: 'tool',
@@ -1273,7 +1757,7 @@ export class Agent {
             if (shouldRemind) {
               this.sessionManager.addMessage(sessionId, {
                 role: 'user',
-                content: '[SYSTEM REMINDER] You have made 100+ tool calls without using memory tools. Commit every important fact, decision, file path, and ongoing task to memory in their proper tier (MEMORY.md for core facts, memory/topic.md for detailed topics, logs/ for daily progress).',
+                content: 'You have made 100+ tool calls without using memory tools. Commit every important fact, decision, file path, and ongoing task to memory in their proper tier (MEMORY.md for core facts, memory/topic.md for detailed topics, logs/ for daily progress).',
               });
             }
           }
@@ -1287,7 +1771,7 @@ export class Agent {
           continue;
         }
 
-        const content = msg.content || '';
+        const content = this._normalizePunctuation(getTextFromContent(msg.content));
 
         // Check for pending injections before finalizing - if any, continue the loop
         if (this.hasPendingInjections(sessionId)) {
@@ -1334,48 +1818,74 @@ export class Agent {
     toolDefs: any[],
     onStream: StreamCallback,
     signal?: AbortSignal,
-  ): Promise<{ content: string; toolCalls: any[]; usage?: { promptTokens: number; completionTokens: number; totalTokens: number } }> {
+  ): Promise<{ content: string; reasoning?: string; toolCalls: any[]; usage?: { promptTokens: number; completionTokens: number; totalTokens: number } }> {
     let content = '';
+    let reasoning = '';
     let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined;
     const toolCalls: Map<number, { id: string; type: string; function: { name: string; arguments: string } }> = new Map();
+    let chunkCount = 0;
 
-    for await (const chunk of this.llm.chatStream(messages, toolDefs, signal)) {
-      // Capture usage from the final chunk (sent when stream_options.include_usage is true)
-      if (chunk.usage) {
-        usage = {
-          promptTokens: chunk.usage.prompt_tokens,
-          completionTokens: chunk.usage.completion_tokens,
-          totalTokens: chunk.usage.total_tokens,
-        };
-      }
+    console.log(`[DEBUG] streamCompletion: starting stream with ${messages.length} messages, ${toolDefs.length} tools`);
+    
+    try {
+      for await (const chunk of this.llm.chatStream(messages, toolDefs, signal)) {
+        chunkCount++;
+        // Capture usage from the final chunk (sent when stream_options.include_usage is true)
+        if (chunk.usage) {
+          usage = {
+            promptTokens: chunk.usage.prompt_tokens,
+            completionTokens: chunk.usage.completion_tokens,
+            totalTokens: chunk.usage.total_tokens,
+          };
+        }
 
-      const delta = chunk.choices[0]?.delta;
-      if (!delta) continue;
+        const delta = chunk.choices[0]?.delta;
+        if (!delta) continue;
 
-      if (delta.content) {
-        content += delta.content;
-        onStream(delta.content);
-      }
+        // Handle reasoning/thinking content (Claude, DeepSeek, etc.)
+        if (delta.reasoning_content) {
+          reasoning += delta.reasoning_content;
+          // Stream reasoning with special marker so UI can handle it
+          onStream(`[think]${delta.reasoning_content}[/think]`);
+        }
 
-      if (delta.tool_calls) {
-        for (const tc of delta.tool_calls) {
-          if (!toolCalls.has(tc.index)) {
-            toolCalls.set(tc.index, {
-              id: tc.id || '',
-              type: tc.type || 'function',
-              function: { name: tc.function?.name || '', arguments: '' },
-            });
+        if (delta.content) {
+          content += delta.content;
+          onStream(delta.content);
+        }
+
+        if (delta.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            if (!toolCalls.has(tc.index)) {
+              toolCalls.set(tc.index, {
+                id: tc.id || '',
+                type: tc.type || 'function',
+                function: { name: tc.function?.name || '', arguments: '' },
+              });
+            }
+            const existing = toolCalls.get(tc.index)!;
+            if (tc.id) existing.id = tc.id;
+            if (tc.function?.name) existing.function.name = tc.function.name;
+            if (tc.function?.arguments) existing.function.arguments += tc.function.arguments;
           }
-          const existing = toolCalls.get(tc.index)!;
-          if (tc.id) existing.id = tc.id;
-          if (tc.function?.name) existing.function.name = tc.function.name;
-          if (tc.function?.arguments) existing.function.arguments += tc.function.arguments;
         }
       }
+    } catch (err) {
+      // If aborted, rethrow so caller knows
+      if (signal?.aborted || (err as Error)?.message === 'Request aborted') {
+        throw new Error('Request aborted');
+      }
+      throw err;
+    }
+
+    console.log(`[DEBUG] streamCompletion: received ${chunkCount} chunks, content length=${content.length}, reasoning length=${reasoning.length}, toolCalls=${toolCalls.size}`);
+    if (content.length === 0 && toolCalls.size === 0) {
+      console.log(`[DEBUG] streamCompletion: EMPTY RESPONSE - no content and no tool calls`);
     }
 
     return {
-      content,
+      content: this._normalizePunctuation(content),
+      reasoning: reasoning || undefined,
       toolCalls: Array.from(toolCalls.values()),
       usage,
     };
@@ -1521,6 +2031,41 @@ export class Agent {
       return 'No orphaned tool messages found.';
     }
 
+    // /request — show the API request that would be made (for debugging/copying)
+    // /request save — save to a file in memory directory
+    if (parts[0] === '/request') {
+      const save = parts[1] === 'save';
+      const result = this._buildRequestPreview(sessionId);
+      
+      if (save && this.memoryManager) {
+        // Save to file
+        const filename = `request-${Date.now()}.json`;
+        const filepath = join(this.memoryManager.getDirectory(), filename);
+        const session = this.sessionManager.getSession(sessionId);
+        if (session) {
+          const registry = this.getToolRegistry();
+          const sessionView = registry.getSessionView(sessionId);
+          const systemContent = this._rebuildSystemContent(sessionView, sessionId);
+          const messages: any[] = [{ role: 'system', content: systemContent }];
+          for (const msg of session.messages) {
+            messages.push(msg);
+          }
+          const tools = sessionView.getToolDefs();
+          const request = this.llm.buildRequestBody(messages, tools);
+          writeFileSync(filepath, JSON.stringify(request, null, 2));
+          const msg = `Request saved to: ${filepath}`;
+          this.sessionManager.addMessage(sessionId, { role: 'user', content: '/request save' });
+          this.sessionManager.addMessage(sessionId, { role: 'assistant', content: msg });
+          return msg;
+        }
+      }
+      
+      // Add to session so it persists
+      this.sessionManager.addMessage(sessionId, { role: 'user', content: '/request' });
+      this.sessionManager.addMessage(sessionId, { role: 'assistant', content: result });
+      return result;
+    }
+
     // /help — list all available commands
     if (cmd === '/help') {
       return [
@@ -1532,9 +2077,11 @@ export class Agent {
         '  /elevated on|off — toggle elevated permissions',
         '  /model [name|index] — list/switch models',
         '  /context — show context diagnostics',
+        '  /request — show raw API request (full, no truncation)',
+        '  /request save — save request to file',
         '  /index on|off|status|rebuild — manage semantic indexing',
         '  /heartbeat on|off|status|now|force — manage heartbeat',
-        '  /think off|minimal|low|medium|high — set thinking level',
+        '  /think off|minimal|low|medium|high|xhigh — set thinking level',
         '  /verbose on|off — toggle verbose output',
         '  /usage off|tokens|full — toggle usage display',
         '  /repair — repair broken tool pairs',
@@ -1551,7 +2098,7 @@ export class Agent {
 
   /** Handle /think command */
   private _handleThinkCommand(arg?: string): string {
-    const levels = ['off', 'minimal', 'low', 'medium', 'high'] as const;
+    const levels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
     const current = this.config.agent.thinkingLevel || 'off';
 
     if (!arg || arg === 'status') {
@@ -1603,6 +2150,46 @@ export class Agent {
     }
 
     return 'Usage: /usage off|tokens|full';
+  }
+
+  /** Build a preview of the API request that would be sent (for debugging/copying) */
+  private _buildRequestPreview(sessionId: string): string {
+    // Get session messages
+    const session = this.sessionManager.getSession(sessionId);
+    if (!session || session.messages.length === 0) {
+      return 'No messages in session to build request from.';
+    }
+
+    // Build the system prompt
+    const registry = this.getToolRegistry();
+    const sessionView = registry.getSessionView(sessionId);
+    const systemContent = this._rebuildSystemContent(sessionView, sessionId);
+
+    // Build messages array
+    const messages: any[] = [{ role: 'system', content: systemContent }];
+    for (const msg of session.messages) {
+      messages.push(msg);
+    }
+
+    // Get tool definitions
+    const tools = sessionView.getToolDefs();
+
+    // Build request - get the raw body
+    const request = this.llm.buildRequestBody(messages, tools);
+
+    // Format COMPLETE request without truncation
+    const formatted = JSON.stringify(request.body, null, 2);
+
+    return `## Raw API Request
+
+**Endpoint:** \`${request.endpoint}\`
+**Headers:** \`${JSON.stringify(request.headers)}\`
+
+\`\`\`json
+${formatted}
+\`\`\`
+
+**Stats:** ${messages.length} messages, ${tools?.length || 0} tools, ~${Math.ceil(JSON.stringify(request.body).length / 4)} tokens`;
   }
 
   /** Get session settings for a session */
@@ -1826,6 +2413,23 @@ export class Agent {
     }
   }
 
+  /** Process continuation after auto-compact: stream response to the "Continue the task" message */
+  private async processContinuationAfterCompact(sessionId: string, continuationMessage: string): Promise<void> {
+    // Don't process if we're already processing this session (prevents infinite loop)
+    if (this.processing.has(sessionId)) {
+      console.log(`[agent] Skipping continuation for ${sessionId} - already processing`);
+      return;
+    }
+
+    try {
+      console.log(`[agent] Processing continuation for ${sessionId}: "${continuationMessage}"`);
+      const { onStream, onToolCall } = this.makeStreamCallbacks(sessionId);
+      await this.processMessage(sessionId, continuationMessage, onStream, onToolCall);
+    } catch (err) {
+      console.error(`[agent] Continuation processing error for ${sessionId}:`, err);
+    }
+  }
+
   /** Check if a session has elevated permissions */
   isElevated(sessionId: string): boolean {
     return this.elevatedSessions.has(sessionId);
@@ -1912,14 +2516,16 @@ export class Agent {
           onStream(delta.content);
         }
       }
-      if (content) {
-        this.sessionManager.addMessage(sessionId, { role: 'assistant', content });
+      const normalizedContent = this._normalizePunctuation(content);
+      if (normalizedContent) {
+        this.sessionManager.addMessage(sessionId, { role: 'assistant', content: normalizedContent });
         this.sessionManager.saveSession(sessionId);
       }
-      return { content, toolCalls: [] };
+      return { content: normalizedContent, toolCalls: [] };
     } else {
       const response = await this.llm.chat(messages, []);
-      const content = response.choices[0]?.message?.content || '';
+      const rawContent = response.choices[0]?.message?.content;
+      const content = this._normalizePunctuation(getTextFromContent(rawContent));
       if (content) {
         this.sessionManager.addMessage(sessionId, { role: 'assistant', content });
         this.sessionManager.saveSession(sessionId);
@@ -2011,19 +2617,21 @@ export class Agent {
           continue;
         }
 
-        if (content) {
-          this.sessionManager.addMessage(sessionId, { role: 'assistant', content });
+        const normalizedContent = this._normalizePunctuation(content);
+        if (normalizedContent) {
+          this.sessionManager.addMessage(sessionId, { role: 'assistant', content: normalizedContent });
           this.sessionManager.saveSession(sessionId);
         }
-        return { content: content || '', toolCalls: toolCallResults, usage };
+        return { content: normalizedContent || '', toolCalls: toolCallResults, usage };
       } else {
         const response = await this.llm.chat(messages, toolDefs);
         const msg = response.choices[0].message;
 
         if (msg.tool_calls && msg.tool_calls.length > 0) {
+          const normalizedContent = this._normalizePunctuation(msg.content || '');
           this.sessionManager.addMessage(sessionId, {
             role: 'assistant',
-            content: msg.content,
+            content: normalizedContent,
             tool_calls: this.sanitizeToolCalls(msg.tool_calls),
           });
 
@@ -2053,7 +2661,7 @@ export class Agent {
           continue;
         }
 
-        const content = msg.content || '';
+        const content = this._normalizePunctuation(getTextFromContent(msg.content));
         if (content) {
           this.sessionManager.addMessage(sessionId, { role: 'assistant', content });
           this.sessionManager.saveSession(sessionId);

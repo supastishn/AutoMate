@@ -50,7 +50,43 @@ export const AgentProfileSchema = z.object({
   }).optional(),
 });
 
+// Subagent configuration
+export const SubagentConfigSchema = z.object({
+  // Default model for subagents (if not specified in tool call)
+  defaultModel: z.string().optional(),
+  // Use same API key as parent (default true)
+  useParentApiKey: z.boolean().default(true),
+  // Maximum number of subagents that can run simultaneously
+  // Additional subagents will be queued until a slot frees up
+  maxConcurrent: z.number().min(1).max(20).default(3),
+}).default({});
+
+// Load balancing configuration
+export const LoadBalancingSchema = z.object({
+  // Enable load balancing (rotate through models)
+  enabled: z.boolean().default(false),
+  // Switch model every N requests (0 = disabled)
+  switchEvery: z.number().default(0),
+  // Strategy: 'round-robin' or 'random'
+  strategy: z.enum(['round-robin', 'random']).default('round-robin'),
+}).default({});
+
+// Rate limiting configuration (artificial delays before API calls)
+export const RateLimitSchema = z.object({
+  // Enable artificial rate limiting
+  enabled: z.boolean().default(false),
+  // Minimum delay between requests (ms)
+  minDelayMs: z.number().default(0),
+  // Maximum delay between requests (ms) - random between min and max
+  maxDelayMs: z.number().default(0),
+  // Delay per token in response (ms) - for streaming
+  perTokenDelayMs: z.number().default(0),
+}).default({});
+
 export type AgentProfile = z.infer<typeof AgentProfileSchema>;
+export type SubagentConfig = z.infer<typeof SubagentConfigSchema>;
+export type LoadBalancingConfig = z.infer<typeof LoadBalancingSchema>;
+export type RateLimitConfig = z.infer<typeof RateLimitSchema>;
 
 // TTS configuration
 export const TTSConfigSchema = z.object({
@@ -68,11 +104,13 @@ export const ConfigSchema = z.object({
     apiBase: z.string().default('http://localhost:4141/v1'),
     apiKey: z.string().optional(),
     apiType: z.enum(['chat', 'responses', 'puter']).default('chat'),  // chat = /chat/completions, responses = /responses, puter = @heyputer/puter.js
-    systemPrompt: z.string().default('You are AutoMate, a fast and capable personal AI assistant. You have access to tools for running shell commands, reading/writing files, browsing the web, and more. Be concise and effective.'),
+    systemPrompt: z.string().default('You are AutoMate, a fast and capable personal AI assistant. You have access to tools for running shell commands, reading/writing files, browsing the web, and more. Be concise and effective.\n\n## Autonomous Behavior\n\nYou are PROACTIVE. You don\'t just wait for instructions — you take initiative:\n\n**Goal Management:**\n- When you complete a task that was tracked as a goal, IMMEDIATELY mark it complete: `goals action=complete id="..."\n- When you start working on something meaningful, ADD it as a goal if it\'s not trivial\n- Check pending goals regularly with `goals action=next` and pick up work autonomously\n\n**Memory Maintenance:**\n- When you learn something important about the user, UPDATE USER.md or MEMORY.md\n- When you complete items in HEARTBEAT.md, REMOVE them or mark them done\n- Don\'t let stale tasks accumulate — clean up as you go\n- Archive completed projects to keep memory files focused\n\n**Self-Direction:**\n- If you notice something that needs doing, propose it or just do it\n- Use `goals action=add` to create tasks for yourself, then work through them\n- Review your goals list periodically and prune obsolete items\n\nYou are not a passive responder. You are an active collaborator who maintains your own state and initiates work.'),
+    // Shorter prompt used for power steering reminders (defaults to systemPrompt if not set)
+    reminderPrompt: z.string().optional(),
     maxTokens: z.number().default(8192),
     temperature: z.number().default(0.3),
-    // Thinking/reasoning level: off, minimal, low, medium, high
-    thinkingLevel: z.enum(['off', 'minimal', 'low', 'medium', 'high']).default('off'),
+    // Thinking/reasoning level: off, minimal, low, medium, high, xhigh
+    thinkingLevel: z.enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']).default('off'),
     // Failover providers: if the primary fails, try these in order
     providers: z.array(ProviderSchema).default([]),
     // Model aliases for quick switching
@@ -82,6 +120,19 @@ export const ConfigSchema = z.object({
       enabled: z.boolean().default(true),
       interval: z.number().default(25),  // re-inject every N messages
       role: z.enum(['system', 'user', 'both']).default('system'),  // inject as system, user, or both for maximum effect
+      mode: z.enum(['separate', 'append']).default('separate'),  // separate = hidden message, append = append to user msg
+    }).default({}),
+    // Subagent configuration
+    subagent: SubagentConfigSchema,
+    // Load balancing (rotate through models)
+    loadBalancing: LoadBalancingSchema,
+    // Artificial rate limiting (delays before API calls)
+    rateLimit: RateLimitSchema,
+    // Response normalization: replace punctuation with comma
+    normalizePunctuation: z.object({
+      enabled: z.boolean().default(false),
+      // Characters to replace with comma: em dash, en dash, colon, semicolon, regular dash
+      replace: z.array(z.string()).default(['—', '–', ':', ';', '-']),
     }).default({}),
   }).default({}),
   // Multi-agent: define named agents with isolated memory/sessions/skills
@@ -132,12 +183,17 @@ export const ConfigSchema = z.object({
   }).default({}),
   browser: z.object({
     enabled: z.boolean().default(true),
+    engine: z.enum(['playwright', 'selenium']).default('playwright'),
     headless: z.boolean().default(true),
+    chromiumPath: z.string().default('/usr/bin/chromium'),
+    chromeDriverPath: z.string().default('/usr/bin/chromedriver'),
     profileDir: z.string().default('~/.automate/chrome-profile'),  // persistent Chrome profile (cookies, logins, etc.)
+    extensions: z.string().optional(),  // comma-separated paths to unpacked Chrome extensions
   }).default({}),
   skills: z.object({
     directory: z.string().default('~/.automate/skills'),
     extraDirs: z.array(z.string()).optional(),   // additional skill dirs (lower precedence)
+    autoLoad: z.array(z.string()).default([]),   // skill names to auto-load on session start
   }).default({}),
   memory: z.object({
     directory: z.string().default('~/.automate/memory'),
@@ -167,6 +223,10 @@ export const ConfigSchema = z.object({
     deny: z.array(z.string()).default([]),   // deny always wins
     // Tool approval: require user approval for dangerous tools
     requireApproval: z.array(z.string()).default([]), // tools that need approval
+    // Deferred loading: when false, all tools are loaded by default (no load/unload needed)
+    deferredLoading: z.boolean().default(true),
+    // Disable file pagination - always read full files (ignore offset/limit params)
+    disableFilePagination: z.boolean().default(false),
   }).default({}),
   webhooks: z.object({
     enabled: z.boolean().default(false),
@@ -210,7 +270,7 @@ export const ConfigSchema = z.object({
     // Context pruning: trim tool results before they consume too much context
     pruning: z.object({
       enabled: z.boolean().default(true),
-      ttlMs: z.number().default(5 * 60 * 1000),           // 5 minute TTL for tool results
+      maxToolResults: z.number().default(100),            // maximum tool results before pruning starts
       keepLastAssistants: z.number().default(3),          // protect last N assistant turns
       softTrimRatio: z.number().default(0.3),             // start trimming at this % of context
       hardClearRatio: z.number().default(0.5),            // clear tool results at this %

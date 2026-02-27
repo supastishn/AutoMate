@@ -163,18 +163,20 @@ program
     // Wire heartbeat system
     const heartbeatIntervalMs = (config.heartbeat?.intervalMinutes || 30) * 60 * 1000;
     const heartbeatJitterMs = (config.heartbeat?.jitterMinutes || 5) * 60 * 1000;
+    // Heartbeats always use main session if set, otherwise fall back to separate session
+    // Custom sessionId takes priority, then main session, then default
+    const heartbeatSessionId = (config.heartbeat as any)?.sessionId
+      || sessionManager.getMainSessionId()
+      || 'webchat:heartbeat';
     if (config.heartbeat?.enabled && scheduler) {
       heartbeatManager = wireHeartbeat(memoryManager, agent, scheduler, true, undefined, heartbeatIntervalMs, heartbeatJitterMs);
+      heartbeatManager.setTargetSession(heartbeatSessionId);
       agent.setHeartbeatManager(heartbeatManager);
     } else if (scheduler) {
       // Create but don't auto-start (user can /heartbeat on)
       heartbeatManager = wireHeartbeat(memoryManager, agent, scheduler, false, undefined, heartbeatIntervalMs, heartbeatJitterMs);
+      heartbeatManager.setTargetSession(heartbeatSessionId);
       agent.setHeartbeatManager(heartbeatManager);
-    }
-    // Point heartbeat at main session if one is set
-    if (heartbeatManager) {
-      const mainId = sessionManager.getMainSessionId();
-      if (mainId) heartbeatManager.setTargetSession(mainId);
     }
 
     // Start gateway
@@ -305,6 +307,11 @@ program
 
     // Init memory manager
     const memoryManager = new MemoryManager(config.memory.directory, config.memory.embedding);
+
+    // Wire transcript indexing in CLI mode too
+    if (config.memory.indexTranscripts !== false) {
+      sessionManager.setMemoryManager(memoryManager);
+    }
 
     const agent = new Agent(config, sessionManager);
     agent.setMemoryManager(memoryManager);

@@ -1,12 +1,29 @@
-import type { Config, Provider } from '../config/schema.js';
+import type { Config, Provider, LoadBalancingConfig, RateLimitConfig } from '../config/schema.js';
 import puter from '@heyputer/puter.js';
+
+export interface ContentPart {
+  type: 'text' | 'image_url';
+  text?: string;
+  image_url?: { url: string };
+}
 
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | null;
+  content: string | ContentPart[] | null;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
   name?: string;
+  /** Optional metadata - not sent to LLM, used for UI filtering (e.g., hidden power steering messages) */
+  _meta?: {
+    hidden?: boolean;
+    isPowerSteering?: boolean;
+    askUserQuestion?: {
+      id: string;
+      options?: string[];
+      allowCustomInput?: boolean;
+      multiSelect?: boolean;
+    };
+  };
 }
 
 export interface ToolCall {
@@ -40,6 +57,7 @@ export interface StreamChunk {
     delta: {
       role?: string;
       content?: string | null;
+      reasoning_content?: string | null;  // Extended thinking/reasoning (Claude, DeepSeek, etc.)
       tool_calls?: {
         index: number;
         id?: string;
@@ -80,11 +98,16 @@ interface ProviderEntry {
   failCount: number;
   lastFail: number;
   contextWindow?: number;  // Model's context window size
+  thinkingLevel?: string;  // Reasoning level: off, minimal, low, medium, high
 }
 
 export class LLMClient {
   private providers: ProviderEntry[];
   private currentIndex: number = 0;
+  private requestCount: number = 0;  // For load balancing
+  private loadBalancing: LoadBalancingConfig;
+  private rateLimit: RateLimitConfig;
+  private lastRequestTime: number = 0;  // For rate limiting
 
   constructor(config: Config) {
     // Build provider list: primary config + failover providers
@@ -103,6 +126,7 @@ export class LLMClient {
       failCount: 0,
       lastFail: 0,
       contextWindow: (config.agent as any).contextWindow,
+      thinkingLevel: (config.agent as any).thinkingLevel || 'off',
     });
 
     // Additional failover providers
@@ -120,21 +144,65 @@ export class LLMClient {
           failCount: 0,
           lastFail: 0,
           contextWindow: (p as any).contextWindow,
+          thinkingLevel: (p as any).thinkingLevel || 'off',
         });
       }
     }
 
     // Sort by priority (lower = higher priority)
     this.providers.sort((a, b) => a.priority - b.priority);
+    
+    // Load balancing config
+    this.loadBalancing = (config.agent as any).loadBalancing || { enabled: false };
+    
+    // Rate limiting config
+    this.rateLimit = (config.agent as any).rateLimit || { enabled: false };
+  }
+
+  /** Create a client for a specific model (used by subagents) */
+  static forModel(config: Config, modelName: string, apiKey?: string): LLMClient {
+    const client = new LLMClient(config);
+    
+    // Find the model in providers
+    const providerIndex = client.providers.findIndex(p => 
+      p.model === modelName || p.name === modelName
+    );
+    
+    if (providerIndex >= 0) {
+      client.currentIndex = providerIndex;
+      // Override API key if provided
+      if (apiKey) {
+        client.providers[providerIndex].apiKey = apiKey;
+      }
+    } else {
+      // Model not found - set the primary provider to use this model
+      client.providers[0].model = modelName;
+      if (apiKey) {
+        client.providers[0].apiKey = apiKey;
+      }
+    }
+    
+    return client;
   }
 
   /** Update settings at runtime (for live config reload) */
-  updateSettings(settings: { temperature?: number; maxTokens?: number }): void {
+  updateSettings(settings: { temperature?: number; maxTokens?: number; thinkingLevel?: string }): void {
     // Update all providers with new settings
     for (const p of this.providers) {
       if (settings.temperature !== undefined) p.temperature = settings.temperature;
       if (settings.maxTokens !== undefined) p.maxTokens = settings.maxTokens;
+      if (settings.thinkingLevel !== undefined) p.thinkingLevel = settings.thinkingLevel;
     }
+  }
+
+  /** Update load balancing config */
+  updateLoadBalancing(config: LoadBalancingConfig): void {
+    this.loadBalancing = config;
+  }
+
+  /** Update rate limiting config */
+  updateRateLimit(config: RateLimitConfig): void {
+    this.rateLimit = config;
   }
 
   /** Reload providers from config (called when models are added/removed/updated) */
@@ -157,6 +225,8 @@ export class LLMClient {
       priority: 0,
       failCount: 0,
       lastFail: 0,
+      contextWindow: (config.agent as any).contextWindow,
+      thinkingLevel: (config.agent as any).thinkingLevel || 'off',
     });
 
     // Additional failover providers
@@ -173,6 +243,8 @@ export class LLMClient {
           priority: p.priority,
           failCount: 0,
           lastFail: 0,
+          contextWindow: (p as any).contextWindow,
+          thinkingLevel: (p as any).thinkingLevel || 'off',
         });
       }
     }
@@ -183,6 +255,10 @@ export class LLMClient {
     // Try to restore previous selection
     const newIndex = this.providers.findIndex(p => p.model === currentModel);
     this.currentIndex = newIndex >= 0 ? newIndex : 0;
+    
+    // Update load balancing and rate limiting
+    this.loadBalancing = (config.agent as any).loadBalancing || { enabled: false };
+    this.rateLimit = (config.agent as any).rateLimit || { enabled: false };
   }
 
   /** Get the current active provider info */
@@ -232,6 +308,63 @@ export class LLMClient {
     return { success: false, provider: '', model: '', error: `Unknown provider/model "${nameOrIndex}". Available:\n${available}` };
   }
 
+  /** Apply load balancing - switch model if configured */
+  private applyLoadBalancing(): void {
+    if (!this.loadBalancing.enabled || this.loadBalancing.switchEvery <= 0) {
+      return;
+    }
+    
+    this.requestCount++;
+    
+    // Check if we should switch
+    if (this.requestCount >= this.loadBalancing.switchEvery) {
+      this.requestCount = 0;
+      
+      if (this.loadBalancing.strategy === 'random') {
+        // Random selection
+        this.currentIndex = Math.floor(Math.random() * this.providers.length);
+      } else {
+        // Round-robin (default)
+        this.currentIndex = (this.currentIndex + 1) % this.providers.length;
+      }
+      
+      console.log(`[load-balancing] Switched to provider ${this.providers[this.currentIndex].name} (${this.providers[this.currentIndex].model})`);
+    }
+  }
+
+  /** Apply rate limiting - delay before request if configured */
+  private async applyRateLimit(): Promise<void> {
+    if (!this.rateLimit.enabled) {
+      return;
+    }
+    
+    const now = Date.now();
+    const elapsed = now - this.lastRequestTime;
+    
+    let delay = 0;
+    
+    // Calculate delay based on min/max delay config
+    if (this.rateLimit.minDelayMs > 0 || this.rateLimit.maxDelayMs > 0) {
+      const minDelay = this.rateLimit.minDelayMs || 0;
+      const maxDelay = this.rateLimit.maxDelayMs || minDelay;
+      
+      if (maxDelay > minDelay) {
+        delay = minDelay + Math.random() * (maxDelay - minDelay);
+      } else {
+        delay = minDelay;
+      }
+    }
+    
+    // If we haven't waited long enough since last request, wait more
+    if (elapsed < delay) {
+      const waitTime = delay - elapsed;
+      console.log(`[rate-limit] Waiting ${waitTime}ms before request`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+    
+    this.lastRequestTime = Date.now();
+  }
+
   private getHeaders(provider: ProviderEntry): Record<string, string> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (provider.apiKey) {
@@ -240,10 +373,23 @@ export class LLMClient {
     return headers;
   }
 
+  /** Sleep for specified milliseconds */
+  private _sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
   /** Try each provider in order until one succeeds */
   async chat(messages: LLMMessage[], tools?: ToolDef[], toolChoice?: 'auto' | 'required' | 'none', signal?: AbortSignal): Promise<LLMResponse> {
+    // Apply rate limiting
+    await this.applyRateLimit();
+
+    // Apply load balancing
+    this.applyLoadBalancing();
+
     const errors: string[] = [];
     let tried = 0;
+    const maxRetries = 5;
+    const retryDelayMs = 5000;
 
     for (let i = 0; i < this.providers.length; i++) {
       const idx = (this.currentIndex + i) % this.providers.length;
@@ -256,31 +402,81 @@ export class LLMClient {
       }
 
       tried++;
-      try {
-        const result = await this._chatWithProvider(provider, messages, tools, toolChoice, signal);
-        // Success - reset fail count and set as current
-        provider.failCount = 0;
-        this.currentIndex = idx;
-        return result;
-      } catch (err) {
-        provider.failCount++;
-        provider.lastFail = Date.now();
-        errors.push(`${provider.name}: ${err}`);
-        // Try next provider
+
+      // Try up to maxRetries times with same provider
+      for (let retry = 0; retry < maxRetries; retry++) {
+        // Check for abort before each attempt
+        if (signal?.aborted) {
+          throw new Error('Request aborted');
+        }
+
+        try {
+          const result = await this._chatWithProvider(provider, messages, tools, toolChoice, signal);
+          // Success - reset fail count
+          provider.failCount = 0;
+          // Only update currentIndex if we switched to a different provider
+          if (idx !== this.currentIndex) {
+            console.log(`[llm-client] Switched from ${this.providers[this.currentIndex].name} to ${provider.name} due to failover`);
+            this.currentIndex = idx;
+          }
+          return result;
+        } catch (err: any) {
+          // Don't retry on abort
+          if (signal?.aborted || err?.name === 'AbortError') {
+            throw new Error('Request aborted');
+          }
+
+          const errorMsg = `${provider.name}${retry > 0 ? ` (retry ${retry + 1}/${maxRetries})` : ''}: ${err}`;
+
+          if (retry < maxRetries - 1) {
+            // Wait before retrying (but check abort first)
+            console.log(`[llm-client] ${errorMsg} - retrying in ${retryDelayMs / 1000}s...`);
+            await this._sleep(retryDelayMs);
+            if (signal?.aborted) {
+              throw new Error('Request aborted');
+            }
+          } else {
+            // All retries exhausted for this provider
+            provider.failCount++;
+            provider.lastFail = Date.now();
+            errors.push(errorMsg);
+          }
+        }
       }
     }
 
     // If all providers were skipped due to backoff, force-retry the current one
     if (tried === 0) {
       const provider = this.providers[this.currentIndex];
-      try {
-        const result = await this._chatWithProvider(provider, messages, tools, toolChoice, signal);
-        provider.failCount = 0;
-        return result;
-      } catch (err) {
-        provider.failCount++;
-        provider.lastFail = Date.now();
-        throw new Error(`Provider ${provider.name} failed: ${err}`);
+
+      for (let retry = 0; retry < maxRetries; retry++) {
+        // Check for abort before each attempt
+        if (signal?.aborted) {
+          throw new Error('Request aborted');
+        }
+
+        try {
+          const result = await this._chatWithProvider(provider, messages, tools, toolChoice, signal);
+          provider.failCount = 0;
+          return result;
+        } catch (err: any) {
+          // Don't retry on abort
+          if (signal?.aborted || err?.name === 'AbortError') {
+            throw new Error('Request aborted');
+          }
+
+          if (retry < maxRetries - 1) {
+            console.log(`[llm-client] ${provider.name} (retry ${retry + 1}/${maxRetries}): ${err} - retrying in ${retryDelayMs / 1000}s...`);
+            await this._sleep(retryDelayMs);
+            if (signal?.aborted) {
+              throw new Error('Request aborted');
+            }
+          } else {
+            provider.failCount++;
+            provider.lastFail = Date.now();
+            throw new Error(`Provider ${provider.name} failed after ${maxRetries} retries: ${err}`);
+          }
+        }
       }
     }
 
@@ -342,7 +538,13 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
   if (!token) {
     throw new Error('Puter.js auth token not provided. Set provider apiKey or puterAuthToken environment variable.');
   }
-   puter.setAuthToken(token);
+  
+  // Check abort before starting
+  if (signal?.aborted) {
+    throw new Error('Request aborted');
+  }
+  
+  puter.setAuthToken(token);
 
   // Build conversation string
   let conversation = '';
@@ -358,6 +560,11 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
     }
   }
 
+  // Check abort before API call
+  if (signal?.aborted) {
+    throw new Error('Request aborted');
+  }
+
   const response = await puter.ai.chat(conversation, {
     model: provider.model,
     stream: true,
@@ -368,7 +575,7 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
   try {
     for await (const part of response) {
       if (signal?.aborted) {
-        break;
+        throw new Error('Request aborted');
       }
       if (part?.text) {
         yield {
@@ -390,6 +597,9 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
       }],
     };
   } catch (err: any) {
+    if (signal?.aborted || err?.message === 'Request aborted') {
+      throw new Error('Request aborted');
+    }
     throw new Error(`Puter API streaming error: ${err.message}`);
   }
 }
@@ -570,10 +780,18 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
     };
   }
 
-  /** Stream with failover */
+  /** Stream with failover and retry */
   async *chatStream(messages: LLMMessage[], tools?: ToolDef[], signal?: AbortSignal): AsyncGenerator<StreamChunk> {
+    // Apply rate limiting
+    await this.applyRateLimit();
+
+    // Apply load balancing
+    this.applyLoadBalancing();
+
     const errors: string[] = [];
     let tried = 0;
+    const maxRetries = 5;
+    const retryDelayMs = 5000;
 
     for (let i = 0; i < this.providers.length; i++) {
       const idx = (this.currentIndex + i) % this.providers.length;
@@ -585,29 +803,80 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
       }
 
       tried++;
-      try {
-        yield* this._chatStreamWithProvider(provider, messages, tools, signal);
-        provider.failCount = 0;
-        this.currentIndex = idx;
-        return;
-      } catch (err) {
-        provider.failCount++;
-        provider.lastFail = Date.now();
-        errors.push(`${provider.name}: ${err}`);
+
+      // Try up to maxRetries times with same provider
+      for (let retry = 0; retry < maxRetries; retry++) {
+        // Check for abort before each attempt
+        if (signal?.aborted) {
+          throw new Error('Request aborted');
+        }
+
+        try {
+          yield* this._chatStreamWithProvider(provider, messages, tools, signal);
+          provider.failCount = 0;
+          // Only update currentIndex if we switched to a different provider
+          if (idx !== this.currentIndex) {
+            console.log(`[llm-client] Switched from ${this.providers[this.currentIndex].name} to ${provider.name} due to failover`);
+            this.currentIndex = idx;
+          }
+          return;
+        } catch (err: any) {
+          // Don't retry on abort
+          if (signal?.aborted || err?.name === 'AbortError') {
+            throw new Error('Request aborted');
+          }
+
+          const errorMsg = `${provider.name}${retry > 0 ? ` (retry ${retry + 1}/${maxRetries})` : ''}: ${err}`;
+
+          if (retry < maxRetries - 1) {
+            // Wait before retrying (but check abort first)
+            console.log(`[llm-client] ${errorMsg} - retrying in ${retryDelayMs / 1000}s...`);
+            await this._sleep(retryDelayMs);
+            if (signal?.aborted) {
+              throw new Error('Request aborted');
+            }
+          } else {
+            // All retries exhausted for this provider
+            provider.failCount++;
+            provider.lastFail = Date.now();
+            errors.push(errorMsg);
+          }
+        }
       }
     }
 
     // If all providers were skipped due to backoff, force-retry the current one
     if (tried === 0) {
       const provider = this.providers[this.currentIndex];
-      try {
-        yield* this._chatStreamWithProvider(provider, messages, tools, signal);
-        provider.failCount = 0;
-        return;
-      } catch (err) {
-        provider.failCount++;
-        provider.lastFail = Date.now();
-        throw new Error(`Provider ${provider.name} failed: ${err}`);
+
+      for (let retry = 0; retry < maxRetries; retry++) {
+        // Check for abort before each attempt
+        if (signal?.aborted) {
+          throw new Error('Request aborted');
+        }
+
+        try {
+          yield* this._chatStreamWithProvider(provider, messages, tools, signal);
+          provider.failCount = 0;
+          return;
+        } catch (err: any) {
+          // Don't retry on abort
+          if (signal?.aborted || err?.name === 'AbortError') {
+            throw new Error('Request aborted');
+          }
+
+          if (retry < maxRetries - 1) {
+            console.log(`[llm-client] ${provider.name} (retry ${retry + 1}/${maxRetries}): ${err} - retrying in ${retryDelayMs / 1000}s...`);
+            await this._sleep(retryDelayMs);
+            if (signal?.aborted) {
+              throw new Error('Request aborted');
+            }
+          } else {
+            provider.failCount++;
+            provider.lastFail = Date.now();
+            throw new Error(`Provider ${provider.name} failed after ${maxRetries} retries: ${err}`);
+          }
+        }
       }
     }
 
@@ -637,6 +906,14 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
       body.tools = tools;
       body.tool_choice = 'auto';
     }
+    // Add thinking/reasoning level for models that support it
+    if (provider.thinkingLevel && provider.thinkingLevel !== 'off') {
+      // Some APIs use reasoning_effort, others use thinking_budget or similar
+      // Pass both and let the API ignore what it doesn't support
+      body.reasoning_effort = provider.thinkingLevel;
+    }
+
+    console.log(`[DEBUG] _chatStreamWithProvider: POST ${provider.apiBase}/chat/completions model=${provider.model} hasApiKey=${!!provider.apiKey}`);
 
     const res = await fetch(`${provider.apiBase}/chat/completions`, {
       method: 'POST',
@@ -647,51 +924,90 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
 
     if (!res.ok) {
       const text = await res.text();
+      console.log(`[DEBUG] _chatStreamWithProvider: API error ${res.status}: ${text.slice(0, 500)}`);
       throw new Error(`API error ${res.status}: ${text}`);
     }
+
+    console.log(`[DEBUG] _chatStreamWithProvider: got response, status=${res.status}`);
 
     const reader = res.body?.getReader();
     if (!reader) throw new Error('No response body');
 
     const decoder = new TextDecoder();
     let buffer = '';
+    let totalBytes = 0;
+
+    // Set up abort listener to cancel reader immediately when signal fires
+    let aborted = false;
+    const abortHandler = () => {
+      aborted = true;
+      reader.cancel().catch(() => {});
+    };
+    if (signal) {
+      signal.addEventListener('abort', abortHandler, { once: true });
+    }
 
     try {
       while (true) {
         // Check for abort before each read
-        if (signal?.aborted) {
-          reader.cancel();
-          return;
+        if (aborted || signal?.aborted) {
+          throw new Error('Request aborted');
         }
 
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          console.log(`[DEBUG] _chatStreamWithProvider: stream done, totalBytes=${totalBytes}, buffer remaining="${buffer.slice(0, 200)}"`);
+          break;
+        }
 
+        totalBytes += value?.length || 0;
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
+        
+        let chunksYielded = 0;
 
         for (const line of lines) {
           // Check for abort while processing lines
-          if (signal?.aborted) {
-            reader.cancel();
-            return;
+          if (aborted || signal?.aborted) {
+            throw new Error('Request aborted');
           }
 
           const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith('data: ')) continue;
-          const data = trimmed.slice(6);
-          if (data === '[DONE]') return;
+          if (!trimmed) continue;
+          
+          // Log raw lines for debugging
+          if (chunksYielded === 0 && totalBytes < 500) {
+            console.log(`[DEBUG] _chatStreamWithProvider: raw line: "${trimmed.slice(0, 150)}"`);
+          }
+          
+          // Handle both 'data: {...}' and 'data:{...}' formats (some APIs omit the space)
+          let data: string;
+          if (trimmed.startsWith('data: ')) {
+            data = trimmed.slice(6);
+          } else if (trimmed.startsWith('data:')) {
+            data = trimmed.slice(5);
+          } else {
+            continue;
+          }
+          if (data === '[DONE]') {
+            console.log(`[DEBUG] _chatStreamWithProvider: got [DONE], yielded ${chunksYielded} chunks total`);
+            return;
+          }
           try {
             yield JSON.parse(data) as StreamChunk;
-          } catch {
-            // skip malformed chunks
+            chunksYielded++;
+          } catch (e) {
+            console.log(`[DEBUG] _chatStreamWithProvider: failed to parse chunk: "${data.slice(0, 100)}"`);
           }
         }
       }
     } finally {
-      // Ensure reader is released on abort or normal completion
-      if (signal?.aborted) {
+      // Clean up abort listener and ensure reader is released
+      if (signal) {
+        signal.removeEventListener('abort', abortHandler);
+      }
+      if (!aborted) {
         reader.cancel().catch(() => {});
       }
     }
@@ -775,11 +1091,20 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
     const toolCallsInProgress: Map<number, { id: string; name: string; arguments: string }> = new Map();
     let responseId = `resp_${Date.now()}`;
 
+    // Set up abort listener to cancel reader immediately when signal fires
+    let aborted = false;
+    const abortHandler = () => {
+      aborted = true;
+      reader.cancel().catch(() => {});
+    };
+    if (signal) {
+      signal.addEventListener('abort', abortHandler, { once: true });
+    }
+
     try {
       while (true) {
-        if (signal?.aborted) {
-          reader.cancel();
-          return;
+        if (aborted || signal?.aborted) {
+          throw new Error('Request aborted');
         }
 
         const { done, value } = await reader.read();
@@ -790,9 +1115,8 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
         buffer = lines.pop() || '';
 
         for (const line of lines) {
-          if (signal?.aborted) {
-            reader.cancel();
-            return;
+          if (aborted || signal?.aborted) {
+            throw new Error('Request aborted');
           }
 
           const trimmed = line.trim();
@@ -888,9 +1212,131 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
         }
       }
     } finally {
-      if (signal?.aborted) {
+      // Clean up abort listener and ensure reader is released
+      if (signal) {
+        signal.removeEventListener('abort', abortHandler);
+      }
+      if (!aborted) {
         reader.cancel().catch(() => {});
       }
     }
+  }
+
+  /** Build and return the request body that would be sent to the API (for copying/debugging) */
+  buildRequestBody(messages: LLMMessage[], tools?: ToolDef[], toolChoice?: 'auto' | 'required' | 'none'): { endpoint: string; body: Record<string, unknown>; headers: Record<string, string> } {
+    const provider = this.providers[this.currentIndex];
+    
+    if (provider.apiType === 'puter') {
+      // Build conversation string for Puter
+      let conversation = '';
+      for (const msg of messages) {
+        if (msg.role === 'system') {
+          conversation += `[System]\n${msg.content}\n\n`;
+        } else if (msg.role === 'user') {
+          conversation += `[User]\n${msg.content}\n\n`;
+        } else if (msg.role === 'assistant') {
+          conversation += `[Assistant]\n${msg.content}\n\n`;
+        } else if (msg.role === 'tool') {
+          conversation += `[Tool Result]\n${msg.content}\n\n`;
+        }
+      }
+      return {
+        endpoint: 'puter.ai.chat (SDK)',
+        body: {
+          model: provider.model,
+          conversation,
+          stream: false,
+        },
+        headers: { 'Authorization': 'Bearer [token]' },
+      };
+    }
+
+    if (provider.apiType === 'responses') {
+      // Responses API format
+      let instructions = '';
+      const input: any[] = [];
+
+      for (const msg of messages) {
+        if (msg.role === 'system') {
+          instructions += (instructions ? '\n\n' : '') + msg.content;
+        } else if (msg.role === 'user') {
+          input.push({ role: 'user', content: msg.content || '' });
+        } else if (msg.role === 'assistant') {
+          if (msg.tool_calls && msg.tool_calls.length > 0) {
+            const content: any[] = [];
+            if (msg.content) {
+              content.push({ type: 'output_text', text: msg.content });
+            }
+            for (const tc of msg.tool_calls) {
+              content.push({
+                type: 'function_call',
+                id: tc.id,
+                name: tc.function.name,
+                arguments: tc.function.arguments,
+              });
+            }
+            input.push({ role: 'assistant', content });
+          } else {
+            input.push({ role: 'assistant', content: msg.content || '' });
+          }
+        } else if (msg.role === 'tool') {
+          input.push({
+            type: 'function_call_output',
+            call_id: msg.tool_call_id,
+            output: msg.content || '',
+          });
+        }
+      }
+
+      const body: Record<string, unknown> = {
+        model: provider.model,
+        instructions: instructions || undefined,
+        input,
+        max_output_tokens: provider.maxTokens,
+        temperature: provider.temperature,
+      };
+
+      if (tools && tools.length > 0) {
+        body.tools = tools.map(t => ({
+          type: 'function',
+          name: t.function.name,
+          description: t.function.description,
+          parameters: t.function.parameters,
+        }));
+        if (toolChoice === 'required') {
+          body.tool_choice = 'required';
+        } else if (toolChoice === 'none') {
+          body.tool_choice = 'none';
+        }
+      }
+
+      return {
+        endpoint: `${provider.apiBase}/responses`,
+        body,
+        headers: this.getHeaders(provider),
+      };
+    }
+
+    // Chat Completions API (default)
+    const body: Record<string, unknown> = {
+      model: provider.model,
+      messages,
+      max_tokens: provider.maxTokens,
+      temperature: provider.temperature,
+      stream: false,
+    };
+    if (tools && tools.length > 0) {
+      body.tools = tools;
+      body.tool_choice = toolChoice || 'auto';
+    }
+    if (provider.thinkingLevel && provider.thinkingLevel !== 'off') {
+      body.reasoning_effort = provider.thinkingLevel;
+    }
+
+    return {
+      endpoint: `${provider.apiBase}/chat/completions`,
+      body,
+      headers: this.getHeaders(provider),
+    };
   }
 }
