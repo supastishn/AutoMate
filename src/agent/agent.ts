@@ -12,10 +12,11 @@ import { webTools } from './tools/web.js';
 import { imageTools, setImageConfig, setImageBroadcaster, setAddMessageToSession } from './tools/image.js';
 import { cronTools, setScheduler } from './tools/cron.js';
 import { processTools } from './tools/process.js';
+import { mcpTools, setMCPConfig } from './tools/mcp.js';
 import { canvasTools, setCanvasBroadcaster } from '../canvas/canvas-manager.js';
 import { clawHubTools, setClawHubConfig } from '../clawhub/registry.js';
 import { skillBuilderTools, setSkillBuilderConfig } from './tools/skill-builder.js';
-import { subAgentTools, setSubAgentSpawner, setSubAgentNotifier, isSubAgentFinished, consumeSubAgentFinish } from './tools/subagent.js';
+import { subAgentTools, setSubAgentSpawner, setSubAgentNotifier, setSubAgentProfiles, isSubAgentFinished, consumeSubAgentFinish } from './tools/subagent.js';
 import { skillTools, setSkillsLoader as setSkillToolLoader, getSessionSkillsInjection, autoLoadSessionSkills } from './tools/skills.js';
 import { sharedMemoryTools, setSharedMemoryDir } from './tools/shared-memory.js';
 import { pluginTools, setPluginManager, setPluginReloadCallback } from '../plugins/manager.js';
@@ -23,8 +24,9 @@ import { ttsTools, setTTSConfig } from './tools/tts.js';
 import { gatewayTools, setGatewayControls } from './tools/gateway.js';
 import { messageTools, setMessageAgent } from './tools/message.js';
 import { agentsListTools, setAgentsRouter } from './tools/agents-list.js';
-import { goalsTools, setGoalsMemoryManager } from './tools/goals.js';
+import { goalsTools, setGoalsMemoryManager, getGoalsSummary } from './tools/goals.js';
 import { autonomyTools, setAutonomyMemoryManager, getLearnedPatterns, getCurrentMetacognition } from './tools/autonomy.js';
+import { heartbeatTasksTools, setHeartbeatTasksManager } from './tools/heartbeat-tasks.js';
 import type { PluginManager } from '../plugins/manager.js';
 import type { PresenceManager } from '../gateway/presence.js';
 import type { SessionManager } from '../gateway/session-manager.js';
@@ -112,6 +114,7 @@ export class Agent {
   // Per-session abort controllers for interrupt support
   private abortControllers: Map<string, AbortController> = new Map();
   private sendToSessionFn: ((sessionId: string, payload: Record<string, unknown>) => void) | null = null;
+  private runTokenTotals = { prompt: 0, completion: 0, total: 0 };
 
   /**
    * Sanitize tool_calls before saving to session: fix malformed JSON arguments
@@ -192,6 +195,8 @@ export class Agent {
     setSessionManager(sessionManager);
     setAgent(this);
     setImageConfig(config.agent.apiBase, config.agent.model, config.agent.apiKey);
+    setSubAgentProfiles(config.agent.subagent?.profiles || []);
+    setMCPConfig(config.mcp);
     if (config.memory.sharedDirectory) {
       setSharedMemoryDir(config.memory.sharedDirectory);
     }
@@ -248,10 +253,24 @@ export class Agent {
       }
     }
 
+    // Heartbeat tasks (multiple named heartbeats)
+    if (config.heartbeat?.enabled !== false) {
+      for (const tool of heartbeatTasksTools) {
+        registerTool(tool, 'Create and manage named heartbeat schedules with custom intervals and prompts',
+          ['list', 'add', 'get', 'update', 'remove', 'trigger']);
+      }
+    }
+
     // Background processes
     for (const tool of processTools) {
       registerTool(tool, 'Run and manage long-running background processes',
         ['start', 'poll', 'write', 'kill', 'list']);
+    }
+
+    // MCP servers
+    for (const tool of mcpTools) {
+      registerTool(tool, 'Manage configured MCP servers at runtime',
+        ['list', 'start', 'stop', 'restart', 'status', 'logs', 'test']);
     }
 
     // Canvas (collaborative document)
@@ -493,6 +512,15 @@ export class Agent {
         if (meta.neededInfo.length > 0) {
           lines.push(`**Needed Info**: ${meta.neededInfo.join(', ')}`);
         }
+        lines.push('');
+      }
+
+      // Feature 8: Inject active goal summary for cross-session awareness
+      const goalSummary = getGoalsSummary(this.memoryManager.getDirectory());
+      if (goalSummary) {
+        lines.push('## Active Goals');
+        lines.push(goalSummary);
+        lines.push('Use `goals action=list` for details. Any session can add/complete goals.');
         lines.push('');
       }
     }
@@ -920,6 +948,10 @@ export class Agent {
     this.config.agent.maxTokens = newConfig.agent.maxTokens;
     this.config.agent.thinkingLevel = newConfig.agent.thinkingLevel;
     (this.config.agent as any).powerSteering = (newConfig.agent as any).powerSteering;
+    this.config.agent.subagent = newConfig.agent.subagent;
+    setSubAgentProfiles(newConfig.agent.subagent?.profiles || []);
+    this.config.mcp = newConfig.mcp;
+    setMCPConfig(newConfig.mcp);
 
     // Update browser config (requires restart for extensions)
     if (newConfig.browser.enabled) {
@@ -1084,7 +1116,7 @@ export class Agent {
 
       try {
         const result = await Promise.race([
-          this.processMessage(sessionId, taskWithPrompt),
+          this.processMessage(sessionId, taskWithPrompt, undefined, undefined, { maxIterations: opts.maxIterations }),
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error('timeout')), opts.timeout || 300000)
           ),
@@ -1306,7 +1338,7 @@ export class Agent {
     userMessage: string,
     onStream?: StreamCallback,
     onToolCall?: ToolCallCallback,
-    options?: { skipAddMessage?: boolean },
+    options?: { skipAddMessage?: boolean; maxIterations?: number },
   ): Promise<AgentResponse> {
     // Auto-elevate automated sessions (heartbeat, cron, plugins) so tools work without restrictions
     // Only webchat sessions require explicit /elevated on
@@ -1343,7 +1375,15 @@ export class Agent {
         processedMessage = filtered;
       }
 
-      const result = await this._processMessage(sessionId, processedMessage, onStream, ac.signal, onToolCall, options?.skipAddMessage);
+      const result = await this._processMessage(
+        sessionId,
+        processedMessage,
+        onStream,
+        ac.signal,
+        onToolCall,
+        options?.skipAddMessage,
+        options?.maxIterations,
+      );
 
       // Plugin middleware: afterResponse
       if (this.pluginManager && result.content) {
@@ -1424,6 +1464,7 @@ export class Agent {
     signal?: AbortSignal,
     onToolCall?: ToolCallCallback,
     skipAddMessage?: boolean,
+    maxIterations?: number,
   ): Promise<AgentResponse> {
     const session = this.sessionManager.getOrCreate(
       sessionId.split(':')[0] || 'direct',
@@ -1466,6 +1507,12 @@ export class Agent {
       }
 
       iterations++;
+      if (maxIterations && iterations > maxIterations) {
+        const cappedMessage = `Stopped after ${maxIterations} iterations (max_iterations limit reached).`;
+        this.sessionManager.addMessage(sessionId, { role: 'assistant', content: cappedMessage });
+        this.sessionManager.saveSession(sessionId);
+        return { content: cappedMessage, toolCalls: toolCallResults };
+      }
 
       // Rebuild tool defs each iteration using session view (load/unload may change set)
       const toolDefs = sessionView.getToolDefs();
@@ -1565,13 +1612,9 @@ export class Agent {
           }).catch(() => {});
         }
 
-        // Store actual API-reported token usage for accurate context tracking
-        // Pass provider's contextWindow for per-model context limits
-        const provider = this.llm.getCurrentProvider();
         if (usage) {
           console.log(`[agent] Got usage: prompt=${usage.promptTokens}, completion=${usage.completionTokens}, total=${usage.totalTokens}`);
-          this.sessionManager.setCurrentModel(provider.model);
-          this.sessionManager.setSessionTokens(sessionId, usage, provider.contextWindow);
+          this.recordTokenUsage(sessionId, usage);
         } else {
           console.log(`[agent] WARNING: No usage data received from stream`);
         }
@@ -1699,16 +1742,12 @@ export class Agent {
         }
         const msg = choice.message;
 
-        // Store actual API-reported token usage for accurate context tracking
-        // Pass provider's contextWindow for per-model context limits
         if (response.usage) {
-          const provider = this.llm.getCurrentProvider();
-          this.sessionManager.setCurrentModel(provider.model);
-          this.sessionManager.setSessionTokens(sessionId, {
+          this.recordTokenUsage(sessionId, {
             promptTokens: response.usage.prompt_tokens,
             completionTokens: response.usage.completion_tokens,
             totalTokens: response.usage.total_tokens,
-          }, provider.contextWindow);
+          });
         }
 
         if (msg.tool_calls && msg.tool_calls.length > 0) {
@@ -1932,6 +1971,21 @@ export class Agent {
         `Created: ${session.createdAt}`,
       ].join('\n');
     }
+
+    if (cmd === '/stats') {
+      const sessionTotals = this.sessionManager.getSessionTokenTotals(sessionId);
+      return [
+        'Token Statistics:',
+        'Session total:',
+        `  Input: ${sessionTotals.prompt}`,
+        `  Output: ${sessionTotals.completion}`,
+        `  Total: ${sessionTotals.total}`,
+        'Run total (this run):',
+        `  Input: ${this.runTokenTotals.prompt}`,
+        `  Output: ${this.runTokenTotals.completion}`,
+        `  Total: ${this.runTokenTotals.total}`,
+      ].join('\n');
+    }
     
     // /compact [instructions]
     if (parts[0] === '/compact') {
@@ -2072,6 +2126,7 @@ export class Agent {
         'Available commands:',
         '  /new, /reset — reset session',
         '  /status — show session status',
+        '  /stats — show token statistics (session + this run)',
         '  /compact [instructions] — compact session with AI summary',
         '  /session main — toggle this as main session',
         '  /elevated on|off — toggle elevated permissions',
@@ -2150,6 +2205,16 @@ export class Agent {
     }
 
     return 'Usage: /usage off|tokens|full';
+  }
+
+  /** Record API usage for session and process totals. */
+  private recordTokenUsage(sessionId: string, usage: { promptTokens: number; completionTokens: number; totalTokens: number }): void {
+    const provider = this.llm.getCurrentProvider();
+    this.sessionManager.setCurrentModel(provider.model);
+    this.sessionManager.setSessionTokens(sessionId, usage, provider.contextWindow);
+    this.runTokenTotals.prompt += usage.promptTokens;
+    this.runTokenTotals.completion += usage.completionTokens;
+    this.runTokenTotals.total += usage.totalTokens;
   }
 
   /** Build a preview of the API request that would be sent (for debugging/copying) */
@@ -2325,6 +2390,7 @@ ${formatted}
   /** Set heartbeat manager reference */
   setHeartbeatManager(hb: any): void {
     this.heartbeatManager = hb;
+    setHeartbeatTasksManager(hb);
   }
 
   /** Get heartbeat manager reference (for gateway API). */

@@ -8,7 +8,7 @@ import { SessionManager } from '../gateway/session-manager.js';
 import { MemoryManager } from '../memory/manager.js';
 import { SkillsLoader } from '../skills/loader.js';
 import { Scheduler } from '../cron/scheduler.js';
-import { HeartbeatManager, wireHeartbeat, isHeartbeatJob, heartbeatAgentName } from '../heartbeat/manager.js';
+import { HeartbeatManager, wireHeartbeat, isHeartbeatJob, heartbeatAgentName, isHeartbeatTask, heartbeatTaskId } from '../heartbeat/manager.js';
 import type { Config } from '../config/schema.js';
 import type { AgentResponse, StreamCallback } from '../agent/agent.js';
 import { homedir } from 'node:os';
@@ -106,6 +106,7 @@ export class AgentRouter {
         allow: profile.tools.allow || [],
         deny: profile.tools.deny || [],
         requireApproval: [],
+        deferredLoading: this.baseConfig.tools.deferredLoading,
       } : this.baseConfig.tools,
     };
 
@@ -129,6 +130,16 @@ export class AgentRouter {
           heartbeatMgr.trigger().catch(err => {
             console.error(`[heartbeat:${profile.name}] Trigger failed: ${err}`);
           });
+          return;
+        }
+        // Route heartbeat task jobs
+        if (isHeartbeatTask(job.prompt) && heartbeatMgr) {
+          const taskId = heartbeatTaskId(job.prompt);
+          if (taskId) {
+            heartbeatMgr.triggerTask(taskId).catch(err => {
+              console.error(`[heartbeat:${profile.name}] Task trigger failed: ${err}`);
+            });
+          }
           return;
         }
         const sessionId = job.sessionId || `cron:${job.id}:${Date.now()}`;
@@ -209,6 +220,7 @@ export class AgentRouter {
     onStream?: StreamCallback,
     userId?: string,
     agentOverride?: string,
+    options?: { skipAddMessage?: boolean },
   ): Promise<AgentResponse & { agentName: string }> {
     const managed = agentOverride
       ? this.agents.get(agentOverride) || this.route(sessionId, userId)
@@ -217,7 +229,7 @@ export class AgentRouter {
       return { content: 'No agent available for this channel.', toolCalls: [], agentName: 'none' };
     }
 
-    const result = await managed.agent.processMessage(sessionId, message, onStream);
+    const result = await managed.agent.processMessage(sessionId, message, onStream, undefined, options);
     return { ...result, agentName: managed.name };
   }
 
@@ -279,7 +291,7 @@ export class AgentRouter {
       return `Heartbeat [${agentName}]: DISABLED`;
     }
     if (arg === 'force') {
-      hb.start(undefined, true);
+      hb.start(undefined, undefined, true);
       return `Heartbeat [${agentName}]: FORCE-STARTED`;
     }
     if (arg === 'now') {
@@ -379,6 +391,24 @@ export class AgentRouter {
     for (const [, managed] of this.agents) {
       if (managed.heartbeatManager) {
         managed.heartbeatManager.setBroadcaster(fn);
+      }
+    }
+  }
+
+  /** Update config for all agents */
+  updateConfig(newConfig: Config): void {
+    // Update base config
+    this.baseConfig = newConfig;
+    
+    // Update each agent
+    for (const [, managed] of this.agents) {
+      managed.agent.updateConfig(newConfig);
+      
+      // Update per-agent heartbeat interval if changed
+      if (managed.heartbeatManager && newConfig.heartbeat?.intervalMinutes) {
+        const newIntervalMs = newConfig.heartbeat.intervalMinutes * 60 * 1000;
+        const newJitterMs = (newConfig.heartbeat.jitterMinutes || 0) * 60 * 1000;
+        managed.heartbeatManager.updateInterval(newIntervalMs, newJitterMs);
       }
     }
   }

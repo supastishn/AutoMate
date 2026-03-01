@@ -10,7 +10,7 @@ import { SkillsLoader } from './skills/loader.js';
 import { MemoryManager } from './memory/manager.js';
 import { Scheduler } from './cron/scheduler.js';
 import { runOnboardWizard } from './onboard/wizard.js';
-import { wireHeartbeat, isHeartbeatJob } from './heartbeat/manager.js';
+import { wireHeartbeat, isHeartbeatJob, isHeartbeatTask, heartbeatTaskId } from './heartbeat/manager.js';
 import { PluginManager } from './plugins/manager.js';
 import { AgentRouter } from './agents/router.js';
 import { setSubAgentPersistPath, getInterruptedAgents, resumeAgent } from './agent/tools/subagent.js';
@@ -100,6 +100,16 @@ program
           heartbeatManager.trigger().catch((err: Error) => {
             console.error(`[heartbeat] Trigger failed: ${err.message}`);
           });
+          return;
+        }
+        // Heartbeat task jobs trigger specific tasks
+        if (isHeartbeatTask(job.prompt) && heartbeatManager) {
+          const taskId = heartbeatTaskId(job.prompt);
+          if (taskId) {
+            heartbeatManager.triggerTask(taskId).catch((err: Error) => {
+              console.error(`[heartbeat] Task trigger failed: ${err.message}`);
+            });
+          }
           return;
         }
         const sessionId = job.sessionId || `cron:${job.id}:${Date.now()}`;

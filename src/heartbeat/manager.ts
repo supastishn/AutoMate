@@ -15,14 +15,44 @@ import { join } from 'node:path';
 import type { MemoryManager } from '../memory/manager.js';
 import type { Agent } from '../agent/agent.js';
 import type { Scheduler } from '../cron/scheduler.js';
-import { getAutonomousGoal, promoteNextGoal, isAutoProcessEnabled } from '../agent/tools/goals.js';
+import {
+  getAutonomousGoal,
+  promoteNextGoal,
+  isAutoProcessEnabled,
+  getUnblockedDependents,
+  checkDecomposedParents,
+  autoApproveSuggestedGoals,
+  getAdaptiveInterval,
+  requeueRecurringGoals,
+  autoRetryFailedGoals,
+  escalateGoals,
+  generateDailyReport,
+  getGoalsSummary,
+} from '../agent/tools/goals.js';
 
 const HEARTBEAT_JOB_PREFIX = '__heartbeat__';
+const HEARTBEAT_TASK_PREFIX = '__hbtask__';
 const DEFAULT_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 const HEARTBEAT_OK_TOKEN = 'HEARTBEAT_OK';
 const ACK_MAX_CHARS = 200; // responses under this length containing HEARTBEAT_OK are treated as acks
 const OBJECTIVE_LOG_FILE = 'OBJECTIVE_LOG.md';
 const OBJECTIVE_MAX_CHARS = 2000;
+const HEARTBEAT_TASKS_FILE = 'heartbeat-tasks.json';
+
+// ── Heartbeat Tasks (Feature 10: Multiple Named Heartbeats) ──────────────────
+
+export interface HeartbeatTask {
+  id: string;
+  name: string;
+  prompt: string;              // Custom prompt text or path to .md file
+  intervalMs: number;          // How often to run
+  jitterMs?: number;           // Random variance
+  enabled: boolean;
+  sessionId?: string;          // Custom session (defaults to heartbeat session)
+  integrateGoals?: boolean;    // Whether to include goal processing (default: false)
+  createdAt: number;
+  lastRunAt?: number;
+}
 
 // ── Randomized Heartbeat Prompts ─────────────────────────────────────────────
 // 5 base templates with synonym maps for variety and natural language variation
@@ -187,6 +217,7 @@ export class HeartbeatManager {
   private targetSession: string; // session to run heartbeats in
   private agentName: string | undefined; // per-agent name (undefined = primary)
   private jobName: string; // unique cron job name for this agent
+  private tasksFile: string; // path to heartbeat-tasks.json
 
   constructor(
     memoryManager: MemoryManager,
@@ -203,6 +234,7 @@ export class HeartbeatManager {
     this.jobName = heartbeatJobName(agentName);
     this.logFile = join(memoryManager.getDirectory(), 'heartbeat-log.json');
     this.objectiveLogFile = join(memoryManager.getDirectory(), OBJECTIVE_LOG_FILE);
+    this.tasksFile = join(memoryManager.getDirectory(), HEARTBEAT_TASKS_FILE);
   }
 
   /** Get the agent name this heartbeat belongs to. */
@@ -426,12 +458,68 @@ export class HeartbeatManager {
     const heartbeatContent = this.memoryManager.getIdentityFile('HEARTBEAT.md');
     const memoryDir = this.memoryManager.getDirectory();
     const sessionId = this.targetSession;
+    const tag = this.agentName ? `heartbeat:${this.agentName}` : 'heartbeat';
     const latestObjective = this.getLatestObjectiveEntry();
     const objectivePrompt = latestObjective
       ? `\n\n## Previous Objective Log\nUse this carry-over objective from the previous heartbeat run as context:\n${latestObjective.objective}`
       : '';
     const hasActionableObjective = !!latestObjective && (latestObjective.status === 'sent' || latestObjective.status === 'failed');
-    
+
+    // ── Autonomy pre-hooks (run every tick regardless of heartbeat content) ──
+    let autonomyNotes = '';
+    try {
+      // Feature 7: Escalate stale goals
+      const escalated = escalateGoals(memoryDir);
+      if (escalated.length > 0) {
+        console.log(`[${tag}] Escalated ${escalated.length} goal(s): ${escalated.map(g => `${g.title} → ${g.priority}`).join(', ')}`);
+        autonomyNotes += `\n📈 ${escalated.length} goal(s) auto-escalated in priority.`;
+      }
+
+      // Feature 1: Auto-approve suggested goals past timeout
+      const approved = autoApproveSuggestedGoals(memoryDir);
+      if (approved.length > 0) {
+        console.log(`[${tag}] Auto-approved ${approved.length} suggested goal(s): ${approved.map(g => g.title).join(', ')}`);
+        autonomyNotes += `\n✅ ${approved.length} suggested goal(s) auto-approved.`;
+      }
+
+      // Feature 5: Re-queue completed recurring goals
+      const requeued = requeueRecurringGoals(memoryDir);
+      if (requeued.length > 0) {
+        console.log(`[${tag}] Re-queued ${requeued.length} recurring goal(s): ${requeued.map(g => g.title).join(', ')}`);
+        autonomyNotes += `\n🔄 ${requeued.length} recurring goal(s) re-queued.`;
+      }
+
+      // Feature 6: Auto-retry failed goals past backoff
+      const retried = autoRetryFailedGoals(memoryDir);
+      if (retried.length > 0) {
+        console.log(`[${tag}] Auto-retried ${retried.length} failed goal(s): ${retried.map(g => `${g.title} (attempt ${g.retryCount})`).join(', ')}`);
+        autonomyNotes += `\n🔄 ${retried.length} failed goal(s) auto-retried.`;
+      }
+
+      // Feature 4: Auto-complete decomposed parents whose children are all done
+      const completedParents = checkDecomposedParents(memoryDir);
+      if (completedParents.length > 0) {
+        console.log(`[${tag}] Auto-completed ${completedParents.length} decomposed parent goal(s)`);
+        autonomyNotes += `\n✅ ${completedParents.length} parent goal(s) auto-completed (all sub-goals done).`;
+      }
+
+      // Feature 9: Daily report generation
+      const report = generateDailyReport(memoryDir);
+      if (report) {
+        console.log(`[${tag}] Daily report generated`);
+        this.broadcast({
+          type: 'heartbeat_activity',
+          event: 'daily_report',
+          agentName: this.agentName,
+          content: report.slice(0, 2000),
+          timestamp: Date.now(),
+        });
+        autonomyNotes += '\n📊 Daily goal report generated.';
+      }
+    } catch (err) {
+      console.error(`[${tag}] Autonomy pre-hooks error: ${(err as Error).message}`);
+    }
+
     // Check for pending goals to auto-promote
     let goalPrompt = '';
     if (isAutoProcessEnabled(memoryDir)) {
@@ -439,17 +527,20 @@ export class HeartbeatManager {
       if (pendingGoal) {
         const promoted = promoteNextGoal(memoryDir);
         if (promoted) {
-          goalPrompt = `\n\n## 🎯 Auto-Promoted Goal\nYou have a new goal to work on:\n- **Title**: ${promoted.title}\n- **ID**: ${promoted.id}\n- **Priority**: ${promoted.priority}\n${promoted.description ? `- **Description**: ${promoted.description}` : ''}\n\n**ACTION REQUIRED**: Work on this goal now. Use tools to make progress. When done, run \`goals action=complete id="${promoted.id}"\`\n`;
-          const tag = this.agentName ? `heartbeat:${this.agentName}` : 'heartbeat';
+          goalPrompt = `\n\n## 🎯 Auto-Promoted Goal\nYou have a new goal to work on:\n- **Title**: ${promoted.title}\n- **ID**: ${promoted.id}\n- **Priority**: ${promoted.priority}\n${promoted.description ? `- **Description**: ${promoted.description}` : ''}${promoted.retryStrategy?.length ? `\n- **Previous attempts**:\n${promoted.retryStrategy.map(s => `  - ${s}`).join('\n')}` : ''}\n\n**ACTION REQUIRED**: Work on this goal now. Use tools to make progress. When done, run \`goals action=complete id="${promoted.id}"\`\n`;
           console.log(`[${tag}] Auto-promoted goal: ${promoted.title} [${promoted.id}]`);
         }
       }
     }
 
+    // Add autonomy notes to goal prompt if any
+    if (autonomyNotes) {
+      goalPrompt += `\n\n## 🤖 Autonomy Activity${autonomyNotes}`;
+    }
+
     // Skip if no HEARTBEAT.md or effectively empty AND no goals
     const heartbeatEmpty = !heartbeatContent || isHeartbeatContentEffectivelyEmpty(heartbeatContent);
     if (heartbeatEmpty && !goalPrompt && !hasActionableObjective) {
-      const tag = this.agentName ? `heartbeat:${this.agentName}` : 'heartbeat';
       console.log(`[${tag}] HEARTBEAT.md empty and no pending goals, skipping.`);
       this.appendLog({
         timestamp: Date.now(),
@@ -486,7 +577,6 @@ export class HeartbeatManager {
     prompt += objectivePrompt;
     prompt += goalPrompt;
 
-    const tag = this.agentName ? `heartbeat:${this.agentName}` : 'heartbeat';
     console.log(`[${tag}] Triggering in session ${sessionId}`);
 
     this.broadcast({
@@ -552,6 +642,7 @@ export class HeartbeatManager {
           status: 'ok-empty',
           timestamp: Date.now(),
         });
+        await this.runPostHooks(memoryDir, sessionId);
         return null;
       }
 
@@ -589,6 +680,7 @@ export class HeartbeatManager {
           status: 'ok-token',
           timestamp: Date.now(),
         });
+        await this.runPostHooks(memoryDir, sessionId);
         return null;
       }
 
@@ -619,6 +711,10 @@ export class HeartbeatManager {
         content: responseText.slice(0, 2000),
         timestamp: Date.now(),
       });
+
+      // ── Post-response autonomy hooks ──
+      await this.runPostHooks(memoryDir, sessionId);
+
       return responseText;
     } catch (err) {
       console.error(`[${tag}] Trigger failed: ${(err as Error).message}`);
@@ -649,6 +745,251 @@ export class HeartbeatManager {
       return null;
     }
   }
+
+  // ── Post-response autonomy hooks ──────────────────────────────────────
+
+  /** Run autonomy hooks after each heartbeat tick */
+  private async runPostHooks(memoryDir: string, sessionId: string): Promise<void> {
+    const tag = this.agentName ? `heartbeat:${this.agentName}` : 'heartbeat';
+    try {
+      // Feature 2: Goal chaining — check for newly unblocked goals
+      const unblocked = getUnblockedDependents(memoryDir);
+      if (unblocked.length > 0) {
+        const maxChains = 3; // Could be from settings in the future
+        const toPromote = unblocked.slice(0, maxChains);
+        for (const goal of toPromote) {
+          const promoted = promoteNextGoal(memoryDir);
+          if (promoted) {
+            console.log(`[${tag}] Chain-promoted unblocked goal: ${promoted.title} [${promoted.id}]`);
+            // Send a follow-up prompt for the chained goal
+            const chainPrompt = `[GOAL CHAIN] A dependency was completed, unblocking a new goal:\n- **Title**: ${promoted.title}\n- **ID**: ${promoted.id}\n- **Priority**: ${promoted.priority}\n${promoted.description ? `- **Description**: ${promoted.description}` : ''}\n\nWork on this goal now. When done, run \`goals action=complete id="${promoted.id}"\``;
+            try {
+              await this.agent.processMessage(sessionId, chainPrompt);
+            } catch (chainErr) {
+              console.error(`[${tag}] Chain processing failed: ${(chainErr as Error).message}`);
+            }
+          }
+        }
+      }
+
+      // Feature 3: Adaptive interval adjustment
+      const newInterval = getAdaptiveInterval(memoryDir);
+      if (newInterval !== null) {
+        const currentInterval = this.getInterval();
+        if (currentInterval && Math.abs(currentInterval - newInterval) > 10000) { // >10s difference
+          console.log(`[${tag}] Adaptive interval: ${currentInterval}ms → ${newInterval}ms`);
+          this.updateInterval(newInterval);
+          this.broadcast({
+            type: 'heartbeat_activity',
+            event: 'interval_changed',
+            agentName: this.agentName,
+            oldInterval: currentInterval,
+            newInterval,
+            timestamp: Date.now(),
+          });
+        }
+      }
+    } catch (err) {
+      console.error(`[${tag}] Post-hooks error: ${(err as Error).message}`);
+    }
+  }
+
+  // ── Feature 10: Multiple Named Heartbeat Tasks ────────────────────────
+
+  /** Load heartbeat tasks from disk */
+  private loadTasks(): HeartbeatTask[] {
+    try {
+      if (existsSync(this.tasksFile)) {
+        return JSON.parse(readFileSync(this.tasksFile, 'utf-8'));
+      }
+    } catch {}
+    return [];
+  }
+
+  /** Save heartbeat tasks to disk */
+  private saveTasks(tasks: HeartbeatTask[]): void {
+    writeFileSync(this.tasksFile, JSON.stringify(tasks, null, 2));
+  }
+
+  /** Add a named heartbeat task with its own schedule */
+  addTask(task: Omit<HeartbeatTask, 'id' | 'createdAt'>): HeartbeatTask {
+    const tasks = this.loadTasks();
+    const newTask: HeartbeatTask = {
+      ...task,
+      id: `hbtask_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      createdAt: Date.now(),
+    };
+    tasks.push(newTask);
+    this.saveTasks(tasks);
+
+    // Register cron job for this task
+    if (newTask.enabled) {
+      const jobName = `${HEARTBEAT_TASK_PREFIX}:${newTask.id}`;
+      this.scheduler.addJob(jobName, jobName, {
+        type: 'interval',
+        every: newTask.intervalMs,
+        jitter: newTask.jitterMs,
+      });
+    }
+
+    return newTask;
+  }
+
+  /** List all heartbeat tasks */
+  listTasks(): HeartbeatTask[] {
+    return this.loadTasks();
+  }
+
+  /** Get a specific task by ID */
+  getTask(taskId: string): HeartbeatTask | undefined {
+    return this.loadTasks().find(t => t.id === taskId);
+  }
+
+  /** Update a heartbeat task (interval, prompt, enabled, etc.) */
+  updateTask(taskId: string, updates: Partial<Pick<HeartbeatTask, 'name' | 'prompt' | 'intervalMs' | 'jitterMs' | 'enabled' | 'sessionId' | 'integrateGoals'>>): HeartbeatTask | null {
+    const tasks = this.loadTasks();
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return null;
+
+    Object.assign(task, updates);
+    this.saveTasks(tasks);
+
+    // Update cron job
+    const jobName = `${HEARTBEAT_TASK_PREFIX}:${taskId}`;
+    const existing = this.scheduler.listJobs().find(j => j.name === jobName);
+    if (existing) this.scheduler.removeJob(existing.id);
+
+    if (task.enabled) {
+      this.scheduler.addJob(jobName, jobName, {
+        type: 'interval',
+        every: task.intervalMs,
+        jitter: task.jitterMs,
+      });
+    }
+
+    return task;
+  }
+
+  /** Remove a heartbeat task */
+  removeTask(taskId: string): boolean {
+    const tasks = this.loadTasks();
+    const idx = tasks.findIndex(t => t.id === taskId);
+    if (idx === -1) return false;
+
+    tasks.splice(idx, 1);
+    this.saveTasks(tasks);
+
+    // Remove cron job
+    const jobName = `${HEARTBEAT_TASK_PREFIX}:${taskId}`;
+    const existing = this.scheduler.listJobs().find(j => j.name === jobName);
+    if (existing) this.scheduler.removeJob(existing.id);
+
+    return true;
+  }
+
+  /** Execute a specific heartbeat task */
+  async triggerTask(taskId: string): Promise<string | null> {
+    const task = this.getTask(taskId);
+    if (!task) return null;
+
+    const tag = this.agentName ? `heartbeat:${this.agentName}` : 'heartbeat';
+    const sessionId = task.sessionId || this.targetSession;
+    console.log(`[${tag}] Triggering task "${task.name}" in session ${sessionId}`);
+
+    this.broadcast({
+      type: 'heartbeat_activity',
+      event: 'task_start',
+      taskId: task.id,
+      taskName: task.name,
+      sessionId,
+      agentName: this.agentName,
+      timestamp: Date.now(),
+    });
+
+    try {
+      this.agent.elevateSession(sessionId);
+
+      // Build prompt — use task's custom prompt, check if it's a file reference
+      let prompt = task.prompt;
+      if (prompt.endsWith('.md') && existsSync(join(this.memoryManager.getDirectory(), prompt))) {
+        prompt = readFileSync(join(this.memoryManager.getDirectory(), prompt), 'utf-8');
+      }
+
+      // Optionally integrate goals
+      if (task.integrateGoals) {
+        const memoryDir = this.memoryManager.getDirectory();
+        const goalSummary = getGoalsSummary(memoryDir);
+        if (goalSummary) prompt += `\n\n${goalSummary}`;
+      }
+
+      const result = await this.agent.processMessage(sessionId, prompt);
+      const responseText = (result.content || '').trim();
+
+      // Update lastRunAt
+      const tasks = this.loadTasks();
+      const t = tasks.find(x => x.id === taskId);
+      if (t) {
+        t.lastRunAt = Date.now();
+        this.saveTasks(tasks);
+      }
+
+      this.broadcast({
+        type: 'heartbeat_activity',
+        event: 'task_end',
+        taskId: task.id,
+        taskName: task.name,
+        sessionId,
+        agentName: this.agentName,
+        status: responseText ? 'sent' : 'ok-empty',
+        content: responseText?.slice(0, 2000),
+        timestamp: Date.now(),
+      });
+
+      return responseText || null;
+    } catch (err) {
+      console.error(`[${tag}] Task "${task.name}" failed: ${(err as Error).message}`);
+      this.broadcast({
+        type: 'heartbeat_activity',
+        event: 'task_end',
+        taskId: task.id,
+        taskName: task.name,
+        sessionId,
+        agentName: this.agentName,
+        status: 'failed',
+        error: (err as Error).message,
+        timestamp: Date.now(),
+      });
+      return null;
+    }
+  }
+
+  /** Start all registered heartbeat tasks as cron jobs */
+  startTasks(): void {
+    const tasks = this.loadTasks();
+    for (const task of tasks) {
+      if (!task.enabled) continue;
+      const jobName = `${HEARTBEAT_TASK_PREFIX}:${task.id}`;
+      const existing = this.scheduler.listJobs().find(j => j.name === jobName);
+      if (!existing) {
+        this.scheduler.addJob(jobName, jobName, {
+          type: 'interval',
+          every: task.intervalMs,
+          jitter: task.jitterMs,
+        });
+      }
+    }
+  }
+}
+
+/** Check if a cron job prompt is a heartbeat task trigger */
+export function isHeartbeatTask(prompt: string): boolean {
+  return prompt.startsWith(`${HEARTBEAT_TASK_PREFIX}:`);
+}
+
+/** Extract the task ID from a heartbeat task job prompt */
+export function heartbeatTaskId(prompt: string): string | undefined {
+  if (!prompt.startsWith(`${HEARTBEAT_TASK_PREFIX}:`)) return undefined;
+  return prompt.slice(HEARTBEAT_TASK_PREFIX.length + 1) || undefined;
 }
 
 /**
@@ -679,6 +1020,9 @@ export function wireHeartbeat(
       hb.start(intervalMs, jitterMs);
     }
   }
+
+  // Start any registered heartbeat tasks
+  hb.startTasks();
 
   return hb;
 }

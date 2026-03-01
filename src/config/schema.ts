@@ -51,6 +51,14 @@ export const AgentProfileSchema = z.object({
 });
 
 // Subagent configuration
+export const SubagentProfileSchema = z.object({
+  name: z.string(),
+  model: z.string().optional(),
+  systemPrompt: z.string().optional(),
+  maxIterations: z.number().min(1).max(200).optional(),
+  timeoutMs: z.number().min(1000).max(24 * 60 * 60 * 1000).optional(),
+});
+
 export const SubagentConfigSchema = z.object({
   // Default model for subagents (if not specified in tool call)
   defaultModel: z.string().optional(),
@@ -59,6 +67,24 @@ export const SubagentConfigSchema = z.object({
   // Maximum number of subagents that can run simultaneously
   // Additional subagents will be queued until a slot frees up
   maxConcurrent: z.number().min(1).max(20).default(3),
+  // Custom reusable subagent profiles for UI and prompt tooling
+  profiles: z.array(SubagentProfileSchema).default([]),
+}).default({});
+
+// MCP (Model Context Protocol) server configuration
+export const MCPServerSchema = z.object({
+  name: z.string(),
+  enabled: z.boolean().default(true),
+  description: z.string().optional(),
+  transport: z.enum(['stdio', 'sse', 'http']).default('stdio'),
+  command: z.string().optional(),
+  args: z.array(z.string()).default([]),
+  env: z.record(z.string(), z.string()).default({}),
+  url: z.string().optional(),
+});
+
+export const MCPConfigSchema = z.object({
+  servers: z.array(MCPServerSchema).default([]),
 }).default({});
 
 // Load balancing configuration
@@ -85,6 +111,9 @@ export const RateLimitSchema = z.object({
 
 export type AgentProfile = z.infer<typeof AgentProfileSchema>;
 export type SubagentConfig = z.infer<typeof SubagentConfigSchema>;
+export type SubagentProfile = z.infer<typeof SubagentProfileSchema>;
+export type MCPServer = z.infer<typeof MCPServerSchema>;
+export type MCPConfig = z.infer<typeof MCPConfigSchema>;
 export type LoadBalancingConfig = z.infer<typeof LoadBalancingSchema>;
 export type RateLimitConfig = z.infer<typeof RateLimitSchema>;
 
@@ -228,6 +257,7 @@ export const ConfigSchema = z.object({
     // Disable file pagination - always read full files (ignore offset/limit params)
     disableFilePagination: z.boolean().default(false),
   }).default({}),
+  mcp: MCPConfigSchema,
   webhooks: z.object({
     enabled: z.boolean().default(false),
     token: z.string().optional(),           // auth token for incoming webhooks
@@ -302,6 +332,13 @@ export const ConfigSchema = z.object({
     // Use separate session for heartbeat (default: uses main session or webchat:heartbeat)
     separateSession: z.boolean().default(true),
     sessionId: z.string().optional(),          // custom session ID for heartbeat
+    // Feature 3: Adaptive intervals (overrides fixed interval when goals are active)
+    adaptiveInterval: z.boolean().default(false),
+    // Feature 9: Daily autonomous reports
+    dailyReport: z.object({
+      enabled: z.boolean().default(false),
+      timeHour: z.number().min(0).max(23).default(9), // Hour of day (0-23)
+    }).default({}),
   }).default({}),
   tts: TTSConfigSchema,
 });
