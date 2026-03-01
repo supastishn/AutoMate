@@ -13,8 +13,8 @@ import type { Agent } from '../agent/agent.js';
 import type { SessionManager } from './session-manager.js';
 import type { AgentRouter, AgentProfile } from '../agents/router.js';
 import type { WebSocket } from 'ws';
-import { setCanvasBroadcaster, getCanvas, getAllCanvases, type CanvasEvent } from '../canvas/canvas-manager.js';
-import { setImageBroadcaster, type ImageEvent } from '../agent/tools/image.js';
+import { setCanvasBroadcaster, getCanvas, getAllCanvases, deleteCanvas, updateCanvas, type CanvasEvent } from '../canvas/canvas-manager.js';
+import { setImageBroadcaster, setAddMessageToSession, type ImageEvent } from '../agent/tools/image.js';
 import { setBrowserImageBroadcaster } from '../agent/tools/browser.js';
 import { PresenceManager, type PresenceEvent, type TypingEvent } from './presence.js';
 import { fetchRegistry, searchSkills, fetchSkillContent, vetSkillContent, formatVetResult, installSkill, uninstallSkill, updateSkill, updateAllSkills, listInstalled } from '../clawhub/registry.js';
@@ -96,7 +96,8 @@ export class GatewayServer {
     let toolResults = 0;
 
     for (const m of messages) {
-      const tokens = estimateTokens(m.content || '');
+      const contentStr = typeof m.content === 'string' ? m.content : (m.content?.filter(p => p.type === 'text').map(p => p.text).join(' ') || '');
+      const tokens = estimateTokens(contentStr || '');
       const toolCallTokens = m.tool_calls ? estimateTokens(JSON.stringify(m.tool_calls)) : 0;
 
       switch (m.role) {
@@ -211,11 +212,22 @@ export class GatewayServer {
       }
     });
 
-    // Wire image broadcaster to push images to all webchat clients
+    // Wire image broadcaster to push images to relevant webchat clients
     setImageBroadcaster((event: ImageEvent) => {
       const msg = JSON.stringify(event);
       for (const [, client] of this.webChatClients) {
-        try { client.ws.send(msg); } catch {}
+        // Only send to clients connected to this session
+        if (client.sessionId === event.sessionId) {
+          try { client.ws.send(msg); } catch {}
+        }
+      }
+    });
+
+    // Wire add message to session for add_to_chat action
+    setAddMessageToSession((sessionId, role, content) => {
+      const session = this.sessionManager.getSession(sessionId);
+      if (session) {
+        this.sessionManager.addMessage(sessionId, { role, content });
       }
     });
 
@@ -223,15 +235,29 @@ export class GatewayServer {
     setBrowserImageBroadcaster((event) => {
       const msg = JSON.stringify(event);
       for (const [, client] of this.webChatClients) {
-        try { client.ws.send(msg); } catch {}
+        // Only send to clients connected to this session
+        if (event.sessionId && client.sessionId === event.sessionId) {
+          try { client.ws.send(msg); } catch {}
+        }
       }
     });
 
-    // Wire presence broadcaster to push typing/status to all webchat clients
+    // Wire presence broadcaster to push typing/status to relevant webchat clients
     this.presenceManager.setBroadcaster((event: PresenceEvent | TypingEvent) => {
-      const msg = JSON.stringify(event);
-      for (const [, client] of this.webChatClients) {
-        try { client.ws.send(msg); } catch {}
+      // For typing events, only send to clients connected to that session
+      if (event.type === 'typing' && event.sessionId) {
+        const msg = JSON.stringify(event);
+        for (const [, client] of this.webChatClients) {
+          if (client.sessionId === event.sessionId) {
+            try { client.ws.send(msg); } catch {}
+          }
+        }
+      } else {
+        // Presence events are global (agent status), send to all clients
+        const msg = JSON.stringify(event);
+        for (const [, client] of this.webChatClients) {
+          try { client.ws.send(msg); } catch {}
+        }
       }
     });
 
@@ -399,6 +425,7 @@ export class GatewayServer {
     // Sessions
     this.app.get('/api/sessions', async () => ({
       sessions: this.sessionManager.listSessions(),
+      roles: this.sessionManager.getSessionRoles(),
     }));
 
     this.app.get<{ Params: { id: string } }>('/api/sessions/:id', async (req) => {
@@ -479,6 +506,27 @@ export class GatewayServer {
         hb.setTargetSession(sessionId || 'webchat:heartbeat');
       }
       return { ok: true, mainSessionId: this.sessionManager.getMainSessionId() };
+    });
+
+    // Session roles: get/set (chat/work split)
+    this.app.get('/api/sessions/roles', async () => {
+      return this.sessionManager.getSessionRoles();
+    });
+
+    this.app.post<{ Body: { chat?: string | null; work?: string | null } }>('/api/sessions/roles', async (req) => {
+      const body = req.body as any;
+      if (body.chat !== undefined) {
+        this.sessionManager.setSessionRole('chat', body.chat || null);
+      }
+      if (body.work !== undefined) {
+        this.sessionManager.setSessionRole('work', body.work || null);
+        // Update heartbeat target to work session
+        const hb = this.agent.getHeartbeatManager?.();
+        if (hb && typeof hb.setTargetSession === 'function') {
+          hb.setTargetSession(body.work || 'webchat:heartbeat');
+        }
+      }
+      return { ok: true, roles: this.sessionManager.getSessionRoles() };
     });
 
     // Export session as downloadable JSON
@@ -609,17 +657,22 @@ this.app.post<{ Params: { id: string }; Body: { count: number } }>('/api/session
     this.app.put<{ Body: Record<string, any> }>('/api/config', async (req, reply) => {
       try {
         const updates = req.body;
+        console.log(`[DEBUG] /api/config: received updates:`, JSON.stringify(updates, null, 2));
+        
         // Load current raw config from disk
         const currentRaw = JSON.parse(JSON.stringify(this.config));
         
-        // Remove masked values from updates (don't overwrite real keys with ***)
+        // Remove masked values and empty strings from sensitive fields
+        // (don't overwrite real keys with *** or empty string)
+        const SENSITIVE_FIELDS = ['apiKey', 'token', 'password'];
         const cleanUpdates = JSON.parse(JSON.stringify(updates));
-        const removeMasked = (obj: any) => {
+        const removeMasked = (obj: any, path: string[] = []) => {
           for (const key of Object.keys(obj)) {
-            if (obj[key] === '***') {
+            const currentPath = [...path, key].join('.');
+            if (obj[key] === '***' || (SENSITIVE_FIELDS.includes(key) && obj[key] === '')) {
               delete obj[key];
             } else if (typeof obj[key] === 'object' && obj[key] !== null && !Array.isArray(obj[key])) {
-              removeMasked(obj[key]);
+              removeMasked(obj[key], [...path, key]);
             }
           }
         };
@@ -639,9 +692,17 @@ this.app.post<{ Params: { id: string }; Body: { count: number } }>('/api/session
         };
         
         const merged = deepMerge(currentRaw, cleanUpdates);
+        console.log(`[DEBUG] /api/config: merged config (validating...)`);
         
         // Validate
-        ConfigSchema.parse(merged);
+        const parseResult = ConfigSchema.safeParse(merged);
+        if (!parseResult.success) {
+          console.error(`[DEBUG] /api/config: validation failed:`, JSON.stringify(parseResult.error.errors, null, 2));
+          return reply.code(400).send({ 
+            error: 'Validation failed', 
+            details: parseResult.error.errors 
+          });
+        }
         
         // Save to disk
         saveConfig(merged);
@@ -650,8 +711,18 @@ this.app.post<{ Params: { id: string }; Body: { count: number } }>('/api/session
         const reloaded = reloadConfig();
         Object.assign(this.config, reloaded);
         
+        // Apply config changes to the agent immediately (hotloading)
+        if (this.agent) {
+          this.agent.updateConfig(reloaded);
+        }
+        if (this.router) {
+          // Update all managed agents in router too
+          this.router.updateConfig(reloaded);
+        }
+        
         return { ok: true, message: 'Config updated and reloaded' };
       } catch (err: any) {
+        console.error(`[DEBUG] /api/config: error:`, err);
         return reply.code(400).send({ error: err.message || 'Invalid config' });
       }
     });
@@ -775,10 +846,15 @@ this.app.post<{ Params: { id: string }; Body: { count: number } }>('/api/session
       return reply.send(buf);
     });
 
-    // Skills API (live skills list)
+    // Skills API (all available skills for settings dropdown)
     this.app.get('/api/skills', async () => {
-      const skills = this.agent.getLoadedSkills?.() || [];
-      return { skills };
+      const loader = (this.agent as any).skillsLoader;
+      const skills = loader ? loader.listSkills() : [];
+      const skipped = loader ? loader.listSkippedSkills() : [];
+      return { 
+        skills: skills.map((s: any) => ({ name: s.name, description: s.description, emoji: s.metadata?.emoji })),
+        skipped: skipped.map((s: any) => ({ name: s.name, reason: s.gating?.missingBins?.join(', ') || 'requirements not met' })),
+      };
     });
 
     // Direct skill uninstall (no AI chat round-trip)
@@ -879,6 +955,17 @@ this.app.post<{ Params: { id: string }; Body: { count: number } }>('/api/session
       this.broadcastDataUpdate('cron', scheduler.listJobs());
       return { ok: true };
     });
+
+    this.app.put<{ Params: { id: string }; Body: { name?: string; prompt?: string; schedule?: { type: 'once' | 'interval' | 'cron'; at?: string; every?: number; cron?: string; jitter?: number }; sessionId?: string; enabled?: boolean } }>('/api/cron/:id', async (req) => {
+      const scheduler = this.agent.getScheduler();
+      if (!scheduler) return { error: 'Scheduler not available' };
+      const updates = req.body;
+      const job = scheduler.updateJob(req.params.id, updates);
+      if (!job) return { error: 'Job not found' };
+      this.broadcastDataUpdate('cron', scheduler.listJobs());
+      return { ok: true, job };
+    });
+
 
     this.app.put<{ Params: { id: string } }>('/api/cron/:id/toggle', async (req) => {
       const scheduler = this.agent.getScheduler();
@@ -1055,13 +1142,18 @@ this.app.post<{ Params: { id: string }; Body: { count: number } }>('/api/session
       if (!provider || !provider.model || !provider.apiBase) {
         return { success: false, error: 'model and apiBase are required' };
       }
+      // Handle "default" API key - use the default API key from settings
+      let apiKey = provider.apiKey;
+      if (apiKey === 'default') {
+        apiKey = this.config.agent.apiKey;
+      }
       // Add to config
       const providers = this.config.agent.providers || [];
       providers.push({
         name: provider.name || provider.model,
         model: provider.model,
         apiBase: provider.apiBase,
-        apiKey: provider.apiKey,
+        apiKey: apiKey,
         apiType: provider.apiType || 'chat',
         maxTokens: provider.maxTokens,
         temperature: provider.temperature,
@@ -1078,19 +1170,47 @@ this.app.post<{ Params: { id: string }; Body: { count: number } }>('/api/session
 
     // Update a model/provider
     this.app.put<{ Params: { index: string }; Body: { provider: any } }>('/api/models/:index', async (req) => {
-      const index = parseInt(req.params.index);
+      // Check if :index is a name (not a number)
+      const indexParam = req.params.index;
+      const isName = isNaN(parseInt(indexParam));
+      
+      let index: number;
+      if (isName) {
+        // Find provider by name
+        if (indexParam === 'primary') {
+          index = 0;
+        } else {
+          const providers = this.config.agent.providers || [];
+          const foundIndex = providers.findIndex(p => p.name === indexParam);
+          if (foundIndex < 0) {
+            return { success: false, error: `Provider "${indexParam}" not found` };
+          }
+          index = foundIndex + 1; // +1 because index 0 is primary
+        }
+      } else {
+        index = parseInt(indexParam);
+      }
+      
       const provider = req.body.provider;
+
+      // Handle "default" API key - use the default API key from settings
+      let apiKey = provider.apiKey;
+      if (apiKey === 'default') {
+        apiKey = this.config.agent.apiKey;
+      }
 
       // Index 0 = primary model, else index-1 in providers array
       if (index === 0) {
         // Update primary model
+        // Only update apiKey if a new non-empty, non-masked value is provided
+        const newApiKey = apiKey && apiKey !== '***' ? apiKey : this.config.agent.apiKey;
         const merged = {
           ...this.config,
           agent: {
             ...this.config.agent,
             model: provider.model ?? this.config.agent.model,
             apiBase: provider.apiBase ?? this.config.agent.apiBase,
-            apiKey: provider.apiKey !== '***' ? provider.apiKey : this.config.agent.apiKey,
+            apiKey: newApiKey,
             apiType: provider.apiType ?? (this.config.agent as any).apiType ?? 'chat',
             maxTokens: provider.maxTokens ?? this.config.agent.maxTokens,
             temperature: provider.temperature ?? this.config.agent.temperature,
@@ -1114,12 +1234,14 @@ this.app.post<{ Params: { id: string }; Body: { count: number } }>('/api/session
         if (pIdx < 0 || pIdx >= providers.length) {
           return { success: false, error: 'Invalid provider index' };
         }
+        // Only update apiKey if a new non-empty, non-masked value is provided
+        const newApiKey = apiKey && apiKey !== '***' ? apiKey : providers[pIdx].apiKey;
         providers[pIdx] = {
           ...providers[pIdx],
           name: provider.name ?? providers[pIdx].name,
           model: provider.model ?? providers[pIdx].model,
           apiBase: provider.apiBase ?? providers[pIdx].apiBase,
-          apiKey: provider.apiKey !== '***' ? provider.apiKey : providers[pIdx].apiKey,
+          apiKey: newApiKey,
           apiType: provider.apiType ?? providers[pIdx].apiType ?? 'chat',
           maxTokens: provider.maxTokens ?? providers[pIdx].maxTokens,
           temperature: provider.temperature ?? providers[pIdx].temperature,
@@ -1137,7 +1259,26 @@ this.app.post<{ Params: { id: string }; Body: { count: number } }>('/api/session
 
     // Delete a model/provider (cannot delete primary)
     this.app.delete<{ Params: { index: string } }>('/api/models/:index', async (req) => {
-      const index = parseInt(req.params.index);
+      // Check if :index is a name (not a number)
+      const indexParam = req.params.index;
+      const isName = isNaN(parseInt(indexParam));
+      
+      let index: number;
+      if (isName) {
+        // Find provider by name
+        if (indexParam === 'primary') {
+          return { success: false, error: 'Cannot delete primary model' };
+        }
+        const providers = this.config.agent.providers || [];
+        const foundIndex = providers.findIndex(p => p.name === indexParam);
+        if (foundIndex < 0) {
+          return { success: false, error: `Provider "${indexParam}" not found` };
+        }
+        index = foundIndex + 1; // +1 because index 0 is primary
+      } else {
+        index = parseInt(indexParam);
+      }
+      
       if (index === 0) {
         return { success: false, error: 'Cannot delete primary model' };
       }
@@ -1401,14 +1542,88 @@ this.app.post<{ Params: { id: string } }>('/api/subagents/:id/kill', async (req,
         return reply.code(400).send({ error: err.message || 'Failed to unload plugin' });
       }
     });
+
+    // ── Plugin Delete API ─────────────────────────────────────────────
+    this.app.post<{ Body: { name: string } }>('/api/plugins/delete', async (req, reply) => {
+      const pm = this.agent.getPluginManager();
+      if (!pm) return reply.code(400).send({ error: 'Plugin manager not available' });
+      try {
+        const result = await pm.deletePlugin(req.body.name);
+        if (result.success) {
+          this.agent.refreshPluginTools();
+          this.broadcastDataUpdate('plugins', pm.getPlugins());
+          return { ok: true, name: req.body.name };
+        }
+        return reply.code(404).send({ error: result.error || 'Failed to delete plugin' });
+      } catch (err: any) {
+        return reply.code(400).send({ error: err.message || 'Failed to delete plugin' });
+      }
+    });
+
+    // ── Skill Read/Write API ─────────────────────────────────────────────
+    this.app.get<{ Params: { name: string } }>('/api/skills/:name', async (req, reply) => {
+      const loader = (this.agent as any).skillsLoader;
+      if (!loader) return reply.code(400).send({ error: 'Skills loader not available' });
+      const skill = loader.listSkills().find((s: any) => s.name === req.params.name);
+      if (!skill) return reply.code(404).send({ error: 'Skill not found' });
+      // Read the SKILL.md file
+      const skillsDir = this.config.skills.directory.replace('~', homedir());
+      const skillPath = join(skillsDir, req.params.name, 'SKILL.md');
+      if (!existsSync(skillPath)) return reply.code(404).send({ error: 'SKILL.md not found' });
+      const content = readFileSync(skillPath, 'utf-8');
+      return { name: req.params.name, content, description: skill.description };
+    });
+
+    this.app.put<{ Params: { name: string }; Body: { content: string } }>('/api/skills/:name', async (req, reply) => {
+      const skillsDir = this.config.skills.directory.replace('~', homedir());
+      const skillPath = join(skillsDir, req.params.name, 'SKILL.md');
+      try {
+        // Ensure directory exists
+        const skillDir = dirname(skillPath);
+        if (!existsSync(skillDir)) mkdirSync(skillDir, { recursive: true });
+        writeFileSync(skillPath, req.body.content, 'utf-8');
+        // Reload skills
+        const loader = (this.agent as any).skillsLoader;
+        if (loader) loader.loadAll();
+        this.broadcastDataUpdate('skills');
+        return { ok: true, name: req.params.name };
+      } catch (err: any) {
+        return reply.code(400).send({ error: err.message || 'Failed to save skill' });
+      }
+    });
   }
 
   private registerWebSocket(): void {
     this.app.get('/ws', { websocket: true }, (socket, req) => {
       const clientId = `webchat:ws:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      // Use main session if set, otherwise create a new one per client
-      const mainId = this.sessionManager.getMainSessionId();
-      let sessionId = mainId || `webchat:${clientId}`;
+      // Check if client wants to rejoin a previous session (e.g., after page refresh)
+      const query = req.query as Record<string, string | undefined>;
+      const rejoinSessionId = query?.rejoin_session_id;
+      
+      // Each WebSocket client gets its own session for proper isolation
+      // The "main session" feature is for automated processes (heartbeats, etc), not webchat
+      // But if rejoining a processing session, use that instead
+      let sessionId = `webchat:${clientId}`;
+      let rejoinedProcessing = false;
+      
+      if (rejoinSessionId) {
+        const session = this.sessionManager.getSession(rejoinSessionId);
+        const isStillProcessing = this.agent.isProcessing(rejoinSessionId);
+        // Only rejoin if session exists (has messages) OR is still processing
+        if (session || isStillProcessing) {
+          sessionId = rejoinSessionId;
+          rejoinedProcessing = isStillProcessing;
+        }
+      } else {
+        // Auto-load chat session if one is assigned and exists
+        const chatSessionId = this.sessionManager.getSessionByRole('chat');
+        if (chatSessionId) {
+          const chatSession = this.sessionManager.getSession(chatSessionId);
+          if (chatSession) {
+            sessionId = chatSessionId;
+          }
+        }
+      }
 
       this.webChatClients.set(clientId, {
         ws: socket as unknown as WebSocket,
@@ -1431,8 +1646,10 @@ this.app.post<{ Params: { id: string } }>('/api/subagents/:id/kill', async (req,
         presence: this.presenceManager.getState(),
         context: this.getContextInfo(sessionId),
         processing: isProcessing,
+        rejoined: rejoinedProcessing,
         multiAgent: !!this.router && agentsList.length > 1,
         agents: agentsList,
+        roles: this.sessionManager.getSessionRoles(),
       }));
 
       // If connecting to an existing session with messages, send history immediately
@@ -1457,6 +1674,47 @@ this.app.post<{ Params: { id: string } }>('/api/subagents/:id/kill', async (req,
               return;
             }
 
+            // Handle autoload: all or autoload: tool1, tool2
+            if (content.toLowerCase().startsWith('autoload:') || content.toLowerCase().startsWith('autoload ')) {
+              const arg = content.split(/[:\s]+/, 2)[1]?.trim();
+              if (!arg) {
+                const available = this.agent.getDeferredToolNames();
+                socket.send(JSON.stringify({
+                  type: 'response',
+                  content: `Usage: autoload: all | autoload: tool1, tool2\n\nAvailable tools: ${available.join(', ')}`,
+                  done: true,
+                }));
+                return;
+              }
+
+              let promoted: string[] = [];
+              if (arg.toLowerCase() === 'all') {
+                promoted = this.agent.promoteAllToolsForSession(sessionId);
+              } else {
+                const toolNames = arg.split(',').map(t => t.trim()).filter(Boolean);
+                for (const name of toolNames) {
+                  if (this.agent.promoteToolForSession(sessionId, name)) {
+                    promoted.push(name);
+                  }
+                }
+              }
+
+              if (promoted.length > 0) {
+                socket.send(JSON.stringify({
+                  type: 'response',
+                  content: `Loaded ${promoted.length} tool(s): ${promoted.join(', ')}`,
+                  done: true,
+                }));
+              } else {
+                socket.send(JSON.stringify({
+                  type: 'response',
+                  content: `No tools loaded. Check tool names or use "autoload: all" to load all available tools.`,
+                  done: true,
+                }));
+              }
+              return;
+            }
+
             // Store agent override from client (for multi-agent routing)
             if (msg.agent) {
               const client = this.webChatClients.get(clientId);
@@ -1470,7 +1728,15 @@ this.app.post<{ Params: { id: string } }>('/api/subagents/:id/kill', async (req,
                 ? await this.router.handleCommand(sessionId, content, undefined, agentOverride)
                 : await this.agent.handleCommand(sessionId, content);
               if (cmdResult) {
-                socket.send(JSON.stringify({ type: 'response', content: cmdResult, done: true }));
+                // Include messages so UI gets updated session state
+                const updatedSession = this.sessionManager.getSession(sessionId);
+                socket.send(JSON.stringify({
+                  type: 'response',
+                  content: cmdResult,
+                  messages: updatedSession ? this.mapSessionMessages(updatedSession.messages) : [],
+                  context: this.getContextInfo(sessionId),
+                  done: true,
+                }));
                 return;
               }
             }
@@ -1502,7 +1768,7 @@ this.app.post<{ Params: { id: string } }>('/api/subagents/:id/kill', async (req,
             });
           }
 
-          // User typing indicator — broadcast to other clients
+          // User typing indicator — broadcast to other clients of the same session
           if (msg.type === 'typing') {
             const typingMsg = JSON.stringify({
               type: 'user_typing',
@@ -1512,7 +1778,8 @@ this.app.post<{ Params: { id: string } }>('/api/subagents/:id/kill', async (req,
               timestamp: Date.now(),
             });
             for (const [id, client] of this.webChatClients) {
-              if (id !== clientId) {
+              // Only send to other clients of the same session
+              if (id !== clientId && client.sessionId === sessionId) {
                 try { client.ws.send(typingMsg); } catch {}
               }
             }
@@ -1534,12 +1801,14 @@ this.app.post<{ Params: { id: string } }>('/api/subagents/:id/kill', async (req,
             }));
           }
 
-          // Inject a user message into the session without triggering a new response
-          // Used by queued prompts to inject mid-conversation (after tool calls)
+          // Inject a user message into the session (uses safe injection if agent is busy)
+          // Used by queued prompts to inject mid-conversation
           if (msg.type === 'inject') {
             const content = msg.content as string;
+            const role = (msg.role as 'user' | 'system') || 'user';
             if (content) {
-              this.sessionManager.addMessage(sessionId, { role: 'user', content });
+              // Use agent's safe injection method which handles busy/idle states
+              this.agent.injectMessage(sessionId, content, { role, source: 'websocket' });
               socket.send(JSON.stringify({
                 type: 'injected',
                 session_id: sessionId,
@@ -1589,6 +1858,29 @@ this.app.post<{ Params: { id: string } }>('/api/subagents/:id/kill', async (req,
 
           // Delete a message and its associated responses
           if (msg.type === 'delete_message') {
+
+          // Set session role (chat/work)
+          } else if (msg.type === 'set_role') {
+            const role = msg.role as 'chat' | 'work';
+            const targetId = msg.session_id as string || sessionId;
+            if (role !== 'chat' && role !== 'work') {
+              socket.send(JSON.stringify({ type: 'error', message: 'role must be "chat" or "work"' }));
+              return;
+            }
+            this.sessionManager.setSessionRole(role, targetId);
+            if (role === 'work') {
+              const hb = this.agent.getHeartbeatManager?.();
+              if (hb && typeof hb.setTargetSession === 'function') {
+                hb.setTargetSession(targetId);
+              }
+            }
+            socket.send(JSON.stringify({
+              type: 'roles_updated',
+              roles: this.sessionManager.getSessionRoles(),
+            }));
+
+          // Delete a message and its associated responses
+          } else if (msg.type === 'delete_message') {
             const index = msg.index as number;
             const deleted = this.sessionManager.deleteMessageAt(sessionId, index);
             const session = this.sessionManager.getSession(sessionId);
@@ -1640,8 +1932,8 @@ this.app.post<{ Params: { id: string } }>('/api/subagents/:id/kill', async (req,
             // For user messages: re-send the user message
             // For assistant messages: re-send the previous user message
             let userMsgIndex = index;
-            let userContent = targetMsg.content || '';
-            
+            let userContent = typeof targetMsg.content === 'string' ? targetMsg.content : (targetMsg.content?.filter(p => p.type === 'text').map(p => p.text).join(' ') || '');
+
             if (targetMsg.role === 'assistant') {
               // Find the user message before this assistant message
               userMsgIndex = index - 1;
@@ -1652,7 +1944,8 @@ this.app.post<{ Params: { id: string } }>('/api/subagents/:id/kill', async (req,
                 socket.send(JSON.stringify({ type: 'error', message: 'No user message found before this response' }));
                 return;
               }
-              userContent = session.messages[userMsgIndex].content || '';
+              const userMsg = session.messages[userMsgIndex];
+              userContent = typeof userMsg.content === 'string' ? userMsg.content : (userMsg.content?.filter(p => p.type === 'text').map(p => p.text).join(' ') || '');
             }
 
             // Find where the response ends (next user message or end)
@@ -1668,16 +1961,16 @@ this.app.post<{ Params: { id: string } }>('/api/subagents/:id/kill', async (req,
             session.messages.splice(userMsgIndex + 1, endIndex - userMsgIndex - 1);
             this.sessionManager.saveSession(sessionId);
 
-            // Now regenerate the response
+            // Now regenerate the response (skip adding user message since it already exists)
             const retrySessionId = sessionId;
             const retryAgentOverride = this.webChatClients.get(clientId)?.agentOverride;
             const result = this.router
               ? await this.router.processMessage(sessionId, userContent, (chunk) => {
                   this.sendToSession(retrySessionId, { type: 'stream', content: chunk });
-                }, undefined, retryAgentOverride)
+                }, undefined, retryAgentOverride, { skipAddMessage: true })
               : await this.agent.processMessage(sessionId, userContent, (chunk) => {
                   this.sendToSession(retrySessionId, { type: 'stream', content: chunk });
-                });
+                }, undefined, { skipAddMessage: true });
 
             // Re-add the messages that were after the regenerated response
             for (const msg of messagesAfter) {
@@ -1755,6 +2048,45 @@ this.app.post<{ Params: { id: string } }>('/api/subagents/:id/kill', async (req,
               }
             }
           }
+          // Handle canvas_delete from the UI
+          if (msg.type === 'canvas_delete' && msg.canvas_id) {
+            const deleted = deleteCanvas(msg.canvas_id as string);
+            if (deleted) {
+              // Broadcast delete event to all canvas clients
+              const deleteMsg = JSON.stringify({ type: 'canvas_delete', canvas_id: msg.canvas_id });
+              for (const [cid, client] of this.canvasClients) {
+                try { (client.ws as any).send(deleteMsg); } catch {}
+              }
+            }
+          }
+          // Handle canvas_edit from the UI
+          if (msg.type === 'canvas_edit' && msg.canvas_id) {
+            const updated = updateCanvas(msg.canvas_id as string, {
+              title: msg.title as string,
+              content: msg.content as string,
+              contentType: msg.contentType as string,
+              language: msg.language as string,
+            });
+            if (updated) {
+              // Broadcast update to all canvas clients
+              const canvas = getCanvas(msg.canvas_id as string);
+              if (canvas) {
+                const updateMsg = JSON.stringify({
+                  type: 'canvas_push',
+                  canvas: {
+                    id: canvas.id,
+                    title: canvas.title,
+                    content: canvas.content,
+                    contentType: canvas.contentType,
+                    language: canvas.language,
+                  },
+                });
+                for (const [cid, client] of this.canvasClients) {
+                  try { (client.ws as any).send(updateMsg); } catch {}
+                }
+              }
+            }
+          }
         } catch {}
       });
 
@@ -1774,8 +2106,7 @@ this.app.post<{ Params: { id: string } }>('/api/subagents/:id/kill', async (req,
     }
   }
 
-  /** Map raw session messages to a client-friendly format, pairing tool results with assistant tool_calls.
-   *  Also injects power steering messages at appropriate intervals with isPowerSteering=true marker. */
+  /** Map raw session messages to a client-friendly format, pairing tool results with assistant tool_calls. */
   private mapSessionMessages(messages: any[]): any[] {
     // Build a map of tool_call_id → result content from tool-role messages
     const toolResults = new Map<string, string>();
@@ -1785,17 +2116,9 @@ this.app.post<{ Params: { id: string } }>('/api/subagents/:id/kill', async (req,
       }
     }
 
-    // Get power steering config
-    const ps = (this.config.agent as any).powerSteering;
-    const psEnabled = ps?.enabled && ps?.interval && ps.interval > 0;
-    const psInterval = ps?.interval || 25;
-    const psRole = ps?.role || 'system';
-
-    // First pass: filter and map messages
-    const filtered = messages
-      .map((m, idx) => ({ m, idx }))
-      .filter(({ m }) => m.role === 'user' || m.role === 'assistant' || m.role === 'system')
-      .map(({ m, idx }) => {
+    // Filter and map messages, including _meta for UI
+    return messages
+      .map((m, idx) => {
         const mapped: any = { role: m.role, content: m.content || '', serverIndex: idx };
         if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
           mapped.tool_calls = m.tool_calls.map((tc: any) => ({
@@ -1804,36 +2127,12 @@ this.app.post<{ Params: { id: string } }>('/api/subagents/:id/kill', async (req,
             result: toolResults.get(tc.id) || '',
           }));
         }
+        // Include _meta for UI (hidden, isPowerSteering flags)
+        if (m._meta) {
+          mapped._meta = m._meta;
+        }
         return mapped;
       });
-
-    // If power steering is disabled, return filtered messages as-is
-    if (!psEnabled) return filtered;
-
-    // Second pass: inject power steering messages at intervals
-    const result: any[] = [];
-    let msgCount = 0;
-
-    for (const msg of filtered) {
-      result.push(msg);
-
-      // Don't count system messages for interval calculation (except power steering ones)
-      if (msg.role !== 'system') {
-        msgCount++;
-      }
-
-      // Inject power steering after every interval messages
-      if (msgCount > 0 && msgCount % psInterval === 0) {
-        result.push({
-          role: psRole,
-          content: '[SYSTEM REMINDER] - System prompt re-injection for context anchoring',
-          isPowerSteering: true,
-          serverIndex: -1, // Virtual message, not stored
-        });
-      }
-    }
-
-    return result;
   }
 
   private broadcastDataUpdate(resource: string, data?: any): void {

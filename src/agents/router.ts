@@ -142,7 +142,7 @@ export class AgentRouter {
           }
           return;
         }
-        const sessionId = job.sessionId || `cron:${job.id}:${Date.now()}`;
+        const sessionId = job.sessionId || sessionManager.getSessionByRole('work') || `cron:${job.id}:${Date.now()}`;
         agent.processMessage(sessionId, job.prompt).catch(err => {
           console.error(`[agent:${profile.name}] Cron job "${job.name}" failed: ${err}`);
         });

@@ -112,7 +112,7 @@ program
           }
           return;
         }
-        const sessionId = job.sessionId || `cron:${job.id}:${Date.now()}`;
+        const sessionId = job.sessionId || sessionManager.getSessionByRole('work') || `cron:${job.id}:${Date.now()}`;
         agent.processMessage(sessionId, job.prompt).then(result => {
           // Send cron results to Discord if configured
           if (discord && result?.content) {
@@ -173,9 +173,9 @@ program
     // Wire heartbeat system
     const heartbeatIntervalMs = (config.heartbeat?.intervalMinutes || 30) * 60 * 1000;
     const heartbeatJitterMs = (config.heartbeat?.jitterMinutes || 5) * 60 * 1000;
-    // Heartbeats always use main session if set, otherwise fall back to separate session
-    // Custom sessionId takes priority, then main session, then default
-    const heartbeatSessionId = (config.heartbeat as any)?.sessionId
+    // Heartbeats use work session if set, then main session, then custom, then default
+    const heartbeatSessionId = sessionManager.getSessionByRole('work')
+      || (config.heartbeat as any)?.sessionId
       || sessionManager.getMainSessionId()
       || 'webchat:heartbeat';
     if (config.heartbeat?.enabled && scheduler) {

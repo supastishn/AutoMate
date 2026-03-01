@@ -2,10 +2,26 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, mkdir
 import { join } from 'node:path';
 import { nanoid } from 'nanoid';
 import type { Config } from '../config/schema.js';
-import type { LLMMessage } from '../agent/llm-client.js';
+import type { LLMMessage, ContentPart } from '../agent/llm-client.js';
 import type { LLMClient } from '../agent/llm-client.js';
 import type { MemoryManager } from '../memory/manager.js';
 import { pruneContextMessages, type PruningSettings, type PruneStats, DEFAULT_PRUNING_SETTINGS } from './context-pruner.js';
+
+/** Helper to check if content is a string (vs multimodal ContentPart[]) */
+function isStringContent(content: string | ContentPart[] | null): content is string {
+  return typeof content === 'string';
+}
+
+/** Helper to get text from content (handles both string and ContentPart[]) */
+function getTextFromContent(content: string | ContentPart[] | null): string {
+  if (!content) return '';
+  if (typeof content === 'string') return content;
+  // ContentPart[] - extract text parts
+  return content
+    .filter(part => part.type === 'text' && part.text)
+    .map(part => part.text)
+    .join(' ');
+}
 
 /** System prompt for conversation summarization */
 const SUMMARY_SYSTEM_PROMPT = `You are a conversation summarizer. Create an EXTREMELY CONCISE summary that captures ONLY what's needed to continue the conversation.
@@ -15,11 +31,6 @@ TARGET: Under 2000 words. Be ruthless about brevity.
 Format:
 ## Status
 One sentence: what's happening RIGHT NOW.
-
-## Active Task
-- Current goal (1 line)
-- Next steps (bullet list, max 5 items)
-- Blockers if any
 
 ## Key Facts
 Only include facts that will be needed going forward. Skip anything already completed or no longer relevant.
@@ -33,6 +44,14 @@ Only include facts that will be needed going forward. Skip anything already comp
 - Conversational back-and-forth
 - Explanations of why things were done
 - Code snippets unless actively being modified
+
+## Current Task
+**What is done:**
+- [List completed steps/achievements in this session]
+
+**What must be done:**
+- [List remaining steps to complete the current goal]
+- [Include specific next actions, file paths, commands if relevant]
 
 Be terse. Use fragments. Skip articles. The goal is MINIMUM tokens while preserving ability to continue work.`;
 
@@ -56,6 +75,8 @@ export class SessionManager {
   private compactingSessions: Set<string> = new Set(); // prevent concurrent compactions
   private mainSessionId: string | null = null;
   private mainSessionFile: string;
+  private sessionRoles: { chat: string | null; work: string | null } = { chat: null, work: null };
+  private sessionRolesFile: string;
   private writeLocks: Map<string, Promise<void>> = new Map(); // prevent concurrent writes
   private memoryManager: MemoryManager | null = null; // for transcript indexing
   private transcriptIndexQueue: Set<string> = new Set(); // sessions pending index
@@ -63,22 +84,66 @@ export class SessionManager {
   private defaultCompactInstructions: string | null = null; // default instructions for all compactions
   private overheadEstimator: ((sessionId: string) => number) | null = null; // callback to get system prompt + tool defs overhead
   private sessionTokens: Map<string, { prompt: number; completion: number; total: number; msgCountAtSnapshot: number }> = new Map(); // actual API-reported token counts per session
+  private sessionTokenTotals: Map<string, { prompt: number; completion: number; total: number }> = new Map(); // cumulative token usage per session
   private toolCallsSinceMemory: Map<string, number> = new Map(); // track tool calls since last memory tool use
   private memoryReminderSent: Map<string, boolean> = new Map(); // prevent duplicate reminders
+  private currentModel: string | null = null; // current model name for context window lookup
+  private onAutoCompactContinuation: ((sessionId: string, continuationMessage: string) => void) | null = null; // callback when auto-compact adds continuation
 
   constructor(config: Config) {
     this.config = config;
     this.dir = config.sessions.directory;
     mkdirSync(this.dir, { recursive: true });
     this.mainSessionFile = join(this.dir, '.main-session');
+    this.sessionRolesFile = join(this.dir, '.session-roles');
     this.loadAll();
     this.loadMainSession();
+    this.loadSessionRoles();
     this.startAutoReset();
   }
 
   /** Set memory manager for transcript indexing */
   setMemoryManager(mm: MemoryManager): void {
     this.memoryManager = mm;
+  }
+
+  /** Set the current model name (for context window lookup) */
+  setCurrentModel(modelName: string): void {
+    this.currentModel = modelName;
+  }
+
+  /**
+   * Get the context limit for the current model.
+   * Priority: provider.contextWindow > modelContextWindows match > sessions.contextLimit
+   */
+  getContextLimit(providerContextWindow?: number): number {
+    // 1. Provider-specific contextWindow takes highest priority
+    if (providerContextWindow) {
+      return providerContextWindow;
+    }
+
+    // 2. Check modelContextWindows patterns
+    if (this.currentModel) {
+      const modelWindows = (this.config.sessions as any).modelContextWindows as Record<string, number> | undefined;
+      if (modelWindows) {
+        // Check for exact match first
+        if (modelWindows[this.currentModel]) {
+          return modelWindows[this.currentModel];
+        }
+        // Check patterns (support * wildcard)
+        for (const [pattern, contextWindow] of Object.entries(modelWindows)) {
+          if (pattern.includes('*')) {
+            const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$', 'i');
+            if (regex.test(this.currentModel)) {
+              return contextWindow;
+            }
+          }
+        }
+      }
+    }
+
+    // 3. Fall back to default contextLimit
+    return this.config.sessions.contextLimit;
   }
 
   private startAutoReset(): void {
@@ -178,7 +243,8 @@ export class SessionManager {
       // Keep tool messages (they have tool_call_id)
       if (m.role === 'tool') return true;
       // For user/system messages, require non-empty content
-      return m.content && m.content.trim().length > 0;
+      const text = getTextFromContent(m.content);
+      return text && text.trim().length > 0;
     });
 
     // Sanitize tool pairs
@@ -237,6 +303,62 @@ export class SessionManager {
     }
   }
 
+  // ── Session Roles (chat / work) ──────────────────────────────────────
+
+  /** Load session roles from disk */
+  private loadSessionRoles(): void {
+    try {
+      if (existsSync(this.sessionRolesFile)) {
+        const data = JSON.parse(readFileSync(this.sessionRolesFile, 'utf-8'));
+        this.sessionRoles = {
+          chat: data.chat || null,
+          work: data.work || null,
+        };
+      }
+    } catch {
+      this.sessionRoles = { chat: null, work: null };
+    }
+  }
+
+  /** Persist session roles to disk */
+  private saveSessionRoles(): void {
+    try {
+      writeFileSync(this.sessionRolesFile, JSON.stringify(this.sessionRoles));
+    } catch (err) {
+      console.error(`[session] Failed to persist session roles: ${err}`);
+    }
+  }
+
+  /** Get all session roles */
+  getSessionRoles(): { chat: string | null; work: string | null } {
+    return { ...this.sessionRoles };
+  }
+
+  /** Get which role a session has, or null */
+  getSessionRole(sessionId: string): 'chat' | 'work' | null {
+    if (this.sessionRoles.chat === sessionId) return 'chat';
+    if (this.sessionRoles.work === sessionId) return 'work';
+    return null;
+  }
+
+  /** Get the session ID assigned to a role */
+  getSessionByRole(role: 'chat' | 'work'): string | null {
+    return this.sessionRoles[role];
+  }
+
+  /** Assign a role to a session. Pass null to clear. */
+  setSessionRole(role: 'chat' | 'work', sessionId: string | null): void {
+    // If this sessionId was in the other role, clear it
+    if (sessionId) {
+      const otherRole = role === 'chat' ? 'work' : 'chat';
+      if (this.sessionRoles[otherRole] === sessionId) {
+        this.sessionRoles[otherRole] = null;
+      }
+    }
+    this.sessionRoles[role] = sessionId;
+    this.saveSessionRoles();
+  }
+
   getOrCreate(channel: string, userId: string): Session {
     const key = `${channel}:${userId}`;
     let session = this.sessions.get(key);
@@ -275,6 +397,12 @@ export class SessionManager {
     this.onBeforeCompact = fn;
   }
 
+  /** Register a callback that fires when auto-compact adds a continuation message.
+   *  This allows the agent/gateway to trigger processing of the continuation. */
+  setAutoCompactContinuationCallback(fn: (sessionId: string, continuationMessage: string) => void): void {
+    this.onAutoCompactContinuation = fn;
+  }
+
   /** Set the LLM client for summary-based compaction */
   setLLMClient(llm: LLMClient): void {
     this.llm = llm;
@@ -295,7 +423,7 @@ export class SessionManager {
    *  Called after each LLM API call with the usage data from the response.
    *  prompt_tokens includes the full context (system prompt + tools + messages).
    *  Also triggers auto-compact check since we now have accurate token counts. */
-  setSessionTokens(sessionId: string, usage: { promptTokens: number; completionTokens: number; totalTokens: number }): void {
+  setSessionTokens(sessionId: string, usage: { promptTokens: number; completionTokens: number; totalTokens: number }, providerContextWindow?: number): void {
     const session = this.sessions.get(sessionId);
     this.sessionTokens.set(sessionId, {
       prompt: usage.promptTokens,
@@ -303,28 +431,36 @@ export class SessionManager {
       total: usage.totalTokens,
       msgCountAtSnapshot: session ? session.messages.length : 0,
     });
+    const totals = this.sessionTokenTotals.get(sessionId) || { prompt: 0, completion: 0, total: 0 };
+    this.sessionTokenTotals.set(sessionId, {
+      prompt: totals.prompt + usage.promptTokens,
+      completion: totals.completion + usage.completionTokens,
+      total: totals.total + usage.totalTokens,
+    });
 
     // Auto-compact check using ACTUAL API-reported tokens
     if (session && !this.compactingSessions.has(sessionId)) {
-      const tokenLimit = this.config.sessions.contextLimit;
+      const tokenLimit = this.getContextLimit(providerContextWindow);
       const reserveTokens = (this.config.sessions as any).reserveTokens || 20000;
       const compactAtRatio = this.config.sessions.compactAt;
-      const threshold = Math.floor((tokenLimit - reserveTokens) * compactAtRatio);
+      const threshold = Math.max(0, Math.floor((tokenLimit - reserveTokens) * compactAtRatio));
       const currentTokens = usage.promptTokens; // Use actual API value
       const percent = Math.round((currentTokens / tokenLimit) * 100);
 
-      if (percent >= 50) {
-        console.log(`[session] ${sessionId}: ${percent}% context (${currentTokens}/${tokenLimit} tokens, threshold=${threshold})`);
-      }
+      console.log(`[session] Token check: ${currentTokens} tokens, threshold=${threshold}, limit=${tokenLimit}, percent=${percent}%`);
 
       if (currentTokens > threshold) {
         console.log(`[session] Auto-compact triggered for ${sessionId}: ${currentTokens} > ${threshold} (${percent}%)`);
-        this.compactingSessions.add(sessionId);
-        this.compactWithSummary(sessionId, this.llm || undefined, this.defaultCompactInstructions || undefined)
-          .catch(err => console.error(`[session] Auto-compact failed for ${sessionId}:`, err))
-          .finally(() => this.compactingSessions.delete(sessionId));
+        // compactWithSummary handles the lock internally
+        this.compactWithSummary(sessionId, this.llm || undefined, this.defaultCompactInstructions || undefined, true)
+          .catch(err => console.error(`[session] Auto-compact failed for ${sessionId}:`, err));
       }
     }
+  }
+
+  /** Get cumulative token totals for a session since last reset. */
+  getSessionTokenTotals(sessionId: string): { prompt: number; completion: number; total: number } {
+    return this.sessionTokenTotals.get(sessionId) || { prompt: 0, completion: 0, total: 0 };
   }
 
   addMessage(sessionId: string, message: LLMMessage): void {
@@ -336,6 +472,14 @@ export class SessionManager {
 
     // Queue session for transcript indexing (debounced)
     this.queueTranscriptIndex(sessionId);
+  }
+
+  /** Update an existing message in a session */
+  updateMessage(sessionId: string, index: number, message: LLMMessage): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || index < 0 || index >= session.messages.length) return;
+    session.messages[index] = message;
+    session.updatedAt = new Date().toISOString();
   }
 
   /**
@@ -440,19 +584,8 @@ export class SessionManager {
 
     if (transcript.length < 100) return;
 
-    // Save to transcripts directory for indexing
-    const transcriptsDir = join(this.memoryManager.getDirectory(), 'transcripts');
-    mkdirSync(transcriptsDir, { recursive: true });
-
-    const safeName = sessionId.replace(/[:/\\?*"<>|]/g, '_');
-    const filename = `transcript-${safeName}.md`;
-    const filepath = join(transcriptsDir, filename);
-
-    const content = `# Session Transcript: ${sessionId}\n\nLast updated: ${session.updatedAt}\n\n${transcript}`;
-    writeFileSync(filepath, content);
-
-    // Queue for vector indexing (the memory manager will pick it up)
-    // Note: This relies on memory manager's indexAll() or watching
+    // Save transcript and index immediately for text search
+    this.memoryManager.saveTranscript(sessionId, transcript);
   }
 
   /** Save session with write lock to prevent concurrent writes */
@@ -493,11 +626,14 @@ export class SessionManager {
     session.messageCount = 0;
     session.updatedAt = new Date().toISOString();
     this.sessionTokens.delete(sessionId); // clear stale API token data
+    this.sessionTokenTotals.delete(sessionId); // clear cumulative token totals
     this.saveSession(sessionId);
   }
 
   deleteSession(sessionId: string): void {
     this.sessions.delete(sessionId);
+    this.sessionTokens.delete(sessionId);
+    this.sessionTokenTotals.delete(sessionId);
     const path = this.sessionPath(sessionId);
     if (existsSync(path)) unlinkSync(path);
   }
@@ -626,7 +762,8 @@ export class SessionManager {
     // Also fix empty assistant messages
     let fixed = 0;
     for (const m of session.messages) {
-      if (m.role === 'assistant' && (!m.content || m.content.trim() === '') && (!m.tool_calls || m.tool_calls.length === 0)) {
+      const text = getTextFromContent(m.content);
+      if (m.role === 'assistant' && (!text || text.trim() === '') && (!m.tool_calls || m.tool_calls.length === 0)) {
         m.content = '[content deleted]';
         fixed++;
       }
@@ -642,8 +779,24 @@ export class SessionManager {
    * Compact with AI summary using multi-stage summarization for large conversations.
    * Tracks tool failures and file operations for better context preservation.
    * Returns a status string for user feedback.
+   * @param isAutoCompaction If true, adds a continuation prompt after compaction
    */
-  async compactWithSummary(sessionId: string, llm?: LLMClient, instructions?: string): Promise<string> {
+  async compactWithSummary(sessionId: string, llm?: LLMClient, instructions?: string, isAutoCompaction?: boolean): Promise<string> {
+    // Prevent concurrent compactions on the same session
+    if (this.compactingSessions.has(sessionId)) {
+      return 'Compaction already in progress for this session.';
+    }
+
+    this.compactingSessions.add(sessionId);
+    try {
+      return await this._doCompactWithSummary(sessionId, llm, instructions, isAutoCompaction);
+    } finally {
+      this.compactingSessions.delete(sessionId);
+    }
+  }
+
+  /** Internal implementation of compactWithSummary */
+  private async _doCompactWithSummary(sessionId: string, llm?: LLMClient, instructions?: string, isAutoCompaction?: boolean): Promise<string> {
     const client = llm || this.llm;
     const session = this.sessions.get(sessionId);
     if (!session) return 'No active session.';
@@ -715,7 +868,7 @@ export class SessionManager {
     }
 
     // Keep only system messages with actual content, delete everything else, insert summary
-    const systemMsgs = session.messages.filter(m => m.role === 'system' && m.content && m.content.trim().length > 0);
+    const systemMsgs = session.messages.filter(m => m.role === 'system' && getTextFromContent(m.content).trim().length > 0);
     session.messages = [
       ...systemMsgs,
       {
@@ -723,6 +876,21 @@ export class SessionManager {
         content: `[Conversation Summary — ${beforeCount} messages compacted at ${new Date().toISOString()}]\n\n${summary}`,
       },
     ];
+
+    // For auto-compaction, notify callback to trigger continuation processing
+    // The callback (agent) will add the message via processMessage
+    if (isAutoCompaction && this.onAutoCompactContinuation) {
+      const continuationMessage = 'Continue the task u were doing';
+      // Use setImmediate to ensure the current call stack completes first
+      setImmediate(() => {
+        try {
+          this.onAutoCompactContinuation!(sessionId, continuationMessage);
+        } catch (err) {
+          console.error(`[session] Auto-compact continuation callback failed:`, err);
+        }
+      });
+    }
+
     session.updatedAt = new Date().toISOString();
     this.sessionTokens.delete(sessionId); // clear stale API token data after compaction
     this.saveSession(sessionId);
@@ -757,7 +925,8 @@ export class SessionManager {
     ];
 
     const response = await client.chat(summaryPrompt);
-    return response.choices[0]?.message?.content?.trim() || '';
+    const content = response.choices[0]?.message?.content;
+    return getTextFromContent(content).trim() || '';
   }
 
   /**
@@ -801,7 +970,8 @@ export class SessionManager {
 
       try {
         const response = await client.chat(prompt);
-        const partSummary = response.choices[0]?.message?.content?.trim() || '';
+        const content = response.choices[0]?.message?.content;
+        const partSummary = getTextFromContent(content).trim();
         if (partSummary) {
           partialSummaries.push(partSummary);
         }
@@ -824,7 +994,8 @@ export class SessionManager {
     ];
 
     const mergeResponse = await client.chat(mergePrompt);
-    return mergeResponse.choices[0]?.message?.content?.trim() || partialSummaries.join('\n');
+    const mergeContent = mergeResponse.choices[0]?.message?.content;
+    return getTextFromContent(mergeContent).trim() || partialSummaries.join('\n');
   }
 
   /**
@@ -860,16 +1031,17 @@ export class SessionManager {
    */
   private extractToolFailures(messages: LLMMessage[]): { tool: string; error: string }[] {
     const failures: { tool: string; error: string }[] = [];
-    
+
     for (const m of messages) {
       if (m.role === 'tool' && m.content) {
-        const content = m.content.toLowerCase();
+        const text = getTextFromContent(m.content);
+        const content = text.toLowerCase();
         // Look for common error patterns
-        if (content.includes('error') || content.includes('failed') || 
+        if (content.includes('error') || content.includes('failed') ||
             content.includes('exception') || content.includes('not found')) {
           failures.push({
             tool: (m as any).name || 'unknown',
-            error: m.content.slice(0, 300),
+            error: text.slice(0, 300),
           });
         }
       }
@@ -1079,6 +1251,35 @@ export class SessionManager {
   shutdown(): void {
     if (this.resetTimer) clearTimeout(this.resetTimer);
     if (this.transcriptIndexTimer) clearTimeout(this.transcriptIndexTimer);
+    // Flush any pending transcript indexing before saving
+    this.flushTranscriptQueue();
     this.saveAll();
+  }
+
+  /** Immediately save all queued transcripts (called on shutdown) */
+  private flushTranscriptQueue(): void {
+    if (this.transcriptIndexQueue.size === 0 || !this.memoryManager) return;
+
+    for (const sessionId of this.transcriptIndexQueue) {
+      try {
+        const session = this.sessions.get(sessionId);
+        if (!session || session.messages.length < 3) continue;
+
+        const transcript = session.messages
+          .filter(m => m.role !== 'system' && m.content)
+          .map(m => {
+            const role = m.role === 'assistant' ? 'Assistant' : m.role === 'user' ? 'User' : 'Tool';
+            return `[${role}] ${m.content}`;
+          })
+          .join('\n\n');
+
+        if (transcript.length >= 100) {
+          this.memoryManager.saveTranscript(sessionId, transcript);
+        }
+      } catch (err) {
+        console.error(`[session] Failed to flush transcript for ${sessionId}:`, err);
+      }
+    }
+    this.transcriptIndexQueue.clear();
   }
 }

@@ -523,6 +523,24 @@ export class Agent {
         lines.push('Use `goals action=list` for details. Any session can add/complete goals.');
         lines.push('');
       }
+
+      // Inject session role awareness (chat/work split)
+      const roles = this.sessionManager.getSessionRoles();
+      if (roles.chat || roles.work) {
+        const currentRole = sessionId ? this.sessionManager.getSessionRole(sessionId) : null;
+        lines.push('## Session Roles');
+        if (currentRole) {
+          lines.push(`You are in the **${currentRole}** session (\`${sessionId}\`).`);
+        }
+        if (roles.chat && (!currentRole || currentRole !== 'chat')) {
+          lines.push(`💬 Chat session: \`${roles.chat}\` — user conversations, plugin messages`);
+        }
+        if (roles.work && (!currentRole || currentRole !== 'work')) {
+          lines.push(`🔧 Work session: \`${roles.work}\` — heartbeats, cron, autonomous tasks`);
+        }
+        lines.push('Use `session action=history session_id=<id>` to check the other session, or `session action=send` to message it.');
+        lines.push('');
+      }
     }
 
     // ── Project Context (Memory Files) ─────────────────────────────────────
