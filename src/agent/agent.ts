@@ -1256,6 +1256,11 @@ export class Agent {
     const role = options?.role || 'user';
     const source = options?.source || 'plugin';
 
+    // DND redirect: route automated messages to work session when DND is enabled
+    if (source !== 'websocket') {
+      sessionId = this.sessionManager.getAutomatedSessionTarget(sessionId);
+    }
+
     if (this.processing.has(sessionId)) {
       // Session is busy - inject into current flow
       this.queueInjection(sessionId, message, role);
