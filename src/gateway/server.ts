@@ -529,6 +529,19 @@ export class GatewayServer {
       return { ok: true, roles: this.sessionManager.getSessionRoles() };
     });
 
+    // DND (Do Not Disturb): get/set
+    this.app.get('/api/dnd', async () => {
+      return { enabled: this.sessionManager.isDnd() };
+    });
+
+    this.app.post<{ Body: { enabled: boolean } }>('/api/dnd', async (req) => {
+      const { enabled } = req.body as any;
+      this.sessionManager.setDnd(!!enabled);
+      // Broadcast DND state change to all clients
+      this.broadcastToAll({ type: 'dnd_changed', enabled: !!enabled });
+      return { ok: true, enabled: this.sessionManager.isDnd() };
+    });
+
     // Export session as downloadable JSON
     this.app.get<{ Params: { id: string } }>('/api/sessions/:id/export', async (req, reply) => {
       const session = this.sessionManager.getSession(req.params.id);
@@ -1682,6 +1695,7 @@ this.app.post<{ Params: { id: string } }>('/api/subagents/:id/kill', async (req,
         multiAgent: !!this.router && agentsList.length > 1,
         agents: agentsList,
         roles: this.sessionManager.getSessionRoles(),
+        dnd: this.sessionManager.isDnd(),
       }));
 
       // If connecting to an existing session with messages, send history immediately

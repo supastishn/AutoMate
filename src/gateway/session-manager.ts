@@ -77,6 +77,8 @@ export class SessionManager {
   private mainSessionFile: string;
   private sessionRoles: { chat: string | null; work: string | null } = { chat: null, work: null };
   private sessionRolesFile: string;
+  private dndEnabled: boolean = false;
+  private dndFile: string;
   private writeLocks: Map<string, Promise<void>> = new Map(); // prevent concurrent writes
   private memoryManager: MemoryManager | null = null; // for transcript indexing
   private transcriptIndexQueue: Set<string> = new Set(); // sessions pending index
@@ -96,9 +98,11 @@ export class SessionManager {
     mkdirSync(this.dir, { recursive: true });
     this.mainSessionFile = join(this.dir, '.main-session');
     this.sessionRolesFile = join(this.dir, '.session-roles');
+    this.dndFile = join(this.dir, '.dnd');
     this.loadAll();
     this.loadMainSession();
     this.loadSessionRoles();
+    this.loadDnd();
     this.startAutoReset();
   }
 
@@ -357,6 +361,39 @@ export class SessionManager {
     }
     this.sessionRoles[role] = sessionId;
     this.saveSessionRoles();
+  }
+
+  // ── Do Not Disturb ────────────────────────────────────────────────────
+
+  private loadDnd(): void {
+    try {
+      if (existsSync(this.dndFile)) {
+        this.dndEnabled = readFileSync(this.dndFile, 'utf-8').trim() === 'true';
+      }
+    } catch {
+      this.dndEnabled = false;
+    }
+  }
+
+  isDnd(): boolean {
+    return this.dndEnabled;
+  }
+
+  setDnd(enabled: boolean): void {
+    this.dndEnabled = enabled;
+    try {
+      writeFileSync(this.dndFile, enabled ? 'true' : 'false');
+    } catch (err) {
+      console.error(`[session] Failed to persist DND state: ${err}`);
+    }
+  }
+
+  /** Get the session to route automated messages to (work session when DND, otherwise original) */
+  getAutomatedSessionTarget(originalSessionId: string): string {
+    if (this.dndEnabled && this.sessionRoles.work) {
+      return this.sessionRoles.work;
+    }
+    return originalSessionId;
   }
 
   getOrCreate(channel: string, userId: string): Session {

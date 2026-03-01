@@ -4,6 +4,7 @@ import Chat from './pages/Chat'
 import { useTheme, useColors } from './ThemeContext'
 
 const Canvas = lazy(() => import('./pages/Canvas'))
+const Stats = lazy(() => import('./pages/Stats'))
 const Sessions = lazy(() => import('./pages/Sessions'))
 const Skills = lazy(() => import('./pages/Skills'))
 const ClawHub = lazy(() => import('./pages/ClawHub'))
@@ -11,6 +12,8 @@ const Cron = lazy(() => import('./pages/Cron'))
 const Memory = lazy(() => import('./pages/Memory'))
 const Plugins = lazy(() => import('./pages/Plugins'))
 const Agents = lazy(() => import('./pages/Agents'))
+const Subagents = lazy(() => import('./pages/Subagents'))
+const MCP = lazy(() => import('./pages/MCP'))
 const Settings = lazy(() => import('./pages/Settings'))
 const Doctor = lazy(() => import('./pages/Doctor'))
 const Models = lazy(() => import('./pages/Models'))
@@ -24,11 +27,12 @@ function LoadingFallback() {
   )
 }
 
-const tabs = ['Dashboard', 'Chat', 'Canvas', 'Sessions', 'Skills', 'ClawHub', 'Cron', 'Memory', 'Plugins', 'Agents', 'Models', 'Settings', 'Doctor'] as const
+const tabs = ['Dashboard', 'Stats', 'Chat', 'Canvas', 'Sessions', 'Skills', 'ClawHub', 'Cron', 'Memory', 'Plugins', 'Agents', 'Subagents', 'MCP', 'Models', 'Settings', 'Doctor'] as const
 type Tab = typeof tabs[number]
 
 const tabIcons: Record<Tab, string> = {
   Dashboard: '\u{1F4CA}',
+  Stats: '\u{1F4C8}',
   Chat: '\u{1F4AC}',
   Canvas: '\u{1F3A8}',
   Sessions: '\u{1F4C1}',
@@ -38,6 +42,8 @@ const tabIcons: Record<Tab, string> = {
   Memory: '\u{1F9E0}',
   Plugins: '\u{1F50C}',
   Agents: '\u{1F916}',
+  Subagents: '\u{1F9E9}',
+  MCP: '\u{1F517}',
   Models: '\u{1F9EA}',
   Settings: '\u2699\uFE0F',
   Doctor: '\u{1FA7A}',
@@ -48,8 +54,14 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [isMobile, setIsMobile] = useState(false)
   const [loadSessionId, setLoadSessionId] = useState<string | null>(null)
+  const [dndEnabled, setDndEnabled] = useState(false)
   const { mode, toggleTheme } = useTheme()
   const colors = useColors()
+
+  // Fetch DND state on mount
+  useEffect(() => {
+    fetch('/api/dnd').then(r => r.json()).then((d: any) => setDndEnabled(!!d.enabled)).catch(() => {})
+  }, [])
 
   useEffect(() => {
     const check = () => {
@@ -95,24 +107,46 @@ export default function App() {
       }}>
         <div style={{ padding: '0 20px 12px', fontSize: 20, fontWeight: 700, color: colors.accent, letterSpacing: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <span>AutoMate</span>
-          <button
-            onClick={toggleTheme}
-            title={`Switch to ${mode === 'dark' ? 'light' : 'dark'} mode`}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              fontSize: 18,
-              cursor: 'pointer',
-              padding: '4px 8px',
-              borderRadius: 4,
-              color: colors.textSecondary,
-              transition: 'color 0.15s',
-            }}
-            onMouseOver={e => (e.currentTarget.style.color = colors.accent)}
-            onMouseOut={e => (e.currentTarget.style.color = colors.textSecondary)}
-          >
-            {mode === 'dark' ? '\u2600\uFE0F' : '\u{1F319}'}
-          </button>
+          <div style={{ display: 'flex', gap: 2 }}>
+            <button
+              onClick={() => {
+                const next = !dndEnabled
+                setDndEnabled(next)
+                fetch('/api/dnd', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: next }) }).catch(() => {})
+              }}
+              title={dndEnabled ? 'DND on — notifications go to work session' : 'DND off — notifications normal'}
+              style={{
+                background: dndEnabled ? colors.error + '22' : 'transparent',
+                border: dndEnabled ? `1px solid ${colors.error}44` : 'none',
+                fontSize: 16,
+                cursor: 'pointer',
+                padding: '4px 8px',
+                borderRadius: 4,
+                color: dndEnabled ? colors.error : colors.textSecondary,
+                transition: 'all 0.15s',
+              }}
+            >
+              {dndEnabled ? '🔕' : '🔔'}
+            </button>
+            <button
+              onClick={toggleTheme}
+              title={`Switch to ${mode === 'dark' ? 'light' : 'dark'} mode`}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                fontSize: 18,
+                cursor: 'pointer',
+                padding: '4px 8px',
+                borderRadius: 4,
+                color: colors.textSecondary,
+                transition: 'color 0.15s',
+              }}
+              onMouseOver={e => (e.currentTarget.style.color = colors.accent)}
+              onMouseOut={e => (e.currentTarget.style.color = colors.textSecondary)}
+            >
+              {mode === 'dark' ? '\u2600\uFE0F' : '\u{1F319}'}
+            </button>
+          </div>
         </div>
         {tabs.map(t => (
           <div
@@ -152,6 +186,7 @@ export default function App() {
         {tab === 'Dashboard' && <Dashboard />}
         {tab === 'Chat' && <Chat loadSessionId={loadSessionId} onSessionLoaded={() => setLoadSessionId(null)} />}
         <Suspense fallback={<LoadingFallback />}>
+          {tab === 'Stats' && <Stats />}
           {tab === 'Canvas' && <Canvas />}
           {tab === 'Sessions' && <Sessions onOpenInChat={(id) => { setLoadSessionId(id); setTab('Chat') }} />}
           {tab === 'Skills' && <Skills />}
@@ -161,6 +196,8 @@ export default function App() {
           {tab === 'Memory' && <Memory />}
           {tab === 'Plugins' && <Plugins />}
           {tab === 'Agents' && <Agents />}
+          {tab === 'Subagents' && <Subagents />}
+          {tab === 'MCP' && <MCP />}
           {tab === 'Models' && <Models />}
           {tab === 'Doctor' && <Doctor />}
         </Suspense>
