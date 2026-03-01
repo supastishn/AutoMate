@@ -33,6 +33,7 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
   const [folder, setFolder] = useState<'normal' | 'heartbeat' | 'subagents'>('normal')
   const [mainSessionId, setMainSessionId] = useState<string | null>(null)
+  const [sessionRoles, setSessionRoles] = useState<{ chat: string | null; work: string | null }>({ chat: null, work: null })
   const [jsonEditor, setJsonEditor] = useState<{ sessionId: string; raw: string } | null>(null)
   const [jsonError, setJsonError] = useState<string | null>(null)
   const [jsonSaving, setJsonSaving] = useState(false)
@@ -53,6 +54,7 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
       const r = await fetch('/api/sessions')
       const data = await r.json() as any
       setSessions(data.sessions || [])
+      if (data.roles) setSessionRoles(data.roles)
     } catch { /* ignore */ }
   }
 
@@ -98,6 +100,21 @@ const killSubAgent = async (id: string, e?: React.MouseEvent) => {
         body: JSON.stringify({ sessionId: newId }),
       })
       setMainSessionId(newId)
+    } catch { /* ignore */ }
+  }
+
+  const toggleSessionRole = async (id: string, role: 'chat' | 'work', e?: React.MouseEvent) => {
+    if (e) e.stopPropagation()
+    const current = sessionRoles[role]
+    const newId = current === id ? null : id
+    try {
+      const r = await fetch('/api/sessions/roles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [role]: newId }),
+      })
+      const data = await r.json() as any
+      if (data.roles) setSessionRoles(data.roles)
     } catch { /* ignore */ }
   }
 
@@ -555,7 +572,7 @@ const killSubAgent = async (id: string, e?: React.MouseEvent) => {
               onMouseEnter={e => (e.currentTarget.style.borderColor = colors.accent)}
               onMouseLeave={e => (e.currentTarget.style.borderColor = colors.border)}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, overflow: 'hidden' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 1, overflow: 'hidden' }}>
                   <button onClick={(e) => toggleMainSession(s.id, e)}
                     title={mainSessionId === s.id ? 'Unset as main session' : 'Set as main session'}
                     style={{
@@ -565,7 +582,25 @@ const killSubAgent = async (id: string, e?: React.MouseEvent) => {
                     }}>
                     {mainSessionId === s.id ? '\u2605' : '\u2606'}
                   </button>
-                  <div style={{ fontSize: 13, fontFamily: 'monospace', color: mainSessionId === s.id ? '#ffb74d' : colors.accent, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.id}</div>
+                  <button onClick={(e) => toggleSessionRole(s.id, 'chat', e)}
+                    title={sessionRoles.chat === s.id ? 'Unset as chat session' : 'Set as chat session'}
+                    style={{
+                      padding: 0, background: 'none', border: 'none', cursor: 'pointer', fontSize: 14,
+                      color: sessionRoles.chat === s.id ? '#64b5f6' : colors.borderLight,
+                      flexShrink: 0,
+                    }}>
+                    💬
+                  </button>
+                  <button onClick={(e) => toggleSessionRole(s.id, 'work', e)}
+                    title={sessionRoles.work === s.id ? 'Unset as work session' : 'Set as work session'}
+                    style={{
+                      padding: 0, background: 'none', border: 'none', cursor: 'pointer', fontSize: 14,
+                      color: sessionRoles.work === s.id ? '#81c784' : colors.borderLight,
+                      flexShrink: 0,
+                    }}>
+                    💼
+                  </button>
+                  <div style={{ fontSize: 13, fontFamily: 'monospace', color: mainSessionId === s.id ? '#ffb74d' : sessionRoles.chat === s.id ? '#64b5f6' : sessionRoles.work === s.id ? '#81c784' : colors.accent, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.id}</div>
                 </div>
                 <div style={{ display: 'flex', gap: 4, marginLeft: 8 }}>
                   {onOpenInChat && (
