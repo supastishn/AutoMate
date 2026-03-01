@@ -573,15 +573,6 @@ const killSubAgent = async (id: string, e?: React.MouseEvent) => {
               onMouseLeave={e => (e.currentTarget.style.borderColor = colors.border)}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 1, overflow: 'hidden' }}>
-                  <button onClick={(e) => toggleMainSession(s.id, e)}
-                    title={mainSessionId === s.id ? 'Unset as main session' : 'Set as main session'}
-                    style={{
-                      padding: 0, background: 'none', border: 'none', cursor: 'pointer', fontSize: 16,
-                      color: mainSessionId === s.id ? '#ffb74d' : colors.borderLight,
-                      flexShrink: 0,
-                    }}>
-                    {mainSessionId === s.id ? '\u2605' : '\u2606'}
-                  </button>
                   <button onClick={(e) => toggleSessionRole(s.id, 'chat', e)}
                     title={sessionRoles.chat === s.id ? 'Unset as chat session' : 'Set as chat session'}
                     style={{
@@ -600,7 +591,7 @@ const killSubAgent = async (id: string, e?: React.MouseEvent) => {
                     }}>
                     💼
                   </button>
-                  <div style={{ fontSize: 13, fontFamily: 'monospace', color: mainSessionId === s.id ? '#ffb74d' : sessionRoles.chat === s.id ? '#64b5f6' : sessionRoles.work === s.id ? '#81c784' : colors.accent, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.id}</div>
+                  <div style={{ fontSize: 13, fontFamily: 'monospace', color: sessionRoles.chat === s.id ? '#64b5f6' : sessionRoles.work === s.id ? '#81c784' : colors.accent, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.id}</div>
                 </div>
                 <div style={{ display: 'flex', gap: 4, marginLeft: 8 }}>
                   {onOpenInChat && (
