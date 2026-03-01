@@ -630,6 +630,38 @@ this.app.post<{ Params: { id: string }; Body: { count: number } }>('/api/session
       }
     });
 
+    // Import session from plain text (▶ SYSTEM: / ▶ USER: / ▶ ASSISTANT: format)
+    this.app.post<{ Body: { text: string; channel?: string; userId?: string } }>('/api/sessions/import-txt', async (req, reply) => {
+      try {
+        const { text, channel = 'imported', userId = 'txt-import' } = req.body as any;
+        if (!text || typeof text !== 'string') {
+          return reply.code(400).send({ error: 'Missing text field' });
+        }
+        const messages: { role: string; content: string }[] = [];
+        // Split on ▶ markers (handle both UTF-8 ▶ and plain >)
+        const parts = text.split(/(?:▶|â–¶)\s*(SYSTEM|USER|ASSISTANT):\s*/i);
+        // parts[0] is header junk, then alternating [role, content, role, content, ...]
+        for (let i = 1; i < parts.length; i += 2) {
+          const role = parts[i].toLowerCase();
+          const content = (parts[i + 1] || '').trim();
+          if (content && (role === 'system' || role === 'user' || role === 'assistant')) {
+            messages.push({ role, content });
+          }
+        }
+        if (messages.length === 0) {
+          return reply.code(400).send({ error: 'No messages found. Expected ▶ SYSTEM: / ▶ USER: / ▶ ASSISTANT: format.' });
+        }
+        const sessionId = `${channel}:${userId}`;
+        this.sessionManager.getOrCreate(channel, userId);
+        for (const msg of messages) {
+          this.sessionManager.addMessage(sessionId, { role: msg.role as any, content: msg.content });
+        }
+        return { ok: true, sessionId, messageCount: messages.length };
+      } catch (err: any) {
+        return reply.code(400).send({ error: err.message || 'TXT import failed' });
+      }
+    });
+
     // Config (read only, safe subset for backward compat)
     this.app.get('/api/config', async () => ({
       config: {

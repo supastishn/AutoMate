@@ -716,6 +716,16 @@ export class MemoryManager {
       }
     }
     
+    // transcripts/ subfolder
+    const transcriptsDir = this._transcriptsDir;
+    if (existsSync(transcriptsDir)) {
+      const transcriptFiles = readdirSync(transcriptsDir).filter(f => f.endsWith('.md'));
+      for (const f of transcriptFiles) {
+        const stat = statSync(join(transcriptsDir, f));
+        results.push({ name: `transcripts/${f}`, size: stat.size, modified: stat.mtime.toISOString() });
+      }
+    }
+    
     return results;
   }
 

@@ -205,19 +205,38 @@ const killSubAgent = async (id: string, e?: React.MouseEvent) => {
     setImportStatus(null)
     try {
       const text = await file.text()
-      const parsed = JSON.parse(text)
-      const payload = parsed.session || parsed
-      const r = await fetch('/api/sessions/import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session: payload }),
-      })
-      const result = await r.json() as any
-      if (r.ok && result.ok) {
-        setImportStatus({ type: 'success', message: `Imported ${result.messageCount} messages into session "${result.sessionId}"` })
-        fetchSessions()
+      
+      // Detect format: TXT (▶ markers) vs JSON
+      const isTxt = file.name.endsWith('.txt') || text.includes('▶ SYSTEM:') || text.includes('▶ USER:') || text.includes('â–¶ SYSTEM:') || text.includes('â–¶ USER:')
+      
+      if (isTxt) {
+        const r = await fetch('/api/sessions/import-txt', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        })
+        const result = await r.json() as any
+        if (r.ok && result.ok) {
+          setImportStatus({ type: 'success', message: `Imported ${result.messageCount} messages from TXT into "${result.sessionId}"` })
+          fetchSessions()
+        } else {
+          setImportStatus({ type: 'error', message: result.error || 'TXT import failed' })
+        }
       } else {
-        setImportStatus({ type: 'error', message: result.error || 'Import failed' })
+        const parsed = JSON.parse(text)
+        const payload = parsed.session || parsed
+        const r = await fetch('/api/sessions/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session: payload }),
+        })
+        const result = await r.json() as any
+        if (r.ok && result.ok) {
+          setImportStatus({ type: 'success', message: `Imported ${result.messageCount} messages into session "${result.sessionId}"` })
+          fetchSessions()
+        } else {
+          setImportStatus({ type: 'error', message: result.error || 'Import failed' })
+        }
       }
     } catch (err: any) {
       setImportStatus({ type: 'error', message: err.message || 'Failed to parse file' })
@@ -550,7 +569,7 @@ const killSubAgent = async (id: string, e?: React.MouseEvent) => {
           <span style={{ fontSize: 13, color: colors.textSecondary }}>Import Session:</span>
           <label style={{ padding: '4px 12px', background: colors.bgHover, color: colors.accent, border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
             Choose JSON file
-            <input ref={fileInputRef} type="file" accept=".json" onChange={handleImport} style={{ display: 'none' }} />
+            <input ref={fileInputRef} type="file" accept=".json,.txt" onChange={handleImport} style={{ display: 'none' }} />
           </label>
         </div>
         {importStatus && (
