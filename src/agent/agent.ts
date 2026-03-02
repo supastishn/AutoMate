@@ -1363,6 +1363,11 @@ export class Agent {
     onToolCall?: ToolCallCallback,
     options?: { skipAddMessage?: boolean; maxIterations?: number },
   ): Promise<AgentResponse> {
+    // DND redirect: route automated sessions to work session when DND is enabled
+    if (this.isAutomatedSession(sessionId)) {
+      sessionId = this.sessionManager.getAutomatedSessionTarget(sessionId);
+    }
+
     // Auto-elevate automated sessions (heartbeat, cron, plugins) so tools work without restrictions
     // Only webchat sessions require explicit /elevated on
     if (this.isAutomatedSession(sessionId) && !this.elevatedSessions.has(sessionId)) {
