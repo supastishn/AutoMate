@@ -369,9 +369,6 @@ export class Agent {
 
     // Debug: log tool registration stats
     const stats = this.tools.getStats();
-    console.log(`[DEBUG] Agent initialized: coreTools=${stats.coreToolCount}, deferredTools=${stats.deferredToolCount}`);
-    console.log(`[DEBUG] Core tools: ${stats.coreTools.join(', ')}`);
-    console.log(`[DEBUG] Tool policy: allow=${JSON.stringify(config.tools.allow)}, deny=${JSON.stringify(config.tools.deny)}`);
 
     // Wire sub-agent spawner
     this._wireSubAgentSpawner();
@@ -1539,12 +1536,8 @@ export class Agent {
 
       // Rebuild tool defs each iteration using session view (load/unload may change set)
       const toolDefs = sessionView.getToolDefs();
-      console.log(`[DEBUG] _processMessage: toolDefs.length=${toolDefs.length}, coreTools=${this.tools.getStats().coreToolCount}, deferredTools=${this.tools.getStats().deferredToolCount}`);
       if (toolDefs.length === 0) {
-        console.log(`[DEBUG] _processMessage: WARNING - no tools available! Checking sessionView state...`);
         const activeTools = sessionView.getActiveTools();
-        console.log(`[DEBUG] _processMessage: sessionView.getActiveTools().length=${activeTools.length}`);
-        console.log(`[DEBUG] _processMessage: sessionView.getPromotedNames()=${JSON.stringify(sessionView.getPromotedNames())}`);
       }
       // Rebuild system prompt too (catalog shrinks/grows as tools are loaded/unloaded)
       systemMessage.content = this._rebuildSystemContent(sessionView, sessionId);
@@ -1887,7 +1880,6 @@ export class Agent {
     const toolCalls: Map<number, { id: string; type: string; function: { name: string; arguments: string } }> = new Map();
     let chunkCount = 0;
 
-    console.log(`[DEBUG] streamCompletion: starting stream with ${messages.length} messages, ${toolDefs.length} tools`);
     
     try {
       for await (const chunk of this.llm.chatStream(messages, toolDefs, signal)) {
@@ -1940,9 +1932,7 @@ export class Agent {
       throw err;
     }
 
-    console.log(`[DEBUG] streamCompletion: received ${chunkCount} chunks, content length=${content.length}, reasoning length=${reasoning.length}, toolCalls=${toolCalls.size}`);
     if (content.length === 0 && toolCalls.size === 0) {
-      console.log(`[DEBUG] streamCompletion: EMPTY RESPONSE - no content and no tool calls`);
     }
 
     return {

@@ -913,7 +913,6 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
       body.reasoning_effort = provider.thinkingLevel;
     }
 
-    console.log(`[DEBUG] _chatStreamWithProvider: POST ${provider.apiBase}/chat/completions model=${provider.model} hasApiKey=${!!provider.apiKey}`);
 
     const res = await fetch(`${provider.apiBase}/chat/completions`, {
       method: 'POST',
@@ -924,11 +923,9 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
 
     if (!res.ok) {
       const text = await res.text();
-      console.log(`[DEBUG] _chatStreamWithProvider: API error ${res.status}: ${text.slice(0, 500)}`);
       throw new Error(`API error ${res.status}: ${text}`);
     }
 
-    console.log(`[DEBUG] _chatStreamWithProvider: got response, status=${res.status}`);
 
     const reader = res.body?.getReader();
     if (!reader) throw new Error('No response body');
@@ -956,7 +953,6 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
 
         const { done, value } = await reader.read();
         if (done) {
-          console.log(`[DEBUG] _chatStreamWithProvider: stream done, totalBytes=${totalBytes}, buffer remaining="${buffer.slice(0, 200)}"`);
           break;
         }
 
@@ -978,7 +974,6 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
           
           // Log raw lines for debugging
           if (chunksYielded === 0 && totalBytes < 500) {
-            console.log(`[DEBUG] _chatStreamWithProvider: raw line: "${trimmed.slice(0, 150)}"`);
           }
           
           // Handle both 'data: {...}' and 'data:{...}' formats (some APIs omit the space)
@@ -991,14 +986,12 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
             continue;
           }
           if (data === '[DONE]') {
-            console.log(`[DEBUG] _chatStreamWithProvider: got [DONE], yielded ${chunksYielded} chunks total`);
             return;
           }
           try {
             yield JSON.parse(data) as StreamChunk;
             chunksYielded++;
           } catch (e) {
-            console.log(`[DEBUG] _chatStreamWithProvider: failed to parse chunk: "${data.slice(0, 100)}"`);
           }
         }
       }

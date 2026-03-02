@@ -119,7 +119,8 @@ export class SessionToolView {
   getActiveTools(): Tool[] {
     const result: Tool[] = [];
     // Core tools minus demoted ones
-    for (const tool of this.registry.getCoreTools()) {
+    const coreTools = this.registry.getCoreTools();
+    for (const tool of coreTools) {
       if (!this.demoted.has(tool.name)) {
         result.push(tool);
       }
@@ -174,16 +175,16 @@ export class SessionToolView {
 
   /** Get tool defs for LLM (filtered by policy). */
   getToolDefs(): ToolDef[] {
-    return this.getActiveTools()
-      .filter(t => this.registry.isAllowedByPolicy(t.name))
-      .map(t => ({
-        type: 'function' as const,
-        function: {
-          name: t.name,
-          description: t.description,
-          parameters: t.parameters,
-        },
-      }));
+    const activeTools = this.getActiveTools();
+    const filtered = activeTools.filter(t => this.registry.isAllowedByPolicy(t.name));
+    return filtered.map(t => ({
+      type: 'function' as const,
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters,
+      },
+    }));
   }
 
   /** Get tool defs filtered to a specific allowlist. */
@@ -332,7 +333,11 @@ export class ToolRegistry {
   /** Check if a tool is allowed by allow/deny policy. */
   isAllowedByPolicy(name: string): boolean {
     if (this.denyList.includes(name)) return false;
-    if (this.allowList.length > 0 && !this.allowList.includes(name)) return false;
+    if (this.allowList.length > 0) {
+      // Support wildcards: "*" or "all" means allow all
+      if (this.allowList.includes('*') || this.allowList.includes('all')) return true;
+      if (!this.allowList.includes(name)) return false;
+    }
     return true;
   }
 

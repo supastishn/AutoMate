@@ -686,7 +686,6 @@ this.app.post<{ Params: { id: string }; Body: { count: number } }>('/api/session
     this.app.put<{ Body: Record<string, any> }>('/api/config', async (req, reply) => {
       try {
         const updates = req.body;
-        console.log(`[DEBUG] /api/config: received updates:`, JSON.stringify(updates, null, 2));
         
         // Load current raw config from disk
         const currentRaw = JSON.parse(JSON.stringify(this.config));
@@ -721,12 +720,10 @@ this.app.post<{ Params: { id: string }; Body: { count: number } }>('/api/session
         };
         
         const merged = deepMerge(currentRaw, cleanUpdates);
-        console.log(`[DEBUG] /api/config: merged config (validating...)`);
         
         // Validate
         const parseResult = ConfigSchema.safeParse(merged);
         if (!parseResult.success) {
-          console.error(`[DEBUG] /api/config: validation failed:`, JSON.stringify(parseResult.error.errors, null, 2));
           return reply.code(400).send({ 
             error: 'Validation failed', 
             details: parseResult.error.errors 
@@ -751,7 +748,6 @@ this.app.post<{ Params: { id: string }; Body: { count: number } }>('/api/session
         
         return { ok: true, message: 'Config updated and reloaded' };
       } catch (err: any) {
-        console.error(`[DEBUG] /api/config: error:`, err);
         return reply.code(400).send({ error: err.message || 'Invalid config' });
       }
     });
