@@ -19,6 +19,32 @@
         "apiBase": "http://localhost:11434/v1",
         "priority": 20
       }
+    ],
+    "subagent": {
+      "defaultModel": "claude-sonnet-4.5",
+      "useParentApiKey": true,
+      "maxConcurrent": 3,
+      "profiles": [
+        {
+          "name": "reviewer",
+          "model": "claude-sonnet-4.5",
+          "systemPrompt": "Focus on reliability, security, and edge cases.",
+          "maxIterations": 40,
+          "timeoutMs": 600000
+        }
+      ]
+    }
+  },
+  "mcp": {
+    "servers": [
+      {
+        "name": "filesystem",
+        "enabled": false,
+        "transport": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "~"],
+        "env": {}
+      }
     ]
   },
   "gateway": {

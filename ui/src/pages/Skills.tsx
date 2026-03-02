@@ -14,6 +14,9 @@ export default function Skills() {
   const [newName, setNewName] = useState('')
   const [newContent, setNewContent] = useState('# My Skill\n\nDescribe what this skill does...')
   const [creating, setCreating] = useState(false)
+  const [editingSkill, setEditingSkill] = useState<string | null>(null)
+  const [editingContent, setEditingContent] = useState('')
+  const [saving, setSaving] = useState(false)
 
   const card: React.CSSProperties = {
     background: colors.bgCard, border: `1px solid ${colors.border}`, borderRadius: 8, padding: 20,
@@ -28,6 +31,46 @@ export default function Skills() {
       })
       .catch(() => setLoading(false))
   }, [])
+
+  const handleEdit = (name: string) => {
+    setEditingSkill(name)
+    fetch('/api/skills/' + name)
+      .then(r => r.json())
+      .then((data: any) => {
+        if (data.content) {
+          setEditingContent(data.content)
+        } else {
+          alert(data.error || 'Failed to load skill')
+          setEditingSkill(null)
+        }
+      })
+      .catch(() => {
+        alert('Failed to load skill')
+        setEditingSkill(null)
+      })
+  }
+
+  const handleSaveEdit = () => {
+    if (!editingSkill) return
+    setSaving(true)
+    fetch('/api/skills/' + editingSkill, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: editingContent }),
+    })
+      .then(r => r.json())
+      .then((res: any) => {
+        if (res.ok) {
+          setEditingSkill(null)
+          setEditingContent('')
+          fetch('/api/skills').then(r => r.json()).then((d: any) => setSkills(d.skills || [])).catch(() => {})
+        } else {
+          alert(res.error || 'Failed to save')
+        }
+      })
+      .catch(() => alert('Failed to save'))
+      .finally(() => setSaving(false))
+  }
 
   return (
     <div style={{ padding: 30, maxWidth: 900 }}>
@@ -69,6 +112,13 @@ export default function Skills() {
                     <div style={{ fontSize: 12, color: colors.textSecondary }}>{s.description}</div>
                   )}
                 </div>
+                <button onClick={() => handleEdit(s.name)} style={{
+                  padding: '2px 8px', background: colors.bgSecondary, color: colors.accent,
+                  border: `1px solid ${colors.border}`, borderRadius: 4, cursor: 'pointer', fontSize: 11,
+                  flexShrink: 0, marginRight: 4,
+                }}>
+                  Edit
+                </button>
                 <button onClick={() => {
                   if (!confirm(`Uninstall skill "${s.name}"?`)) return
                   fetch('/api/skills/uninstall', {
@@ -174,6 +224,48 @@ export default function Skills() {
           Visit the <strong style={{ color: colors.accent }}>ClawHub</strong> tab in the sidebar to browse, search, install, and manage community skills.
         </div>
       </div>
+
+      {/* Edit Skill Modal */}
+      {editingSkill && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          zIndex: 1000,
+        }}>
+          <div style={{
+            background: colors.bgCard, border: `1px solid ${colors.border}`, borderRadius: 8,
+            padding: 20, width: '90%', maxWidth: 700, maxHeight: '80vh', display: 'flex', flexDirection: 'column',
+          }}>
+            <h3 style={{ fontSize: 16, marginBottom: 12, color: colors.textPrimary }}>
+              Edit Skill: {editingSkill}
+            </h3>
+            <textarea
+              value={editingContent}
+              onChange={e => setEditingContent(e.target.value)}
+              style={{
+                flex: 1, minHeight: 300, padding: '8px 12px', background: colors.bgHover,
+                border: `1px solid ${colors.borderLight}`, borderRadius: 4, color: colors.textPrimary,
+                fontSize: 12, outline: 'none', fontFamily: 'monospace', resize: 'none',
+              }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+              <button onClick={() => { setEditingSkill(null); setEditingContent('') }} style={{
+                padding: '8px 16px', background: colors.bgSecondary, color: colors.textPrimary,
+                border: `1px solid ${colors.border}`, borderRadius: 4, cursor: 'pointer', fontSize: 13,
+              }}>
+                Cancel
+              </button>
+              <button onClick={handleSaveEdit} disabled={saving} style={{
+                padding: '8px 16px', background: saving ? colors.borderLight : colors.accent,
+                color: saving ? colors.inputPlaceholder : colors.accentContrast,
+                border: 'none', borderRadius: 4, cursor: saving ? 'default' : 'pointer', fontSize: 13, fontWeight: 600,
+              }}>
+                {saving ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

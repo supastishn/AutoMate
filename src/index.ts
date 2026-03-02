@@ -13,7 +13,7 @@ import { runOnboardWizard } from './onboard/wizard.js';
 import { wireHeartbeat, isHeartbeatJob, isHeartbeatTask, heartbeatTaskId } from './heartbeat/manager.js';
 import { PluginManager } from './plugins/manager.js';
 import { AgentRouter } from './agents/router.js';
-import { setSubAgentPersistPath, getInterruptedAgents, resumeAgent } from './agent/tools/subagent.js';
+import { setSubAgentPersistPath, getInterruptedAgents } from './agent/tools/subagent.js';
 import { setCanvasPersistPath, setCanvasUploadDir, setCanvasServices } from './canvas/canvas-manager.js';
 import { join } from 'node:path';
 import {
@@ -266,18 +266,10 @@ program
     console.log(`  Config: ${getConfigPath()}`);
     console.log(`  Data: ${getConfigDir()}`);
 
-    // Resume any subagents that were interrupted by restart
+    // Mark interrupted subagents as expired (don't auto-resume — wastes API calls)
     const interruptedAgents = getInterruptedAgents();
     if (interruptedAgents.length > 0) {
-      console.log(`  Resuming ${interruptedAgents.length} interrupted subagent(s)...`);
-      for (const agent of interruptedAgents) {
-        // Small delay between resumes to avoid overwhelming
-        setTimeout(() => {
-          resumeAgent(agent).catch(err => {
-            console.error(`[subagent] Failed to resume "${agent.name}": ${err}`);
-          });
-        }, 1000);
-      }
+      console.log(`  Expired ${interruptedAgents.length} interrupted subagent(s) from previous run.`);
     }
 
     // Graceful shutdown

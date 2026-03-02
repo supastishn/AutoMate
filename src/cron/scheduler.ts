@@ -158,6 +158,27 @@ export class Scheduler {
     return true;
   }
 
+  /** Update an existing job's properties */
+  updateJob(id: string, updates: Partial<Pick<CronJob, 'name' | 'prompt' | 'schedule' | 'sessionId' | 'enabled'>>): CronJob | null {
+    const job = this.jobs.find(j => j.id === id);
+    if (!job) return null;
+
+    // Apply updates
+    if (updates.name !== undefined) job.name = updates.name;
+    if (updates.prompt !== undefined) job.prompt = updates.prompt;
+    if (updates.schedule !== undefined) job.schedule = updates.schedule;
+    if (updates.sessionId !== undefined) job.sessionId = updates.sessionId;
+    if (updates.enabled !== undefined) job.enabled = updates.enabled;
+
+    // Recalculate next run if schedule changed or job re-enabled
+    if (updates.schedule !== undefined || (updates.enabled === true)) {
+      job.nextRun = this.calculateNextRun(job, new Date());
+    }
+
+    this.save();
+    return job;
+  }
+
   disableJob(id: string): boolean {
     const job = this.jobs.find(j => j.id === id);
     if (!job) return false;

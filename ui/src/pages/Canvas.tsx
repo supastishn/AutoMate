@@ -29,6 +29,9 @@ export default function Canvas() {
   const [uploading, setUploading] = useState(false)
   const [uploadedImages, setUploadedImages] = useState<UploadResult[]>([])
   const [showUploads, setShowUploads] = useState(false)
+  const [isEditing, setIsEditing] = useState(false)
+  const [editContent, setEditContent] = useState('')
+  const [editTitle, setEditTitle] = useState('')
   const wsRef = useRef<WebSocket | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -67,6 +70,19 @@ export default function Canvas() {
 
         if (msg.type === 'canvas_reset' && msg.canvas) {
           setCanvases(prev => prev.filter(c => c.id !== msg.canvas.id))
+        }
+
+        if (msg.type === 'canvas_delete' && msg.canvas_id) {
+          setCanvases(prev => {
+            const filtered = prev.filter(c => c.id !== msg.canvas_id)
+            // Adjust activeIdx if needed
+            if (filtered.length === 0) {
+              setActiveIdx(0)
+            } else if (activeIdx >= filtered.length) {
+              setActiveIdx(filtered.length - 1)
+            }
+            return filtered
+          })
         }
       } catch {}
     }
@@ -316,19 +332,62 @@ export default function Canvas() {
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {/* Canvas tabs if multiple */}
           {canvases.length > 1 && canvases.map((c, i) => (
-            <button
+            <div
               key={c.id}
-              onClick={() => setActiveIdx(i)}
               style={{
-                padding: '2px 10px', background: i === activeIdx ? colors.bgTertiary : 'transparent',
-                color: i === activeIdx ? colors.accent : colors.inputPlaceholder,
+                display: 'flex', alignItems: 'center', gap: 0,
+                background: i === activeIdx ? colors.bgTertiary : 'transparent',
                 border: i === activeIdx ? `1px solid ${colors.accent}` : `1px solid ${colors.borderLight}`,
-                borderRadius: 4, cursor: 'pointer', fontSize: 11,
+                borderRadius: 4, overflow: 'hidden',
               }}
             >
-              {c.title || c.id}
-            </button>
+              <button
+                onClick={() => setActiveIdx(i)}
+                style={{
+                  padding: '2px 8px', background: 'transparent',
+                  color: i === activeIdx ? colors.accent : colors.inputPlaceholder,
+                  border: 'none', cursor: 'pointer', fontSize: 11,
+                }}
+              >
+                {c.title || c.id}
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                    wsRef.current.send(JSON.stringify({ type: 'canvas_delete', canvas_id: c.id }))
+                  }
+                }}
+                style={{
+                  padding: '2px 6px', background: colors.error,
+                  color: '#fff', border: 'none', cursor: 'pointer', fontSize: 11,
+                  fontWeight: 'bold', marginLeft: 1,
+                }}
+                title="Delete canvas"
+              >
+                ✕
+              </button>
+            </div>
           ))}
+
+          {/* Single canvas delete button */}
+          {canvases.length === 1 && canvas && canvas.content && (
+            <button
+              onClick={() => {
+                if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                  wsRef.current.send(JSON.stringify({ type: 'canvas_delete', canvas_id: canvas.id }))
+                }
+              }}
+              style={{
+                padding: '4px 10px', background: colors.bgDanger, color: colors.error,
+                border: `1px solid ${colors.error}`, borderRadius: 4, cursor: 'pointer', fontSize: 11,
+                fontWeight: 600,
+              }}
+              title="Delete canvas"
+            >
+              ✕ Delete
+            </button>
+          )}
 
           {/* Upload button */}
           <button
@@ -392,18 +451,98 @@ export default function Canvas() {
             </button>
           )}
           {canvas && (
-            <button
-              onClick={() => { if (canvas) navigator.clipboard.writeText(canvas.content) }}
-              style={{
-                padding: '4px 12px', background: colors.bgTertiary, color: colors.textSecondary,
-                border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12,
-              }}
-            >
-              Copy
-            </button>
+            <>
+              <button
+                onClick={() => {
+                  if (isEditing) {
+                    // Save changes
+                    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                      wsRef.current.send(JSON.stringify({
+                        type: 'canvas_edit',
+                        canvas_id: canvas.id,
+                        title: editTitle || canvas.title,
+                        content: editContent,
+                        contentType: canvas.contentType,
+                      }))
+                    }
+                    setIsEditing(false)
+                  } else {
+                    // Enter edit mode
+                    setEditContent(canvas.content)
+                    setEditTitle(canvas.title)
+                    setIsEditing(true)
+                  }
+                }}
+                style={{
+                  padding: '4px 12px', background: isEditing ? colors.success : colors.accent,
+                  color: isEditing ? '#fff' : colors.accentContrast,
+                  border: `1px solid ${isEditing ? colors.success : colors.accent}`,
+                  borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                }}
+              >
+                {isEditing ? '💾 Save' : '✏️ Edit'}
+              </button>
+              {isEditing && (
+                <button
+                  onClick={() => setIsEditing(false)}
+                  style={{
+                    padding: '4px 12px', background: colors.bgTertiary, color: colors.textSecondary,
+                    border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12,
+                  }}
+                >
+                  Cancel
+                </button>
+              )}
+              <button
+                onClick={() => { if (canvas) navigator.clipboard.writeText(canvas.content) }}
+                style={{
+                  padding: '4px 12px', background: colors.bgTertiary, color: colors.textSecondary,
+                  border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', fontSize: 12,
+                }}
+              >
+                Copy
+              </button>
+            </>
           )}
         </div>
       </div>
+
+      {/* Edit mode panel */}
+      {isEditing && canvas && (
+        <div style={{
+          padding: '12px 20px', borderBottom: `1px solid ${colors.border}`,
+          background: colors.bgSecondary,
+        }}>
+          <div style={{ display: 'flex', gap: 12, marginBottom: 8 }}>
+            <input
+              type="text"
+              value={editTitle}
+              onChange={(e) => setEditTitle(e.target.value)}
+              placeholder="Canvas title"
+              style={{
+                padding: '6px 12px', background: colors.bgTertiary, color: colors.textPrimary,
+                border: `1px solid ${colors.borderLight}`, borderRadius: 4, fontSize: 13,
+                width: 200,
+              }}
+            />
+            <span style={{ fontSize: 12, color: colors.textMuted, lineHeight: '32px' }}>
+              Type: {canvas.contentType}
+            </span>
+          </div>
+          <textarea
+            value={editContent}
+            onChange={(e) => setEditContent(e.target.value)}
+            style={{
+              width: '100%', minHeight: 300, padding: 12,
+              background: colors.bgTertiary, color: colors.textPrimary,
+              border: `1px solid ${colors.borderLight}`, borderRadius: 4,
+              fontFamily: 'monospace', fontSize: 13, lineHeight: 1.5,
+              resize: 'vertical',
+            }}
+            placeholder="Enter canvas content..."
+          />
+        </div>
+      )}
 
       {/* Uploads gallery panel */}
       {showUploads && (

@@ -2,7 +2,7 @@
  * Plugin SDK — formal extension architecture for AutoMate.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, watch, type FSWatcher } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, watch, rmSync, type FSWatcher } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { Tool, ToolContext } from '../agent/tool-registry.js';
@@ -55,6 +55,59 @@ export interface PluginActivation {
   onToolCall?(toolName: string, params: Record<string, unknown>): void;
   onToolResult?(toolName: string, result: string): void;
   onCompact?(sessionId: string): void;
+  // NEW: LLM hooks for smart context injection
+  beforeLLM?(ctx: BeforeLLMContext): BeforeLLMResult | Promise<BeforeLLMResult>;
+  afterLLM?(ctx: AfterLLMContext): void | Promise<void>;
+  // NEW: Error handling
+  onError?(ctx: ErrorContext): void | Promise<void>;
+  // NEW: Usage tracking callback
+  onUsageReport?(ctx: UsageReportContext): void;
+}
+
+// NEW: Context types for LLM hooks
+export interface BeforeLLMContext {
+  sessionId: string;
+  messageCount: number;
+  toolCallCount: number;
+  errorCount: number;
+  isMultiStep: boolean;
+  recentTools: string[];
+  systemPrompt: string;
+  messages: Array<{ role: string; contentPreview: string }>;
+}
+
+export interface BeforeLLMResult {
+  // Prepend to system prompt
+  prependSystem?: string;
+  // Prepend as a reminder message (appears after system, before messages)
+  prependReminder?: string;
+  // Inject tools dynamically (names of tools to ensure are loaded)
+  ensureTools?: string[];
+}
+
+export interface AfterLLMContext {
+  sessionId: string;
+  responseTokens?: number;
+  totalTokens?: number;
+  hadToolCalls: boolean;
+  duration: number;
+}
+
+export interface ErrorContext {
+  sessionId: string;
+  error: Error;
+  phase: 'llm' | 'tool' | 'middleware' | 'other';
+  toolName?: string;
+  toolParams?: Record<string, unknown>;
+  retryCount: number;
+}
+
+export interface UsageReportContext {
+  sessionId: string;
+  toolCalls: Array<{ name: string; timestamp: number; success: boolean }>;
+  messageCount: number;
+  sessionDuration: number;
+  topTools: Array<{ name: string; count: number }>;
 }
 
 export interface PluginChannel {
@@ -81,7 +134,7 @@ export interface LoadedPlugin {
   middleware?: PluginMiddleware;
 }
 
-// ── Plugin Manager ───────────────────────────────────────────────────────
+  // ── Plugin Manager ───────────────────────────────────────────────────────
 
 export class PluginManager {
   private plugins: Map<string, LoadedPlugin> = new Map();
@@ -98,6 +151,13 @@ export class PluginManager {
   private watcher: FSWatcher | null = null;
   private dirtyPlugins: Set<string> = new Set();
   private debounceTimer: NodeJS.Timeout | null = null;
+
+  // NEW: Per-session usage tracking
+  private sessionUsage: Map<string, {
+    toolCalls: Array<{ name: string; timestamp: number; success: boolean }>;
+    startTime: number;
+    errorCount: number;
+  }> = new Map();
 
   constructor(config: Config, pluginsDir?: string) {
     this.config = config;
@@ -141,6 +201,8 @@ export class PluginManager {
   // ── Lifecycle hook firers ───────────────────────────────────────────
 
   fireSessionStart(sessionId: string): void {
+    // NEW: Initialize usage tracking for session
+    this.sessionUsage.set(sessionId, { toolCalls: [], startTime: Date.now(), errorCount: 0 });
     for (const p of this.plugins.values()) {
       try { p.activation.onSessionStart?.(sessionId); } catch {}
     }
@@ -148,6 +210,27 @@ export class PluginManager {
   }
 
   fireSessionEnd(sessionId: string): void {
+    // NEW: Fire usage report before clearing
+    const usage = this.sessionUsage.get(sessionId);
+    if (usage) {
+      const toolCounts = new Map<string, number>();
+      for (const tc of usage.toolCalls) {
+        toolCounts.set(tc.name, (toolCounts.get(tc.name) || 0) + 1);
+      }
+      const topTools = [...toolCounts.entries()]
+        .map(([name, count]) => ({ name, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 5);
+      
+      this.fireUsageReport({
+        sessionId,
+        toolCalls: usage.toolCalls,
+        messageCount: 0, // Agent tracks this
+        sessionDuration: Date.now() - usage.startTime,
+        topTools,
+      });
+    }
+    this.sessionUsage.delete(sessionId);
     for (const p of this.plugins.values()) {
       try { p.activation.onSessionEnd?.(sessionId); } catch {}
     }
@@ -155,6 +238,10 @@ export class PluginManager {
   }
 
   fireToolCall(toolName: string, params: Record<string, unknown>): void {
+    // Track in current session (find most recent active session)
+    for (const [sessionId, usage] of this.sessionUsage) {
+      usage.toolCalls.push({ name: toolName, timestamp: Date.now(), success: true });
+    }
     for (const p of this.plugins.values()) {
       try { p.activation.onToolCall?.(toolName, params); } catch {}
     }
@@ -162,6 +249,17 @@ export class PluginManager {
   }
 
   fireToolResult(toolName: string, result: string): void {
+    // Track failed tool calls
+    const isError = result.toLowerCase().includes('error') || result.toLowerCase().includes('failed');
+    if (isError) {
+      for (const [sessionId, usage] of this.sessionUsage) {
+        const lastCall = usage.toolCalls[usage.toolCalls.length - 1];
+        if (lastCall && lastCall.name === toolName) {
+          lastCall.success = false;
+        }
+        usage.errorCount++;
+      }
+    }
     for (const p of this.plugins.values()) {
       try { p.activation.onToolResult?.(toolName, result); } catch {}
     }
@@ -173,6 +271,51 @@ export class PluginManager {
       try { p.activation.onCompact?.(sessionId); } catch {}
     }
     this.emit('session:compact', sessionId);
+  }
+
+  // ── NEW: LLM hooks ───────────────────────────────────────────────────
+
+  /** Fire beforeLLM hook - allows plugins to inject context before LLM call */
+  async fireBeforeLLM(ctx: BeforeLLMContext): Promise<BeforeLLMResult> {
+    const results: BeforeLLMResult = {};
+    for (const p of this.plugins.values()) {
+      try {
+        const r = await p.activation.beforeLLM?.(ctx);
+        if (r) {
+          if (r.prependSystem) results.prependSystem = (results.prependSystem || '') + r.prependSystem;
+          if (r.prependReminder) results.prependReminder = (results.prependReminder || '') + r.prependReminder;
+          if (r.ensureTools) results.ensureTools = [...(results.ensureTools || []), ...r.ensureTools];
+        }
+      } catch (err) {
+        console.error(`[plugin:beforeLLM] Error in ${p.manifest.name}:`, (err as Error).message);
+      }
+    }
+    this.emit('llm:before', ctx);
+    return results;
+  }
+
+  /** Fire afterLLM hook - notifies plugins after LLM response */
+  async fireAfterLLM(ctx: AfterLLMContext): Promise<void> {
+    for (const p of this.plugins.values()) {
+      try { await p.activation.afterLLM?.(ctx); } catch {}
+    }
+    this.emit('llm:after', ctx);
+  }
+
+  /** Fire onError hook - allows plugins to react to errors */
+  async fireError(ctx: ErrorContext): Promise<void> {
+    for (const p of this.plugins.values()) {
+      try { await p.activation.onError?.(ctx); } catch {}
+    }
+    this.emit('error', ctx);
+  }
+
+  /** Fire usage report - periodic tool usage stats to plugins */
+  fireUsageReport(ctx: UsageReportContext): void {
+    for (const p of this.plugins.values()) {
+      try { p.activation.onUsageReport?.(ctx); } catch {}
+    }
+    this.emit('usage:report', ctx);
   }
 
   // ── Config storage ──────────────────────────────────────────────────
@@ -359,6 +502,28 @@ export class PluginManager {
     return true;
   }
 
+  /** Delete a plugin completely (unload + remove from disk) */
+  async deletePlugin(name: string): Promise<{ success: boolean; error?: string }> {
+    // First unload if loaded
+    const plugin = this.plugins.get(name);
+    if (plugin) {
+      if (plugin.channel) await plugin.channel.stop();
+      if (plugin.exports.deactivate) await plugin.exports.deactivate();
+      this.plugins.delete(name);
+    }
+    // Remove from disk
+    const pluginDir = join(this.pluginsDir, name);
+    if (!existsSync(pluginDir)) {
+      return { success: false, error: `Plugin directory "${name}" not found` };
+    }
+    try {
+      rmSync(pluginDir, { recursive: true, force: true });
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Failed to delete plugin directory' };
+    }
+  }
+
   // ── Hot-reload watching ─────────────────────────────────────────────
 
   startWatching(): void {
@@ -466,11 +631,12 @@ export class PluginManager {
 //   ctx.log(msg)      - log with plugin prefix
 //   ctx.events.emit/on/off - event bus for cross-plugin communication
 //   ctx.services      - {memory, sessions, scheduler, agent} core service references
-//                       agent.processMessage(sessionId, prompt) to inject messages into sessions
+//                       agent.injectMessage(sessionId, msg, {role?, source?}) - safe injection (works even if session is busy)
+//                       agent.processMessage(sessionId, prompt) - direct message (waits if session is busy)
 
 export function activate(ctx) {
   ctx.log('Plugin activated');
-  
+
   // Listen to events from other plugins or core
   ctx.events.on('custom:event', (data) => {
     ctx.log('Received custom event: ' + JSON.stringify(data));
@@ -493,6 +659,28 @@ export function activate(ctx) {
     onToolCall(toolName, params) { ctx.log('Tool called: ' + toolName); },
     onToolResult(toolName, result) { ctx.log('Tool result: ' + toolName); },
     onCompact(sessionId) { ctx.log('Session compacted: ' + sessionId); },
+    
+    // NEW: LLM hooks for smart context injection
+    async beforeLLM(ctx) {
+      // Inject reminder only on multi-step tasks (context-gated)
+      if (ctx.isMultiStep && ctx.toolCallCount > 5) {
+        return { prependReminder: 'Remember to use memory tools for important findings.' };
+      }
+      return {};
+    },
+    async afterLLM(ctx) {
+      ctx.log('LLM call completed, tokens: ' + ctx.totalTokens);
+    },
+    
+    // NEW: Error handling
+    async onError(ctx) {
+      ctx.log('Error in ' + ctx.phase + ': ' + ctx.error.message);
+    },
+    
+    // NEW: Usage report (fired at session end)
+    onUsageReport(ctx) {
+      ctx.log('Session tools: ' + ctx.topTools.map(t => t.name + '(' + t.count + ')').join(', '));
+    },
   };
 }
 

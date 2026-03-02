@@ -1,4 +1,5 @@
-import { exec } from 'node:child_process';
+import { exec, spawn, ChildProcess } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import type { Tool } from '../tool-registry.js';
 
 // Dangerous command patterns blocked when session is NOT elevated
@@ -45,15 +46,132 @@ function checkCommand(command: string, elevated: boolean): string | null {
   return null;
 }
 
+// ── Background Shell Support ─────────────────────────────────────────────
+
+interface BackgroundShell {
+  id: string;
+  parentSessionId: string;
+  command: string;
+  status: 'running' | 'completed' | 'error' | 'killed';
+  startTime: number;
+  endTime?: number;
+  output: string;
+  exitCode?: number;
+  error?: string;
+  process?: ChildProcess;
+}
+
+const backgroundShells: Map<string, BackgroundShell> = new Map();
+
+/** Callback to notify the parent session when a background shell finishes */
+let notifyParentFn: ((parentSessionId: string, message: string) => void) | null = null;
+
+/** Set the notifier function (called from agent setup) */
+export function setBackgroundShellNotifier(fn: (parentSessionId: string, message: string) => void): void {
+  notifyParentFn = fn;
+}
+
+function generateId(): string {
+  return randomBytes(4).toString('hex');
+}
+
+/** Get all background shells (for API/tools) */
+export function getBackgroundShells(): BackgroundShell[] {
+  return [...backgroundShells.values()].map(s => ({
+    ...s,
+    process: undefined, // Don't expose process object
+  }));
+}
+
+/** Get a specific background shell by ID */
+export function getBackgroundShell(id: string): BackgroundShell | null {
+  const shell = backgroundShells.get(id);
+  if (!shell) return null;
+  return { ...shell, process: undefined };
+}
+
+/** Kill a running background shell */
+export function killBackgroundShell(id: string): BackgroundShell | null {
+  const shell = backgroundShells.get(id);
+  if (!shell) return null;
+
+  if (shell.status === 'running' && shell.process) {
+    shell.process.kill('SIGTERM');
+    setTimeout(() => {
+      try { shell.process?.kill('SIGKILL'); } catch {}
+    }, 500);
+    shell.status = 'killed';
+    shell.endTime = Date.now();
+    shell.error = 'Killed by user';
+    // Don't set output here - the close handler will capture stdout/stderr and prepend '[KILLED]'
+  }
+
+  return { ...shell, process: undefined };
+}
+
+/** Clear completed background shells */
+export function clearCompletedShells(): number {
+  let cleared = 0;
+  for (const [id, shell] of backgroundShells) {
+    if (shell.status !== 'running') {
+      backgroundShells.delete(id);
+      cleared++;
+    }
+  }
+  return cleared;
+}
+
+/** Cleanup old shells (keep max 50 completed) */
+function cleanupOldShells(): void {
+  const entries = [...backgroundShells.entries()];
+  const completed = entries.filter(([, s]) => s.status !== 'running');
+  if (completed.length > 50) {
+    completed
+      .sort((a, b) => (a[1].startTime - b[1].startTime))
+      .slice(0, completed.length - 50)
+      .forEach(([id]) => backgroundShells.delete(id));
+  }
+}
+
 export const bashTool: Tool = {
   name: 'bash',
-  description: 'Run a shell command and return stdout, stderr, and exit code. Use this for system commands, package management, git, etc. Some dangerous commands (sudo, curl, rm -rf /, etc.) are blocked unless the session has elevated permissions (/elevated on).',
+  description: [
+    'Execute shell commands and return stdout, stderr, and exit code.',
+    '',
+    'WHEN TO USE:',
+    '- System administration tasks (checking disk space, service status)',
+    '- File system operations (listing, moving, creating files)',
+    '- Package management (installing, updating software)',
+    '- Git operations (clone, pull, commit, push)',
+    '- Process management (ps, kill, systemctl)',
+    '- Environment inspection (env, which, whereis)',
+    '- Running scripts and executables',
+    '- Network diagnostics (ping, curl, wget for non-elevated sessions)',
+    '',
+    'HOW TO USE:',
+    '- For simple commands: { "command": "ls -la" }',
+    '- For commands with timeout: { "command": "long-process", "timeout": 30000 }',
+    '- For background execution: { "command": "long-process", "background": true }',
+    '- For specific directory: { "command": "npm install", "workdir": "/path/to/project" }',
+    '',
+    'SAFETY NOTES:',
+    '- Some commands are blocked unless session has elevated permissions (/elevated on)',
+    '- Blocked commands include: sudo, curl|sh patterns, rm on system paths, systemctl, etc.',
+    '- Use background mode for long-running processes to avoid blocking conversation',
+    '- Always use timeout for potentially long operations',
+    '',
+    'EXAMPLES:',
+    '- Check disk usage: { "command": "df -h" }',
+    '- List files: { "command": "ls -la", "workdir": "/home/user/project" }',
+    '- Run background indexer: { "command": "find /large/directory -name \'*.js\'", "background": true }',
+  ].join('\n'),
   parameters: {
     type: 'object',
     properties: {
       command: { type: 'string', description: 'The shell command to execute' },
       timeout: { type: 'number', description: 'Timeout in milliseconds (default 120000)' },
       workdir: { type: 'string', description: 'Working directory for the command' },
+      background: { type: 'boolean', description: 'Run in background and report back when done (default false)' },
     },
     required: ['command'],
   },
@@ -61,6 +179,7 @@ export const bashTool: Tool = {
     const command = params.command as string;
     const timeout = (params.timeout as number) || 120000;
     const workdir = (params.workdir as string) || ctx.workdir;
+    const background = params.background as boolean;
 
     // Safety check
     const blocked = checkCommand(command, !!ctx.elevated);
@@ -71,22 +190,197 @@ export const bashTool: Tool = {
       };
     }
 
-    return new Promise((resolve) => {
-      const proc = exec(command, {
+    // Background mode
+    if (background) {
+      const id = generateId();
+      const shell: BackgroundShell = {
+        id,
+        parentSessionId: ctx.sessionId || 'unknown',
+        command,
+        status: 'running',
+        startTime: Date.now(),
+        output: '',
+      };
+
+      const proc = spawn('sh', ['-c', command], {
         cwd: workdir,
-        timeout,
-        maxBuffer: 10 * 1024 * 1024,
         env: { ...process.env },
-      }, (error, stdout, stderr) => {
-        const exitCode = error?.code ?? (proc.exitCode ?? 0);
-        let output = '';
-        if (stdout) output += stdout;
-        if (stderr) output += (output ? '\n--- stderr ---\n' : '') + stderr;
-        if (error && !stdout && !stderr) {
-          output = error.message;
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      shell.process = proc;
+      backgroundShells.set(id, shell);
+      cleanupOldShells();
+
+      let stdout = '';
+      let stderr = '';
+
+      proc.stdout?.on('data', (chunk) => {
+        stdout += chunk.toString();
+      });
+
+      proc.stderr?.on('data', (chunk) => {
+        stderr += chunk.toString();
+      });
+
+      proc.on('close', (code) => {
+        // Don't overwrite status if already set (killed/timeout)
+        if (shell.status !== 'running') {
+          // Just update output and exit code
+          let output = stdout;
+          if (stderr) output += (output ? '\n--- stderr ---\n' : '') + stderr;
+          if (output.length > 50000) {
+            output = output.slice(0, 50000) + '\n... (truncated)';
+          }
+          if (output && !shell.output.includes(output)) {
+            // Prepend captured output if not already there
+            shell.output = output + '\n' + shell.output;
+          }
+          shell.exitCode = code ?? undefined;
+          shell.process = undefined;
+          return;
         }
 
-        // Truncate if too large
+        shell.status = code === 0 ? 'completed' : 'error';
+        shell.exitCode = code ?? undefined;
+        shell.endTime = Date.now();
+
+        let output = stdout;
+        if (stderr) output += (output ? '\n--- stderr ---\n' : '') + stderr;
+        if (output.length > 50000) {
+          output = output.slice(0, 50000) + '\n... (truncated)';
+        }
+        shell.output = output || '(no output)';
+        shell.process = undefined;
+
+        // Notify parent session
+        if (notifyParentFn && shell.parentSessionId) {
+          const duration = ((shell.endTime - shell.startTime) / 1000).toFixed(1);
+          const preview = shell.output.slice(0, 1000);
+          const status = shell.status === 'completed' ? '✓' : '✗';
+          notifyParentFn(
+            shell.parentSessionId,
+            `[Background shell ${status} — ${id} finished in ${duration}s, exit code ${code}]\n$ ${command.slice(0, 100)}${command.length > 100 ? '...' : ''}\n\n${preview}${shell.output.length > 1000 ? '\n\n... (use shell_poll to see full output)' : ''}`
+          );
+        }
+      });
+
+      proc.on('error', (err) => {
+        shell.status = 'error';
+        shell.error = err.message;
+        shell.endTime = Date.now();
+        shell.process = undefined;
+
+        // Capture any output that was collected before the error
+        let capturedOutput = stdout;
+        if (stderr) capturedOutput += (capturedOutput ? '\n--- stderr ---\n' : '') + stderr;
+        if (capturedOutput.length > 50000) {
+          capturedOutput = capturedOutput.slice(0, 50000) + '\n... (truncated)';
+        }
+        shell.output = capturedOutput ? `[ERROR: ${err.message}]\n${capturedOutput}` : `(error: ${err.message})`;
+
+        if (notifyParentFn && shell.parentSessionId) {
+          const preview = shell.output.slice(0, 1000);
+          notifyParentFn(
+            shell.parentSessionId,
+            `[Background shell error — ${id}]: ${err.message}\n$ ${command.slice(0, 100)}${command.length > 100 ? '...' : ''}\n\n${preview}${shell.output.length > 1000 ? '\n\n... (use shell_poll to see full output)' : ''}`
+          );
+        }
+      });
+
+      // Set up timeout
+      if (timeout > 0) {
+        setTimeout(() => {
+          if (shell.status === 'running') {
+            proc.kill('SIGTERM');
+            setTimeout(() => {
+              try { proc.kill('SIGKILL'); } catch {}
+            }, 500);
+            shell.status = 'error';
+            shell.error = 'Timeout';
+            shell.endTime = Date.now();
+
+            let capturedOutput = stdout;
+            if (stderr) capturedOutput += (capturedOutput ? '\n--- stderr ---\n' : '') + stderr;
+            if (capturedOutput.length > 50000) {
+              capturedOutput = capturedOutput.slice(0, 50000) + '\n... (truncated)';
+            }
+            shell.output = capturedOutput ? `[TIMEOUT - killed after ${timeout}ms]\n${capturedOutput}` : `(timeout after ${timeout}ms, no output captured)`;
+
+            if (notifyParentFn && shell.parentSessionId) {
+              const preview = shell.output.slice(0, 1000);
+              notifyParentFn(
+                shell.parentSessionId,
+                `[Background shell timeout — ${id} killed after ${timeout}ms]\n$ ${command.slice(0, 100)}${command.length > 100 ? '...' : ''}\n\n${preview}${shell.output.length > 1000 ? '\n\n... (use shell_poll to see full output)' : ''}`
+              );
+            }
+          }
+        }, timeout);
+      }
+
+      return {
+        output: `Background shell started: ${id}\nCommand: ${command.slice(0, 200)}${command.length > 200 ? '...' : ''}\nYou will be notified when it completes. Use shell_poll to check status.`,
+      };
+    }
+
+    // Foreground (blocking) mode
+    return new Promise((resolve) => {
+      let capturedStdout = '';
+      let capturedStderr = '';
+      let resolved = false;
+
+      const proc = spawn('sh', ['-c', command], {
+        cwd: workdir,
+        env: { ...process.env },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      proc.stdout?.on('data', (chunk) => {
+        capturedStdout += chunk.toString();
+      });
+
+      proc.stderr?.on('data', (chunk) => {
+        capturedStderr += chunk.toString();
+      });
+
+      const buildOutput = (prefix: string = ''): string => {
+        let output = '';
+        if (prefix) output += prefix + '\n';
+        if (capturedStdout) output += capturedStdout;
+        if (capturedStderr) output += (output ? '\n--- stderr ---\n' : '') + capturedStderr;
+        if (output.length > 50000) {
+          output = output.slice(0, 50000) + '\n... (truncated)';
+        }
+        return output || '(no output)';
+      };
+
+      const finalize = (prefix: string, errorStr: string) => {
+        if (resolved) return;
+        resolved = true;
+        resolve({
+          output: buildOutput(prefix),
+          error: errorStr,
+        });
+      };
+
+      // Timeout handler
+      const timeoutId = setTimeout(() => {
+        proc.kill('SIGTERM');
+        setTimeout(() => {
+          try { proc.kill('SIGKILL'); } catch {}
+        }, 500);
+        finalize('[TIMEOUT - killed after ' + (timeout / 1000) + 's]', 'TIMEOUT');
+      }, timeout);
+
+      proc.on('close', (code) => {
+        clearTimeout(timeoutId);
+        if (resolved) return;
+        resolved = true;
+
+        const exitCode = code ?? 0;
+        let output = '';
+        if (capturedStdout) output += capturedStdout;
+        if (capturedStderr) output += (output ? '\n--- stderr ---\n' : '') + capturedStderr;
         if (output.length > 50000) {
           output = output.slice(0, 50000) + '\n... (truncated)';
         }
@@ -97,18 +391,20 @@ export const bashTool: Tool = {
         });
       });
 
+      proc.on('error', (err) => {
+        clearTimeout(timeoutId);
+        finalize('[ERROR] ' + err.message, err.message);
+      });
+
       // Listen for abort signal to kill the process
       if (ctx.signal) {
         const abortHandler = () => {
+          clearTimeout(timeoutId);
           proc.kill('SIGTERM');
-          // Give it a moment, then force kill
           setTimeout(() => {
             try { proc.kill('SIGKILL'); } catch {}
           }, 500);
-          resolve({
-            output: '(process interrupted)',
-            error: 'INTERRUPTED',
-          });
+          finalize('[INTERRUPTED]', 'INTERRUPTED');
         };
         if (ctx.signal.aborted) {
           abortHandler();
@@ -119,3 +415,165 @@ export const bashTool: Tool = {
     });
   },
 };
+
+export const shellPollTool: Tool = {
+  name: 'shell_poll',
+  description: [
+    'Check the status of a background shell command. Returns status, output, and exit code.',
+    '',
+    'WHEN TO USE:',
+    '- After starting a background process with bash(background=true)',
+    '- To monitor progress of long-running operations',
+    '- To check if a background task has completed',
+    '- To retrieve output from completed background processes',
+    '',
+    'HOW TO USE:',
+    '- Provide the shell ID returned when starting the background command',
+    '- Example: { "id": "a1b2c3d4" }',
+    '',
+    'OUTPUT INCLUDES:',
+    '- Command status (running, completed, error, killed)',
+    '- Execution duration',
+    '- Exit code',
+    '- Command output (truncated if too large)',
+    '- Any error messages',
+    '',
+    'EXAMPLES:',
+    '- Check status: { "id": "a1b2c3d4" }',
+  ].join('\n'),
+  parameters: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'The shell ID returned by bash with background=true' },
+    },
+    required: ['id'],
+  },
+  async execute(params) {
+    const id = params.id as string;
+    const shell = getBackgroundShell(id);
+
+    if (!shell) {
+      return {
+        output: `No background shell found with ID: ${id}`,
+        error: 'NOT_FOUND',
+      };
+    }
+
+    const duration = shell.endTime
+      ? ((shell.endTime - shell.startTime) / 1000).toFixed(1)
+      : ((Date.now() - shell.startTime) / 1000).toFixed(1);
+
+    return {
+      output: JSON.stringify({
+        id: shell.id,
+        command: shell.command.slice(0, 200),
+        status: shell.status,
+        exitCode: shell.exitCode,
+        duration: `${duration}s`,
+        output: shell.output,
+        error: shell.error,
+      }, null, 2),
+    };
+  },
+};
+
+export const shellListTool: Tool = {
+  name: 'shell_list',
+  description: [
+    'List all background shell commands and their status.',
+    '',
+    'WHEN TO USE:',
+    '- To see what background processes are currently running',
+    '- Before polling specific processes to know their IDs',
+    '- To check for abandoned or stuck processes',
+    '- To get an overview of active background tasks',
+    '',
+    'HOW TO USE:',
+    '- Call without parameters to list all background shells',
+    '- Output includes ID, status, duration, and command preview',
+    '',
+    'OUTPUT FIELDS:',
+    '- ID: Unique identifier for the background shell',
+    '- Status: Current state (running, completed, error, killed)',
+    '- Duration: Time elapsed in seconds',
+    '- Command: First 50 characters of the original command',
+    '',
+    'EXAMPLE OUTPUT:',
+    '- a1b2c3d4 [running] 120.5s — find /home/user -name "*.log"',
+    '- e5f6g7h8 [completed] 10.2s — ls -la /tmp',
+  ].join('\n'),
+  parameters: {
+    type: 'object',
+    properties: {},
+  },
+  async execute() {
+    const shells = getBackgroundShells();
+
+    if (shells.length === 0) {
+      return { output: 'No background shells.' };
+    }
+
+    const lines = shells.map(s => {
+      const duration = s.endTime
+        ? ((s.endTime - s.startTime) / 1000).toFixed(1)
+        : ((Date.now() - s.startTime) / 1000).toFixed(1);
+      const cmd = s.command.slice(0, 50) + (s.command.length > 50 ? '...' : '');
+      return `${s.id} [${s.status}] ${duration}s — ${cmd}`;
+    });
+
+    return { output: lines.join('\n') };
+  },
+};
+
+export const shellKillTool: Tool = {
+  name: 'shell_kill',
+  description: [
+    'Kill a running background shell command.',
+    '',
+    'WHEN TO USE:',
+    '- When a background process is stuck or taking too long',
+    '- When you need to stop a process that is no longer needed',
+    '- When a process is consuming too many resources',
+    '- When a process is producing unwanted side effects',
+    '',
+    'HOW TO USE:',
+    '- Provide the shell ID of the background process to kill',
+    '- Example: { "id": "a1b2c3d4" }',
+    '',
+    'SAFETY NOTES:',
+    '- The process receives SIGTERM first, then SIGKILL after 500ms',
+    '- Any output produced before termination is captured',
+    '- Use shell_list first to see running processes and their IDs',
+    '',
+    'EXAMPLES:',
+    '- Kill a process: { "id": "a1b2c3d4" }',
+  ].join('\n'),
+  parameters: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'The shell ID to kill' },
+    },
+    required: ['id'],
+  },
+  async execute(params) {
+    const id = params.id as string;
+    const shell = killBackgroundShell(id);
+
+    if (!shell) {
+      return {
+        output: `No background shell found with ID: ${id}`,
+        error: 'NOT_FOUND',
+      };
+    }
+
+    if (shell.status === 'killed') {
+      return { output: `Shell ${id} killed.` };
+    }
+
+    return {
+      output: `Shell ${id} was not running (status: ${shell.status}).`,
+    };
+  },
+};
+
+export const bashTools: Tool[] = [bashTool, shellPollTool, shellListTool, shellKillTool];

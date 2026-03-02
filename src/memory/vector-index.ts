@@ -291,25 +291,33 @@ export class VectorIndex {
 
   save(): void {
     if (this.dirty) {
-      const data: IndexData = {
-        version: 1,
-        chunks: this.chunks,
-        fileHashes: this.fileHashes,
-      };
+      try {
+        const data: IndexData = {
+          version: 1,
+          chunks: this.chunks,
+          fileHashes: this.fileHashes,
+        };
 
-      const dir = dirname(this.indexPath);
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(this.indexPath, JSON.stringify(data));
-      this.dirty = false;
+        const dir = dirname(this.indexPath);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(this.indexPath, JSON.stringify(data));
+        this.dirty = false;
+      } catch (err) {
+        console.error(`[vector-index] Failed to save index: ${(err as Error).message}`);
+      }
     }
 
     // Save embedding cache separately (can be large)
     if (this.cacheDirty) {
-      const cacheData = Object.fromEntries(this.embeddingCache);
-      const dir = dirname(this.cachePath);
-      mkdirSync(dir, { recursive: true });
-      writeFileSync(this.cachePath, JSON.stringify(cacheData));
-      this.cacheDirty = false;
+      try {
+        const cacheData = Object.fromEntries(this.embeddingCache);
+        const dir = dirname(this.cachePath);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(this.cachePath, JSON.stringify(cacheData));
+        this.cacheDirty = false;
+      } catch (err) {
+        console.error(`[vector-index] Failed to save cache: ${(err as Error).message}`);
+      }
     }
   }
 
@@ -317,6 +325,11 @@ export class VectorIndex {
 
   private async getEmbeddings(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return [];
+
+    // Fail fast if not configured
+    if (!this.config.apiBase) {
+      throw new Error('Embedding API not configured');
+    }
 
     // Check cache first
     const results: (number[] | null)[] = texts.map(t => {
@@ -358,11 +371,21 @@ export class VectorIndex {
     });
 
     if (!res.ok) {
-      const errText = await res.text();
+      // Limit error text to prevent "Invalid string length" on huge error pages
+      const errText = (await res.text()).slice(0, 500);
       throw new Error(`Embedding API error ${res.status}: ${errText}`);
     }
 
-    const json = await res.json() as { data: { embedding: number[]; index: number }[] };
+    let json: { data: { embedding: number[]; index: number }[] };
+    try {
+      json = await res.json();
+    } catch (parseErr) {
+      throw new Error(`Embedding API returned invalid JSON: ${(parseErr as Error).message}`);
+    }
+
+    if (!json.data || !Array.isArray(json.data)) {
+      throw new Error('Embedding API response missing data array');
+    }
 
     // Sort by index to maintain order
     const sorted = json.data.sort((a, b) => a.index - b.index);
@@ -397,6 +420,9 @@ export class VectorIndex {
 
   // ── Indexing ─────────────────────────────────────────────────────────
 
+  /** Max file size to index (100MB) */
+  private static readonly MAX_FILE_SIZE = 100 * 1024 * 1024;
+
   /** Check if a file needs re-indexing */
   needsReindex(filename: string, content: string): boolean {
     const hash = simpleHash(content);
@@ -405,8 +431,19 @@ export class VectorIndex {
 
   /** Index a single file — chunks it, embeds it, stores it */
   async indexFile(filename: string, content: string): Promise<number> {
+    // Skip if embeddings not configured
+    if (!this.config.enabled || !this.config.apiBase) {
+      return 0;
+    }
+
     if (!content || content.trim().length === 0) {
       this.removeFile(filename);
+      return 0;
+    }
+
+    // Skip files that are too large
+    if (content.length > VectorIndex.MAX_FILE_SIZE) {
+      console.warn(`[vector-index] Skipping ${filename}: too large (${(content.length / 1024 / 1024).toFixed(1)}MB > 100MB limit)`);
       return 0;
     }
 

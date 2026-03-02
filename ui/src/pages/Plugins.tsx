@@ -38,6 +38,7 @@ export default function Plugins() {
   const [scaffoldType, setScaffoldType] = React.useState<'tool' | 'channel' | 'middleware'>('tool')
   const [scaffoldStatus, setScaffoldStatus] = React.useState<string | null>(null)
   const [unloading, setUnloading] = React.useState<string | null>(null)
+  const [deleting, setDeleting] = React.useState<string | null>(null)
 
   const card: React.CSSProperties = {
     background: colors.bgCard,
@@ -182,6 +183,26 @@ export default function Plugins() {
       })
       .catch(() => setScaffoldStatus(`Failed to unload "${name}".`))
       .finally(() => setUnloading(null))
+  }
+
+  const handleDelete = (name: string) => {
+    if (!confirm(`DELETE plugin "${name}"?\n\nThis will permanently remove the plugin from disk.`)) return
+    setDeleting(name)
+    fetch('/api/plugins/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    })
+      .then(r => r.json())
+      .then((res: any) => {
+        if (res.ok) {
+          fetchPlugins()
+        } else {
+          setScaffoldStatus(res.error || `Failed to delete "${name}".`)
+        }
+      })
+      .catch(() => setScaffoldStatus(`Failed to delete "${name}".`))
+      .finally(() => setDeleting(null))
   }
 
   return (
@@ -343,6 +364,19 @@ export default function Plugins() {
                     }}
                   >
                     {unloading === m.name ? 'Unloading...' : 'Unload'}
+                  </button>
+                  <button
+                    onClick={() => handleDelete(m.name)}
+                    disabled={deleting === m.name}
+                    style={{
+                      ...btnBase,
+                      padding: '4px 10px',
+                      fontSize: 11,
+                      background: colors.error,
+                      color: colors.accentContrast,
+                    }}
+                  >
+                    {deleting === m.name ? 'Deleting...' : 'Delete'}
                   </button>
                 </div>
 

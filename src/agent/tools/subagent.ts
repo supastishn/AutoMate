@@ -248,22 +248,17 @@ function loadPersistedAgents(): void {
   }
 }
 
-/** Get agents that were running when server stopped (for resume) */
+/** Get agents that were running when server stopped — expires them all (no auto-resume) */
 export function getInterruptedAgents(): BackgroundAgent[] {
-  const maxAge = 60 * 60 * 1000; // Only resume agents < 1 hour old
   const now = Date.now();
-  return [...backgroundAgents.values()].filter(a => {
-    if (a.status !== 'running') return false;
-    if (now - a.startTime > maxAge) {
-      // Too old — mark as timed out instead of resuming
-      a.status = 'timeout';
-      a.endTime = now;
-      a.output = 'Subagent expired during server restart (>1h old). Use subagent_poll action=clear to clean up.';
-      persistAgents();
-      return false;
-    }
-    return true;
-  });
+  const interrupted = [...backgroundAgents.values()].filter(a => a.status === 'running');
+  for (const a of interrupted) {
+    a.status = 'timeout';
+    a.endTime = now;
+    a.output = 'Subagent expired during server restart. Use subagent_poll action=clear to clean up.';
+  }
+  if (interrupted.length > 0) persistAgents();
+  return interrupted;
 }
 
 /** Resume an interrupted agent - called from index.ts on startup */

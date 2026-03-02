@@ -18,16 +18,18 @@ export function setSkillBuilderConfig(skillsDir: string, loader: SkillsLoader): 
 
 export const skillBuilderTools: Tool[] = [
   {
-    name: 'skill',
+    name: 'skill_builder',
     description: [
-      'Manage agent skills (hot-reloadable SKILL.md files).',
-      'Actions: create, edit, read, delete, list.',
-      'create — create a new skill (immediately hot-loaded).',
-      'edit — replace a skill\'s content (immediately hot-reloaded).',
-      'read — read a skill\'s SKILL.md content.',
-      'delete — delete a skill entirely.',
-      'list — list all skills with descriptions and sizes.',
-    ].join(' '),
+      'Create, edit, and delete agent skills (hot-reloadable SKILL.md files).',
+      'Use this to BUILD new skills. Use the "skill" tool to LOAD skills.',
+      '',
+      'Actions:',
+      '  create — create a new skill (immediately hot-loaded)',
+      '  edit — replace a skill\'s content (immediately hot-reloaded)',
+      '  read — read a skill\'s SKILL.md content',
+      '  delete — delete a skill entirely',
+      '  list — list all skills with descriptions and sizes',
+    ].join('\n'),
     parameters: {
       type: 'object',
       properties: {

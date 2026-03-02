@@ -50,7 +50,7 @@ interface ModelFormData {
   contextWindow: string
 }
 
-const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high']
+const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh']
 const API_TYPES: { value: 'chat' | 'responses'; label: string }[] = [
   { value: 'chat', label: 'Chat Completions' },
   { value: 'responses', label: 'Responses API' },
@@ -76,7 +76,7 @@ export default function Models() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [toast, setToast] = useState<{ msg: string; err: boolean } | null>(null)
-  const [editIndex, setEditIndex] = useState<number | null>(null)
+  const [editName, setEditName] = useState<string | null>(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const [form, setForm] = useState<ModelFormData>(emptyForm)
 
@@ -127,7 +127,7 @@ export default function Models() {
   }
 
   const handleSave = async () => {
-    if (editIndex === null) return
+    if (editName === null) return
     setSaving(true)
 
     const provider: any = {
@@ -142,14 +142,14 @@ export default function Models() {
     }
 
     // Primary model has extra fields
-    if (editIndex === 0) {
+    if (editName === 'primary') {
       provider.thinkingLevel = form.thinkingLevel
     } else {
       provider.priority = parseInt(form.priority) || 0
     }
 
     try {
-      const r = await fetch(`${API}/api/models/${editIndex}`, {
+      const r = await fetch(`${API}/api/models/${encodeURIComponent(editName)}`, {
         method: 'PUT',
         headers: authHeaders(),
         body: JSON.stringify({ provider }),
@@ -157,7 +157,7 @@ export default function Models() {
       const data = await r.json()
       if (data.success) {
         showToast('Model updated')
-        setEditIndex(null)
+        setEditName(null)
         fetchModels()
       } else {
         showToast(data.error || 'Failed to update', true)
@@ -210,8 +210,8 @@ export default function Models() {
     }
   }
 
-  const handleDelete = async (index: number) => {
-    if (index === 0) {
+  const handleDelete = async (name: string) => {
+    if (name === 'primary') {
       showToast('Cannot delete primary model', true)
       return
     }
@@ -223,7 +223,7 @@ export default function Models() {
       const t = getToken()
       if (t) headers['Authorization'] = `Bearer ${t}`
 
-      const r = await fetch(`${API}/api/models/${index}`, {
+      const r = await fetch(`${API}/api/models/${encodeURIComponent(name)}`, {
         method: 'DELETE',
         headers,
       })
@@ -239,21 +239,23 @@ export default function Models() {
     }
   }
 
-  const openEdit = (index: number) => {
-    const p = providers[index]
+  const openEdit = (name: string) => {
+    const p = providers.find(prov => prov.name === name)
+    if (!p) return
+    const isPrimary = name === 'primary'
     setForm({
       name: p.name || '',
       model: p.model || '',
       apiBase: p.apiBase || '',
       apiKey: '',
-      apiType: (p as any).apiType || (index === 0 ? primaryModel?.apiType : 'chat') || 'chat',
-      maxTokens: String(p.maxTokens || (index === 0 ? primaryModel?.maxTokens : 8192) || 8192),
-      temperature: String(p.temperature ?? (index === 0 ? primaryModel?.temperature : 0.3) ?? 0.3),
-      thinkingLevel: index === 0 ? (primaryModel?.thinkingLevel || 'off') : 'off',
-      priority: String((p as any).priority || index),
+      apiType: (p as any).apiType || (isPrimary ? primaryModel?.apiType : 'chat') || 'chat',
+      maxTokens: String(p.maxTokens || (isPrimary ? primaryModel?.maxTokens : 8192) || 8192),
+      temperature: String(p.temperature ?? (isPrimary ? primaryModel?.temperature : 0.3) ?? 0.3),
+      thinkingLevel: isPrimary ? (primaryModel?.thinkingLevel || 'off') : 'off',
+      priority: String((p as any).priority || 0),
       contextWindow: p.contextWindow ? String(p.contextWindow) : '',
     })
-    setEditIndex(index)
+    setEditName(name)
   }
 
   const cardStyle: React.CSSProperties = {
@@ -334,7 +336,7 @@ export default function Models() {
                 <span style={{ fontSize: 16, fontWeight: 600, color: colors.textPrimary }}>
                   {p.name}
                 </span>
-                {i === 0 && (
+                {p.name === 'primary' && (
                   <span style={{
                     fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
                     background: colors.accentMuted, color: colors.accent,
@@ -357,7 +359,7 @@ export default function Models() {
               <div style={{ fontSize: 12, color: colors.textMuted }}>
                 {p.apiBase}
               </div>
-              {i === 0 && primaryModel && (
+              {p.name === 'primary' && primaryModel && (
                 <div style={{ marginTop: 8, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
                   <span style={{ fontSize: 11, color: colors.textMuted }}>
                     API: <span style={{ color: colors.textSecondary }}>{primaryModel.apiType === 'responses' ? 'Responses' : 'Chat'}</span>
@@ -385,11 +387,11 @@ export default function Models() {
                   Activate
                 </button>
               )}
-              <button style={btnStyle(colors.bgHover)} onClick={() => openEdit(i)}>
+              <button style={btnStyle(colors.bgHover)} onClick={() => openEdit(p.name)}>
                 Edit
               </button>
-              {i !== 0 && (
-                <button style={btnStyle(colors.error)} onClick={() => handleDelete(i)}>
+              {p.name !== 'primary' && (
+                <button style={btnStyle(colors.error)} onClick={() => handleDelete(p.name)}>
                   Delete
                 </button>
               )}
@@ -407,17 +409,17 @@ export default function Models() {
 
 
       {/* Edit Modal */}
-      {editIndex !== null && (
+      {editName !== null && (
         <div style={{
           position: 'fixed', inset: 0, background: colors.bgOverlay, zIndex: 1000,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }} onClick={() => setEditIndex(null)}>
+        }} onClick={() => setEditName(null)}>
           <div style={{
             background: colors.bgCard, borderRadius: 12, padding: 24, width: 500, maxWidth: '90vw',
             maxHeight: '90vh', overflow: 'auto', boxShadow: `0 8px 32px ${colors.shadow}`,
           }} onClick={e => e.stopPropagation()}>
             <h2 style={{ margin: '0 0 20px', fontSize: 18, fontWeight: 600, color: colors.textPrimary }}>
-              Edit {editIndex === 0 ? 'Primary Model' : 'Failover Model'}
+              Edit {editName === 'primary' ? 'Primary Model' : 'Failover Model'}
             </h2>
 
             <div style={{ marginBottom: 16 }}>
@@ -427,6 +429,7 @@ export default function Models() {
                 value={form.name}
                 onChange={e => setForm({ ...form, name: e.target.value })}
                 placeholder="Display name"
+                disabled={editName === 'primary'}
               />
             </div>
 
@@ -457,8 +460,11 @@ export default function Models() {
                 type="password"
                 value={form.apiKey}
                 onChange={e => setForm({ ...form, apiKey: e.target.value })}
-                placeholder="Leave empty to keep existing"
+                placeholder="Leave empty to keep existing, or 'default' to use default API key"
               />
+              <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
+                Enter 'default' to use the API key from settings.
+              </div>
             </div>
 
             <div style={{ marginBottom: 16 }}>
@@ -513,7 +519,7 @@ export default function Models() {
               </div>
             </div>
 
-            {editIndex === 0 ? (
+            {editName === 'primary' ? (
               <div style={{ marginBottom: 16 }}>
                 <label style={labelStyle}>Thinking Level</label>
                 <select
@@ -539,7 +545,7 @@ export default function Models() {
             )}
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 20 }}>
-              <button style={btnStyle(colors.bgHover)} onClick={() => setEditIndex(null)}>
+              <button style={btnStyle(colors.bgHover)} onClick={() => setEditName(null)}>
                 Cancel
               </button>
               <button style={btnStyle(colors.accent, saving)} onClick={handleSave} disabled={saving}>
@@ -601,8 +607,11 @@ export default function Models() {
                 type="password"
                 value={form.apiKey}
                 onChange={e => setForm({ ...form, apiKey: e.target.value })}
-                placeholder="Optional"
+                placeholder="Optional, or 'default' to use default API key"
               />
+              <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
+                Leave empty for no key, or enter 'default' to use the API key from settings.
+              </div>
             </div>
 
             <div style={{ marginBottom: 16 }}>

@@ -101,6 +101,23 @@ describe('Agent Commands', () => {
     assert.ok(result!.includes('Elevated: OFF'));
   });
 
+  test('/stats shows input/output token totals for session and run', async () => {
+    const sessionId = 'test:user1';
+    sessionManager.getOrCreate('test', 'user1');
+    sessionManager.setSessionTokens(sessionId, { promptTokens: 120, completionTokens: 30, totalTokens: 150 });
+    sessionManager.setSessionTokens(sessionId, { promptTokens: 80, completionTokens: 20, totalTokens: 100 });
+
+    const result = await agent.handleCommand(sessionId, '/stats');
+    assert.ok(result);
+    assert.ok(result!.includes('Token Statistics'));
+    assert.ok(result!.includes('Session total'));
+    assert.ok(result!.includes('Run total'));
+    assert.ok(result!.includes('Input'));
+    assert.ok(result!.includes('Output'));
+    assert.ok(result!.includes('200')); // session total input
+    assert.ok(result!.includes('50'));  // session total output
+  });
+
   test('/elevated on and off', () => {
     const sessionId = 'test:user1';
 

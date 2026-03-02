@@ -48,11 +48,45 @@ export function clearSessionSkills(sessionId: string): void {
   sessionSkills.delete(sessionId);
 }
 
+/** Auto-load configured skills for a session */
+export function autoLoadSessionSkills(sessionId: string, skillNames: string[]): string[] {
+  if (!skillsLoader || skillNames.length === 0) return [];
+  
+  // Ensure session has a skill set
+  if (!sessionSkills.has(sessionId)) {
+    sessionSkills.set(sessionId, new Set());
+  }
+  const loaded = sessionSkills.get(sessionId)!;
+  
+  const loadedNames: string[] = [];
+  const errors: string[] = [];
+  
+  skillsLoader.reloadIfChanged();
+  
+  for (const name of skillNames) {
+    const skill = skillsLoader.getSkill(name);
+    if (skill) {
+      loaded.add(name);
+      loadedNames.push(name);
+    } else {
+      errors.push(name);
+    }
+  }
+  
+  if (errors.length > 0) {
+    console.log(`[skills] Warning: could not auto-load skills: ${errors.join(', ')}`);
+  }
+  
+  return loadedNames;
+}
+
 export const skillTools: Tool[] = [
   {
     name: 'skill',
     description: [
-      'List available skills or load/unload a skill for this session.',
+      'Load, unload, and view available skills for this session.',
+      'Use this to LOAD existing skills. Use "skill_builder" to CREATE skills.',
+      '',
       'Skills provide specialized instructions and context for specific tasks.',
       '',
       'Actions:',
@@ -114,7 +148,7 @@ export const skillTools: Tool[] = [
             lines.push('\nUnavailable (missing dependencies):');
             for (const skill of skipped) {
               const emoji = skill.metadata?.emoji || '';
-              const reason = skill.gatingResult?.missingBins?.join(', ') || 'requirements not met';
+              const reason = skill.gating?.missingBins?.join(', ') || 'requirements not met';
               lines.push(`  ✗ ${emoji} ${skill.name} — needs: ${reason}`);
             }
           }
@@ -138,7 +172,7 @@ export const skillTools: Tool[] = [
             const skipped = skillsLoader.listSkippedSkills();
             const skippedSkill = skipped.find(s => s.name === name);
             if (skippedSkill) {
-              const reason = skippedSkill.gatingResult?.missingBins?.join(', ') || 'requirements not met';
+              const reason = skippedSkill.gating?.missingBins?.join(', ') || 'requirements not met';
               return { output: '', error: `Skill "${name}" is unavailable: ${reason}` };
             }
             return { output: '', error: `Skill "${name}" not found. Use skill action=list to see available skills.` };

@@ -1,0 +1,32 @@
+{
+  "agent": {
+    "model": "glm-5",
+    "apiBase": "https://open.bigmodel.cn/api/paas/v4",
+    "systemPrompt": "You are AutoMate, a fast and capable personal AI assistant.",
+    "maxTokens": 8192,
+    "temperature": 0.3
+  },
+  "gateway": {
+    "port": 18789,
+    "host": "127.0.0.1",
+    "auth": {
+      "mode": "none"
+    }
+  },
+  "browser": {
+    "enabled": true,
+    "headless": false,
+    "extensions": "/home/supastishn/.automate/extensions/metamask"
+  },
+  "skills": {
+    "directory": "~/.automate/skills"
+  },
+  "sessions": {
+    "directory": "~/.automate/sessions",
+    "maxHistory": 200,
+    "compactThreshold": 150
+  },
+  "canvas": {
+    "enabled": true
+  }
+}

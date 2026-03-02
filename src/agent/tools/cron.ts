@@ -11,30 +11,83 @@ export const cronTools: Tool[] = [
   {
     name: 'cron',
     description: [
-      'Manage scheduled jobs.',
-      'Actions: create, list, delete, toggle.',
-      'create — create a job that runs a prompt at a given time/interval/cron schedule.',
-      'list — list all scheduled jobs.',
-      'delete — delete a job by ID.',
-      'toggle — enable or disable a job.',
-    ].join(' '),
+      'Manage scheduled jobs for autonomous task execution.',
+      '',
+      'WHEN TO USE:',
+      '- Schedule regular data collection or monitoring tasks',
+      '- Set up periodic system maintenance',
+      '- Automate recurring reports or summaries',
+      '- Schedule future actions or reminders',
+      '- Run health checks at regular intervals',
+      '- Execute long-term projects in scheduled chunks',
+      '- Set up autonomous agents that run at specific times',
+      '',
+      'SCHEDULE TYPES:',
+      '- once: Run exactly once at a specific date/time',
+      '- interval: Run repeatedly at fixed time intervals',
+      '- cron: Run based on cron expression for complex scheduling',
+      '',
+      'AVAILABLE ACTIONS:',
+      '',
+      'create: Create a new scheduled job',
+      '  Parameters: name, prompt, type, schedule-specific params, session_id, jitter_minutes',
+      '  Example: { "action": "create", "name": "daily-check", "prompt": "Check system status", "type": "interval", "every_minutes": 1440 }',
+      '',
+      'list: List all scheduled jobs with status and timing',
+      '  Shows ID, status, run count, schedule type, name, and next run time',
+      '',
+      'get: Get detailed information about a specific job',
+      '  Parameters: id',
+      '  Returns full job configuration including prompt, schedule, and statistics',
+      '',
+      'edit: Modify an existing job',
+      '  Parameters: id, and any fields to update (name, prompt, schedule, enabled, session_id)',
+      '  Example: { "action": "edit", "id": "job123", "enabled": false }',
+      '',
+      'delete: Remove a scheduled job',
+      '  Parameters: id',
+      '  Example: { "action": "delete", "id": "job123" }',
+      '',
+      'toggle: Enable or disable a job without deleting it',
+      '  Parameters: id, enabled (true/false)',
+      '  Example: { "action": "toggle", "id": "job123", "enabled": false }',
+      '',
+      'SCHEDULING OPTIONS:',
+      '- Time intervals: specify in minutes (every_minutes)',
+      '- Cron expressions: standard 5-field format (minute hour day month weekday)',
+      '- One-time scheduling: ISO date format for future execution',
+      '- Jitter: add random time variation to prevent thundering herd',
+      '- Session persistence: specify session ID to run job in specific context',
+      '',
+      'HOW TO USE:',
+      '- Create monitoring job: cron(action="create", name="health-check", prompt="Check API status", type="interval", every_minutes=60)',
+      '- Schedule report: cron(action="create", name="weekly-report", prompt="Generate week summary", type="cron", cron_expression="0 9 * * 1")',
+      '- Schedule one-time task: cron(action="create", name="maintenance", prompt="Run cleanup", type="once", at="2023-12-25T02:00:00Z")',
+      '',
+      'SAFETY NOTES:',
+      '- Jobs execute autonomously without user intervention',
+      '- Scheduled tasks consume system resources',
+      '- Use toggle to pause jobs instead of deleting if you might need them again',
+      '- Jitter can help distribute load for multiple scheduled tasks',
+      '- Jobs run in the context of the session they were created in (or specified session)',
+    ].join('\n'),
     parameters: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          description: 'Action: create|list|delete|toggle',
+          description: 'Action: create|list|edit|get|delete|toggle',
         },
-        name: { type: 'string', description: 'Short name for the job (for create)' },
-        prompt: { type: 'string', description: 'Prompt/instruction to execute when job fires (for create)' },
-        type: { type: 'string', enum: ['once', 'interval', 'cron'], description: 'Schedule type (for create)' },
-        at: { type: 'string', description: 'ISO date string for one-time jobs (for create, type=once)' },
-        every_minutes: { type: 'number', description: 'Interval in minutes (for create, type=interval)' },
-        cron_expression: { type: 'string', description: '5-field cron expression (for create, type=cron)' },
+        name: { type: 'string', description: 'Short name for the job (for create, edit)' },
+        prompt: { type: 'string', description: 'Prompt/instruction to execute when job fires (for create, edit)' },
+        type: { type: 'string', enum: ['once', 'interval', 'cron'], description: 'Schedule type (for create, edit)' },
+        at: { type: 'string', description: 'ISO date string for one-time jobs (for create/edit, type=once)' },
+        every_minutes: { type: 'number', description: 'Interval in minutes (for create/edit, type=interval)' },
+        cron_expression: { type: 'string', description: '5-field cron expression (for create/edit, type=cron)' },
         session_id: { type: 'string', description: 'Optional session ID to run the prompt in' },
-        jitter_minutes: { type: 'number', description: 'Random jitter in minutes (+/-) to vary execution time (for create, type=interval|cron)' },
-        id: { type: 'string', description: 'Job ID (for delete, toggle)' },
-        enabled: { type: 'boolean', description: 'true to enable, false to disable (for toggle)' },
+        jitter_minutes: { type: 'number', description: 'Random jitter in minutes (+/-) to vary execution time (for create/edit, type=interval|cron)' },
+        id: { type: 'string', description: 'Job ID (for edit, get, delete, toggle)' },
+        enabled: { type: 'boolean', description: 'true to enable, false to disable (for toggle, edit)' },
       },
       required: ['action'],
     },
@@ -96,6 +149,97 @@ export const cronTools: Tool[] = [
           return { output: [header, sep, ...rows].join('\n') };
         }
 
+        case 'get': {
+          const id = params.id as string;
+          if (!id) return { output: '', error: 'id is required for get' };
+          const job = schedulerRef.getJob(id);
+          if (!job) return { output: '', error: `Job not found: ${id}` };
+          
+          const lines = [
+            `Job: ${job.name} (${job.id})`,
+            `  enabled: ${job.enabled}`,
+            `  type: ${job.schedule.type}`,
+          ];
+          
+          if (job.schedule.type === 'once' && job.schedule.at) {
+            lines.push(`  at: ${job.schedule.at}`);
+          } else if (job.schedule.type === 'interval' && job.schedule.every) {
+            lines.push(`  every: ${Math.round(job.schedule.every / 60000)} minutes`);
+          } else if (job.schedule.type === 'cron' && job.schedule.cron) {
+            lines.push(`  cron: ${job.schedule.cron}`);
+          }
+          
+          if (job.schedule.jitter) {
+            lines.push(`  jitter: ±${Math.round(job.schedule.jitter / 60000)} minutes`);
+          }
+          if (job.sessionId) {
+            lines.push(`  session: ${job.sessionId}`);
+          }
+          lines.push(`  next run: ${job.nextRun ?? 'N/A'}`);
+          lines.push(`  last run: ${job.lastRun ?? 'never'}`);
+          lines.push(`  run count: ${job.runCount}`);
+          lines.push(`  prompt: ${job.prompt.slice(0, 200)}${job.prompt.length > 200 ? '...' : ''}`);
+          
+          return { output: lines.join('\n') };
+        }
+
+        case 'edit': {
+          const id = params.id as string;
+          if (!id) return { output: '', error: 'id is required for edit' };
+          
+          const updates: Record<string, unknown> = {};
+          
+          if (params.name !== undefined) updates.name = params.name;
+          if (params.prompt !== undefined) updates.prompt = params.prompt;
+          if (params.enabled !== undefined) updates.enabled = params.enabled;
+          if (params.session_id !== undefined) updates.sessionId = params.session_id;
+          
+          // Handle schedule updates
+          if (params.type !== undefined) {
+            const type = params.type as 'once' | 'interval' | 'cron';
+            const schedule: { type: 'once' | 'interval' | 'cron'; at?: string; every?: number; cron?: string; jitter?: number } = { type };
+            
+            // Add jitter if specified
+            if (params.jitter_minutes && typeof params.jitter_minutes === 'number' && params.jitter_minutes > 0) {
+              schedule.jitter = (params.jitter_minutes as number) * 60_000;
+            }
+            
+            if (type === 'once') {
+              if (!params.at) return { output: '', error: '"at" is required for type=once' };
+              schedule.at = params.at as string;
+            } else if (type === 'interval') {
+              if (!params.every_minutes) return { output: '', error: '"every_minutes" is required for type=interval' };
+              schedule.every = (params.every_minutes as number) * 60_000;
+            } else if (type === 'cron') {
+              if (!params.cron_expression) return { output: '', error: '"cron_expression" is required for type=cron' };
+              schedule.cron = params.cron_expression as string;
+            }
+            
+            updates.schedule = schedule;
+          } else if (params.jitter_minutes !== undefined) {
+            // Just updating jitter, need to preserve existing schedule
+            const existing = schedulerRef.getJob(id);
+            if (existing) {
+              const schedule = { ...existing.schedule };
+              if (params.jitter_minutes && typeof params.jitter_minutes === 'number' && params.jitter_minutes > 0) {
+                schedule.jitter = (params.jitter_minutes as number) * 60_000;
+              } else {
+                schedule.jitter = undefined;
+              }
+              updates.schedule = schedule;
+            }
+          }
+          
+          if (Object.keys(updates).length === 0) {
+            return { output: '', error: 'No updates provided. Specify at least one: name, prompt, type, enabled, session_id, jitter_minutes' };
+          }
+          
+          const job = schedulerRef.updateJob(id, updates);
+          if (!job) return { output: '', error: `Job not found: ${id}` };
+          
+          return { output: `Updated job "${job.name}" (${job.id})\n  next run: ${job.nextRun ?? 'N/A'}` };
+        }
+
         case 'delete': {
           const id = params.id as string;
           if (!id) return { output: '', error: 'id is required for delete' };
@@ -114,7 +258,7 @@ export const cronTools: Tool[] = [
         }
 
         default:
-          return { output: `Error: Unknown action "${action}". Valid: create, list, delete, toggle` };
+          return { output: `Error: Unknown action "${action}". Valid: create, list, edit, get, delete, toggle` };
       }
     },
   },

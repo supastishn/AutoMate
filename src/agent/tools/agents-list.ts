@@ -13,7 +13,7 @@ export function setAgentsRouter(router: AgentRouter | null): void {
 
 export const agentsListTools: Tool[] = [
   {
-    name: 'agents_list',
+    name: 'agents-list',
     description: 'List all configured agents in multi-agent mode. Shows agent names, their channel assignments, and session counts.',
     parameters: {
       type: 'object',

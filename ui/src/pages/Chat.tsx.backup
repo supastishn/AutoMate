@@ -1,0 +1,1668 @@
+import React, { useEffect, useRef, useState, useCallback } from 'react'
+import { emitDataUpdate } from '../hooks/useDataUpdates'
+import { useColors } from '../ThemeContext'
+
+const SLASH_COMMANDS = [
+  { cmd: '/new', desc: 'Start a new session' },
+  { cmd: '/reset', desc: 'Reset current session' },
+  { cmd: '/factory-reset', desc: 'Wipe everything' },
+  { cmd: '/status', desc: 'Session info' },
+  { cmd: '/compact', desc: 'Compact context' },
+  { cmd: '/elevated on|off', desc: 'Toggle elevated permissions' },
+  { cmd: '/model', desc: 'List or switch models' },
+  { cmd: '/context', desc: 'Context diagnostics' },
+  { cmd: '/index on|off|rebuild', desc: 'Manage search index' },
+  { cmd: '/heartbeat on|off|now', desc: 'Manage heartbeat' },
+] as const
+
+interface ChatMessage {
+  id: string
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  toolCalls?: { name: string; result: string; arguments?: string }[]
+  images?: { url?: string; base64?: string; mimeType: string; alt?: string; filename?: string }[]
+  reactions?: string[]
+  timestamp: number
+  serverIndex?: number  // Index in server-side messages array
+  isPowerSteering?: boolean  // True for power steering system messages
+}
+
+// Helper function to normalize content from backend format to UI string format
+function normalizeContent(content: any): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  
+  if (Array.isArray(content)) {
+    // Handle ContentPart[] array
+    return content
+      .map((part: any) => {
+        if (part.type === 'text' && typeof part.text === 'string') {
+          return part.text;
+        } else if (part.type === 'image_url' && part.image_url?.url) {
+          return `[Image: ${part.image_url.url}]`;
+        }
+        return `[${part.type || 'content'}]`;
+      })
+      .join(' ');
+  }
+  
+  // Fallback for other content types
+  return String(content || '');
+}
+
+// Simple markdown renderer (no external dep runtime - we parse ourselves)
+function renderMarkdown(text: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = []
+  const lines = text.split('\n')
+  let i = 0
+  let key = 0
+
+  while (i < lines.length) {
+    const line = lines[i]
+
+    // Code block
+    if (line.startsWith('```')) {
+      const lang = line.slice(3).trim()
+      const codeLines: string[] = []
+      i++
+      while (i < lines.length && !lines[i].startsWith('```')) {
+        codeLines.push(lines[i])
+        i++
+      }
+      i++ // skip closing ```
+      const code = codeLines.join('\n')
+      const isHtml = lang.toLowerCase() === 'html'
+      const codeKey = key++
+      nodes.push(
+        <div key={codeKey} style={{ margin: '8px 0' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 10, color: 'var(--textSecondary)', padding: '2px 10px', background: 'var(--bgTertiary)', borderRadius: '4px 4px 0 0', borderBottom: '1px solid var(--borderLight)' }}>
+            <span>{lang || 'code'}</span>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {isHtml && (
+                <button
+                  data-html-preview={code}
+                  style={{
+                    background: 'var(--bgHover)', color: 'var(--heartbeat)', border: '1px solid var(--borderLight)',
+                    borderRadius: 3, padding: '1px 8px', cursor: 'pointer', fontSize: 10,
+                    fontWeight: 600, transition: 'all 0.15s',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = 'var(--bgActive)'; e.currentTarget.style.color = 'var(--heartbeat)' }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'var(--bgHover)'; e.currentTarget.style.color = 'var(--heartbeat)' }}
+                >
+                  ▶ Preview HTML
+                </button>
+              )}
+              <button
+                onClick={() => navigator.clipboard.writeText(code)}
+                style={{
+                  background: 'none', color: 'var(--textMuted)', border: '1px solid var(--borderLight)',
+                  borderRadius: 3, padding: '1px 6px', cursor: 'pointer', fontSize: 10,
+                }}
+              >
+                Copy
+              </button>
+            </div>
+          </div>
+          <pre style={{
+            margin: 0, padding: 12, background: 'var(--bgPrimary)', borderRadius: '0 0 4px 4px',
+            fontSize: 12, lineHeight: 1.6, overflow: 'auto', border: '1px solid var(--border)',
+            fontFamily: '"Fira Code", "JetBrains Mono", monospace',
+          }}>
+            <code>{highlightCode(code, lang)}</code>
+          </pre>
+        </div>
+      )
+      continue
+    }
+
+    // Headers
+    if (line.startsWith('### ')) {
+      nodes.push(<h4 key={key++} style={{ fontSize: 14, fontWeight: 600, margin: '12px 0 4px', color: 'var(--textPrimary)' }}>{formatInline(line.slice(4))}</h4>)
+      i++; continue
+    }
+    if (line.startsWith('## ')) {
+      nodes.push(<h3 key={key++} style={{ fontSize: 16, fontWeight: 600, margin: '14px 0 6px', color: 'var(--textPrimary)' }}>{formatInline(line.slice(3))}</h3>)
+      i++; continue
+    }
+    if (line.startsWith('# ')) {
+      nodes.push(<h2 key={key++} style={{ fontSize: 18, fontWeight: 700, margin: '16px 0 8px', color: 'var(--textPrimary)' }}>{formatInline(line.slice(2))}</h2>)
+      i++; continue
+    }
+
+    // Bullet list
+    if (line.match(/^[-*] /)) {
+      const items: string[] = []
+      while (i < lines.length && lines[i].match(/^[-*] /)) {
+        items.push(lines[i].replace(/^[-*] /, ''))
+        i++
+      }
+      nodes.push(
+        <ul key={key++} style={{ margin: '4px 0', paddingLeft: 20 }}>
+          {items.map((item, j) => <li key={j} style={{ marginBottom: 2, lineHeight: 1.6 }}>{formatInline(item)}</li>)}
+        </ul>
+      )
+      continue
+    }
+
+    // Numbered list
+    if (line.match(/^\d+\. /)) {
+      const items: string[] = []
+      while (i < lines.length && lines[i].match(/^\d+\. /)) {
+        items.push(lines[i].replace(/^\d+\. /, ''))
+        i++
+      }
+      nodes.push(
+        <ol key={key++} style={{ margin: '4px 0', paddingLeft: 20 }}>
+          {items.map((item, j) => <li key={j} style={{ marginBottom: 2, lineHeight: 1.6 }}>{formatInline(item)}</li>)}
+        </ol>
+      )
+      continue
+    }
+
+    // Blockquote
+    if (line.startsWith('> ')) {
+      const quoteLines: string[] = []
+      while (i < lines.length && lines[i].startsWith('> ')) {
+        quoteLines.push(lines[i].slice(2))
+        i++
+      }
+      nodes.push(
+        <blockquote key={key++} style={{
+          margin: '8px 0', padding: '8px 14px', borderLeft: '3px solid var(--accent)',
+          background: 'var(--bgHover)', color: 'var(--textSecondary)', fontStyle: 'italic',
+        }}>
+          {quoteLines.map((l, j) => <div key={j}>{formatInline(l)}</div>)}
+        </blockquote>
+      )
+      continue
+    }
+
+    // Horizontal rule
+    if (line.match(/^---+$/)) {
+      nodes.push(<hr key={key++} style={{ border: 'none', borderTop: '1px solid var(--borderLight)', margin: '12px 0' }} />)
+      i++; continue
+    }
+
+    // Tool usage marker: [used tool: toolName] — render a placeholder that gets
+    // replaced with the accordion by renderContentWithTools()
+    if (line.match(/^\[used tool: .+\]$/)) {
+      const toolName = line.replace(/^\[used tool: /, '').replace(/\]$/, '')
+      nodes.push(<div key={key++} data-tool-placeholder={toolName} />)
+      i++; continue
+    }
+
+    // Empty line
+    if (!line.trim()) {
+      nodes.push(<div key={key++} style={{ height: 6 }} />)
+      i++; continue
+    }
+
+    // Regular paragraph
+    nodes.push(<p key={key++} style={{ margin: '2px 0', lineHeight: 1.6 }}>{formatInline(line)}</p>)
+    i++
+  }
+
+  return nodes
+}
+
+// Inline formatting: bold, italic, inline code, links
+function formatInline(text: string): React.ReactNode {
+  const parts: React.ReactNode[] = []
+  let remaining = text
+  let key = 0
+
+  while (remaining.length > 0) {
+    // Inline code
+    let match = remaining.match(/^`([^`]+)`/)
+    if (match) {
+      parts.push(<code key={key++} style={{ background: 'var(--bgTertiary)', padding: '1px 5px', borderRadius: 3, fontSize: '0.9em', color: 'var(--syntaxInlineCode)', fontFamily: 'monospace' }}>{match[1]}</code>)
+      remaining = remaining.slice(match[0].length)
+      continue
+    }
+
+    // Bold
+    match = remaining.match(/^\*\*(.+?)\*\*/)
+    if (match) {
+      parts.push(<strong key={key++} style={{ fontWeight: 600, color: 'var(--textPrimary)' }}>{match[1]}</strong>)
+      remaining = remaining.slice(match[0].length)
+      continue
+    }
+
+    // Italic
+    match = remaining.match(/^\*(.+?)\*/)
+    if (match) {
+      parts.push(<em key={key++}>{match[1]}</em>)
+      remaining = remaining.slice(match[0].length)
+      continue
+    }
+
+    // Link
+    match = remaining.match(/^\[([^\]]+)\]\(([^)]+)\)/)
+    if (match) {
+      parts.push(<a key={key++} href={match[2]} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)', textDecoration: 'underline' }}>{match[1]}</a>)
+      remaining = remaining.slice(match[0].length)
+      continue
+    }
+
+    // Regular text - consume until next special char
+    const nextSpecial = remaining.search(/[`*\[]/)
+    if (nextSpecial === -1) {
+      parts.push(remaining)
+      break
+    } else if (nextSpecial === 0) {
+      // Special char that didn't match a pattern - consume it
+      parts.push(remaining[0])
+      remaining = remaining.slice(1)
+    } else {
+      parts.push(remaining.slice(0, nextSpecial))
+      remaining = remaining.slice(nextSpecial)
+    }
+  }
+
+  return parts.length === 1 ? parts[0] : <>{parts}</>
+}
+
+// Simple syntax highlighting by token type (uses CSS variables for theme support)
+function highlightCode(code: string, lang: string): React.ReactNode {
+  const keywords = new Set([
+    'const', 'let', 'var', 'function', 'return', 'if', 'else', 'for', 'while',
+    'import', 'export', 'from', 'class', 'extends', 'new', 'this', 'async', 'await',
+    'try', 'catch', 'throw', 'switch', 'case', 'break', 'continue', 'default',
+    'typeof', 'instanceof', 'in', 'of', 'void', 'delete', 'yield', 'interface',
+    'type', 'enum', 'implements', 'abstract', 'public', 'private', 'protected',
+    'static', 'readonly', 'override', 'def', 'self', 'True', 'False', 'None',
+    'print', 'elif', 'pass', 'with', 'as', 'lambda', 'raise', 'except', 'finally',
+    'fn', 'pub', 'mod', 'use', 'struct', 'impl', 'trait', 'match', 'mut', 'ref',
+  ])
+
+  const parts: React.ReactNode[] = []
+  const tokens = code.split(/(\s+|[{}()\[\];,.:!<>=+\-*/&|^~?@#]|"[^"]*"|'[^']*'|`[^`]*`|\/\/.*$|\/\*[\s\S]*?\*\/|\b\d+\.?\d*\b)/gm)
+  let key = 0
+
+  for (const token of tokens) {
+    if (!token) continue
+    if (keywords.has(token)) {
+      parts.push(<span key={key++} style={{ color: 'var(--syntaxKeyword)' }}>{token}</span>)
+    } else if (token.match(/^("|'|`)/) ) {
+      parts.push(<span key={key++} style={{ color: 'var(--syntaxString)' }}>{token}</span>)
+    } else if (token.match(/^\/\//)) {
+      parts.push(<span key={key++} style={{ color: 'var(--syntaxComment)', fontStyle: 'italic' }}>{token}</span>)
+    } else if (token.match(/^\d/)) {
+      parts.push(<span key={key++} style={{ color: 'var(--syntaxNumber)' }}>{token}</span>)
+    } else if (token.match(/^[{}()\[\];,.:!<>=+\-*/&|^~?@#]/)) {
+      parts.push(<span key={key++} style={{ color: 'var(--syntaxPunctuation)' }}>{token}</span>)
+    } else {
+      parts.push(<span key={key++}>{token}</span>)
+    }
+  }
+
+  return <>{parts}</>
+}
+
+/** Render a single tool call accordion button + expandable details */
+function ToolAccordion({ t, toolKey, isExpanded, onToggle, colors }: {
+  t: { name: string; arguments?: string; result: string }
+  toolKey: string
+  isExpanded: boolean
+  onToggle: () => void
+  colors: Record<string, string>
+}) {
+  return (
+    <div style={{ marginBottom: 4 }}>
+      <div
+        onClick={onToggle}
+        style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer',
+          padding: '3px 8px', background: colors.bgTertiary, borderRadius: 4,
+          border: `1px solid ${colors.borderLight}`, userSelect: 'none',
+        }}
+      >
+        <span style={{
+          display: 'inline-block', fontSize: 9, color: colors.textSecondary,
+          transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+          transition: 'transform 0.15s',
+        }}>▶</span>
+        <span style={{ color: colors.textMuted }}>⚙</span>
+        <span style={{ color: colors.accent, fontWeight: 600, fontFamily: 'monospace' }}>{t.name}</span>
+      </div>
+      {isExpanded && (
+        <div style={{
+          marginTop: 4, marginLeft: 12, padding: '6px 10px',
+          background: colors.bgPrimary, borderRadius: 4, border: `1px solid ${colors.bgTertiary}`,
+          fontFamily: '"Fira Code", "JetBrains Mono", monospace', fontSize: 11,
+          maxHeight: 200, overflow: 'auto',
+        }}>
+          {t.arguments && (
+            <div style={{ marginBottom: t.result ? 6 : 0 }}>
+              <div style={{ color: colors.textSecondary, marginBottom: 2, fontSize: 10 }}>Arguments:</div>
+              <pre style={{ margin: 0, color: 'var(--syntaxNumber)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                {(() => { try { return JSON.stringify(JSON.parse(t.arguments!), null, 2) } catch { return t.arguments } })()}
+              </pre>
+            </div>
+          )}
+          {t.result && (
+            <div>
+              <div style={{ color: colors.textSecondary, marginBottom: 2, fontSize: 10 }}>Result:</div>
+              <pre style={{ margin: 0, color: 'var(--syntaxString)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                {t.result.length > 2000 ? t.result.slice(0, 2000) + '…' : t.result}
+              </pre>
+            </div>
+          )}
+          {!t.arguments && !t.result && (
+            <div style={{ color: colors.textMuted, fontStyle: 'italic' }}>No details available</div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+interface HeartbeatActivity {
+  sessionId: string
+  content: string
+  status: 'running' | 'ok-empty' | 'ok-token' | 'sent' | 'skipped' | 'failed'
+  timestamp: number
+  serverIndex?: number  // Index in server-side messages array
+}
+
+export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId?: string | null; onSessionLoaded?: () => void }) {
+  const colors = useColors()
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [input, setInput] = useState('')
+  const [streaming, setStreaming] = useState('')
+  const [connected, setConnected] = useState(false)
+  const [typing, setTyping] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [authToken, setAuthToken] = useState(() => localStorage.getItem('automate_token') || '')
+  const [needsAuth, setNeedsAuth] = useState(false)
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
+  const [sessionsList, setSessionsList] = useState<{ id: string; channel: string; messageCount: number; updatedAt: string }[]>([])
+  const [showSessionPicker, setShowSessionPicker] = useState(false)
+  const [contextInfo, setContextInfo] = useState<{ used: number; limit: number; percent: number } | null>(null)
+  const [contextBreakdown, setContextBreakdown] = useState<{
+    systemPrompt: number; toolDefinitions: number; userMessages: number;
+    assistantMessages: number; toolResults: number; total: number; limit: number;
+    details?: {
+      systemPrompt: { name: string; tokens: number }[];
+      tools: { name: string; tokens: number }[];
+    };
+  } | null>(null)
+  const [showContextBreakdown, setShowContextBreakdown] = useState(false)
+  const [expandedBreakdown, setExpandedBreakdown] = useState<string | null>(null)
+  const [elevated, setElevated] = useState(false)
+  const [currentModel, setCurrentModel] = useState('')
+  const [models, setModels] = useState<{name: string; model: string; active: boolean}[]>([])
+  const [showModelPicker, setShowModelPicker] = useState(false)
+  const [multiAgent, setMultiAgent] = useState(false)
+  const [agentsList, setAgentsList] = useState<{ name: string; isDefault: boolean; model: string }[]>([])
+  const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
+  const [showAgentPicker, setShowAgentPicker] = useState(false)
+  const [showSlashMenu, setShowSlashMenu] = useState(false)
+  const [slashFilter, setSlashFilter] = useState('')
+  const [heartbeat, setHeartbeat] = useState<HeartbeatActivity | null>(null)
+  const [hideHeartbeats, setHideHeartbeats] = useState(() => localStorage.getItem('automate_hide_heartbeats') === 'true')
+  const [awaitingResponse, setAwaitingResponse] = useState(false)
+  const [htmlPreview, setHtmlPreview] = useState<string | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
+  const bottomRef = useRef<HTMLDivElement>(null)
+  const messagesContainerRef = useRef<HTMLDivElement>(null)
+  const isAtBottomRef = useRef(true) // Track if user is scrolled to bottom
+  const inputRef = useRef<HTMLInputElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const msgIdRef = useRef(0)
+  const awaitingResponseRef = useRef(false)
+  const currentSessionIdRef = useRef<string | null>(null)
+  const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({})
+  const [expandedHeartbeats, setExpandedHeartbeats] = useState<Record<string, boolean>>({})
+  const pendingToolCallsRef = useRef<{ name: string; arguments?: string; result: string }[]>([])
+  const processingPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const messagePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const lastMessageCountRef = useRef<number>(0)
+  const lastMessageHashRef = useRef<string>('')
+  const [streamingToolCalls, setStreamingToolCalls] = useState<{ name: string; arguments?: string; result: string }[]>([])
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
+  const [editingContent, setEditingContent] = useState('')
+  const [promptQueue, setPromptQueue] = useState<string[]>([])
+  const promptQueueRef = useRef<string[]>([])
+  const makeId = () => `msg_${++msgIdRef.current}_${Date.now()}`
+
+  /** Stop the processing-recovery poll if running. */
+  const stopProcessingPoll = () => {
+    if (processingPollRef.current) {
+      clearInterval(processingPollRef.current)
+      processingPollRef.current = null
+    }
+  }
+
+  /** Poll for new messages from automated sources (heartbeat, plugins, etc.) */
+  const startMessagePoll = () => {
+    if (messagePollRef.current) return // Already polling
+    messagePollRef.current = setInterval(async () => {
+      const sessionId = currentSessionIdRef.current
+      if (!sessionId) return // Skip if no session
+
+      try {
+        const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`)
+        const data = await r.json() as any
+        if (!data.session) return
+
+        const serverMsgs = data.session.messages || []
+        const serverMsgCount = serverMsgs.length
+        // Simple hash: last message role + content length + first 50 chars
+        const lastMsg = serverMsgs[serverMsgs.length - 1]
+        const serverHash = lastMsg ? `${lastMsg.role}:${(lastMsg.content || '').length}:${(lastMsg.content || '').slice(0, 50)}` : ''
+
+        // Reload if count changed OR last message changed
+        if (serverMsgCount !== lastMessageCountRef.current || serverHash !== lastMessageHashRef.current) {
+          lastMessageCountRef.current = serverMsgCount
+          lastMessageHashRef.current = serverHash
+          // Reload session via WebSocket
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({ type: 'load_session', session_id: sessionId }))
+          }
+        }
+      } catch { /* ignore */ }
+    }, 5000) // Poll every 5 seconds
+  }
+
+  const stopMessagePoll = () => {
+    if (messagePollRef.current) {
+      clearInterval(messagePollRef.current)
+      messagePollRef.current = null
+    }
+  }
+
+  // Keep ref in sync with state for use in WebSocket callback
+  useEffect(() => {
+    promptQueueRef.current = promptQueue
+  }, [promptQueue])
+
+  /** Check if user is scrolled to bottom (within 100px threshold) */
+  const checkIsAtBottom = useCallback(() => {
+    const container = messagesContainerRef.current
+    if (!container) return true
+    const threshold = 100
+    return container.scrollHeight - container.scrollTop - container.clientHeight < threshold
+  }, [])
+
+  /** Smart auto-scroll: only scroll if user is at bottom */
+  const smartScrollToBottom = useCallback(() => {
+    if (isAtBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [])
+
+  // Handle scroll events to track if user is at bottom
+  useEffect(() => {
+    const container = messagesContainerRef.current
+    if (!container) return
+
+    const handleScroll = () => {
+      isAtBottomRef.current = checkIsAtBottom()
+    }
+
+    container.addEventListener('scroll', handleScroll, { passive: true })
+    return () => container.removeEventListener('scroll', handleScroll)
+  }, [checkIsAtBottom])
+
+  // Track injected messages waiting to appear in correct position
+  const [injectedPrompts, setInjectedPrompts] = useState<string[]>([])
+
+  /** Send the next queued prompt if any exist - injects into current conversation */
+  const sendNextQueuedPrompt = useCallback(() => {
+    const queue = promptQueueRef.current
+    if (queue.length === 0 || !wsRef.current) return
+
+    // Take the first prompt from the queue
+    const prompt = queue[0]
+    const remaining = queue.slice(1)
+
+    // Update state and ref
+    setPromptQueue(remaining)
+    promptQueueRef.current = remaining
+
+    // Track as injected (will show as indicator, not in messages list)
+    // The server will include it in the correct position when response completes
+    setInjectedPrompts(prev => [...prev, prompt])
+
+    // Send as 'inject' type - this adds to session without triggering new response
+    // The current processing loop will see it in its next iteration
+    wsRef.current.send(JSON.stringify({ type: 'inject', content: prompt }))
+
+    // DON'T clear streaming state - let the current response continue displaying
+  }, [selectedAgent])
+
+  /** Render markdown content with tool accordions inline where [used tool: X] markers appear */
+  const renderContentWithTools = (
+    text: string,
+    toolCalls: { name: string; arguments?: string; result: string }[] | undefined,
+    keyPrefix: string,
+  ) => {
+    const nodes = renderMarkdown(text)
+    if (!toolCalls || toolCalls.length === 0) return nodes
+    // Map tool names to their data (use first match, consume in order)
+    const toolQueue = [...toolCalls]
+    return nodes.map((node, i) => {
+      // Check if this node is a tool placeholder <div data-tool-placeholder="toolName" />
+      if (React.isValidElement(node) && (node.props as any)?.['data-tool-placeholder']) {
+        const name = (node.props as any)['data-tool-placeholder'] as string
+        const idx = toolQueue.findIndex(t => t.name === name)
+        const tc = idx >= 0 ? toolQueue.splice(idx, 1)[0] : null
+        if (tc) {
+          // Create a more stable key that incorporates the tool name and content
+          const toolKey = `${keyPrefix}:${name}:${tc.arguments || 'no-args'}:${tc.result.substring(0, 20)}`
+          return (
+            <ToolAccordion
+              key={toolKey}
+              t={tc}
+              toolKey={toolKey}
+              isExpanded={expandedTools[toolKey] || false}
+              onToggle={() => setExpandedTools(prev => ({ ...prev, [toolKey]: !prev[toolKey] }))}
+              colors={colors}
+            />
+          )
+        }
+        // No matching tool data — show placeholder text
+        return <div key={i} style={{ color: colors.textSecondary, fontSize: 11, fontFamily: 'monospace', margin: '4px 0' }}>⚙ {name}</div>
+      }
+      return node
+    })
+  }
+
+  useEffect(() => {
+    connect()
+    return () => { stopProcessingPoll(); stopMessagePoll(); wsRef.current?.close() }
+  }, [])
+
+  useEffect(() => {
+    fetch('/api/models').then(r => r.json()).then((d: any) => {
+      setModels(d.providers || [])
+      setCurrentModel(d.current?.model || '')
+    }).catch(() => {})
+  }, [])
+
+  // Fetch sessions list for the picker
+  const fetchSessionsList = useCallback(async () => {
+    try {
+      const r = await fetch('/api/sessions')
+      const data = await r.json() as any
+      setSessionsList((data.sessions || []).filter((s: any) => s.messageCount > 0))
+    } catch {}
+  }, [])
+
+  // Load a session requested from another tab (e.g. Sessions "Open in Chat")
+  // Retries until WS is connected since Chat may be freshly mounting
+  useEffect(() => {
+    if (!loadSessionId) return
+    const trySend = () => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'load_session', session_id: loadSessionId }))
+        onSessionLoaded?.()
+        return true
+      }
+      return false
+    }
+    if (trySend()) return
+    // WS not ready yet — retry until connected
+    const interval = setInterval(() => {
+      if (trySend()) clearInterval(interval)
+    }, 200)
+    return () => clearInterval(interval)
+  }, [loadSessionId])
+
+  // Auto-scroll removed - user prefers manual scrolling
+
+  const connect = () => {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const ws = new WebSocket(`${proto}//${location.host}/ws`)
+
+    ws.onopen = () => {
+      setConnected(true)
+      setNeedsAuth(false)
+    }
+    ws.onclose = () => { stopProcessingPoll(); setConnected(false); setTimeout(connect, 3000) }
+    ws.onerror = () => {
+      // May need auth
+      fetch('/api/health').then(r => {
+        if (r.status === 401) setNeedsAuth(true)
+      }).catch(() => {})
+    }
+
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(e.data)
+
+      if (msg.type === 'connected') {
+        setCurrentSessionId(msg.session_id)
+        currentSessionIdRef.current = msg.session_id
+        if (msg.context) setContextInfo(msg.context)
+        // If the server is still processing this session (e.g. page refresh mid-stream),
+        // show the thinking indicator and start polling for completion.
+        // Stream chunks may arrive via WS (sendToSession), but if the response
+        // event was lost during the reconnect gap, the poll recovers gracefully.
+        if (msg.processing) {
+          setAwaitingResponse(true)
+          awaitingResponseRef.current = true
+          setTyping(true)
+          stopProcessingPoll()
+          const pollSessionId = msg.session_id as string
+          processingPollRef.current = setInterval(async () => {
+            try {
+              const r = await fetch(`/api/sessions/${encodeURIComponent(pollSessionId)}`)
+              const data = await r.json()
+              if (data.session && !data.processing) {
+                // Agent finished — reload session to get complete state
+                stopProcessingPoll()
+                if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                  wsRef.current.send(JSON.stringify({ type: 'load_session', session_id: pollSessionId }))
+                }
+                setAwaitingResponse(false)
+                awaitingResponseRef.current = false
+                setTyping(false)
+              }
+            } catch {}
+          }, 2500)
+        }
+        // Multi-agent support: show agent picker on fresh sessions
+        if (msg.multiAgent && msg.agents?.length > 1) {
+          setMultiAgent(true)
+          setAgentsList(msg.agents)
+          // Show picker only for fresh sessions (no existing messages)
+          if (!msg.processing) {
+            setShowAgentPicker(true)
+          }
+        }
+        setMessages(prev => [...prev, {
+          id: makeId(),
+          role: 'system',
+          content: `Connected. Session: ${msg.session_id}`,
+          timestamp: Date.now(),
+        }])
+        // Start polling for automated messages (heartbeat, plugins)
+        lastMessageCountRef.current = 0
+        lastMessageHashRef.current = ''
+        startMessagePoll()
+      }
+      if (msg.type === 'session_loaded') {
+      // Hide agent picker when loading an existing session
+      setShowAgentPicker(false)
+        setCurrentSessionId(msg.session_id)
+        currentSessionIdRef.current = msg.session_id
+        if (msg.context) setContextInfo(msg.context)
+        // Merge consecutive assistant messages into one: tool-call-only messages
+        // get folded into the previous assistant message (tools belong to that turn).
+        // Keep power steering messages (isPowerSteering: true) but filter other system messages
+        const rawMsgs = (msg.messages || []).filter((m: any) => m.role !== 'system' || m.isPowerSteering)
+        const merged: ChatMessage[] = []
+
+        for (const m of rawMsgs) {
+          // Handle power steering messages
+          if (m.isPowerSteering) {
+            merged.push({
+              id: makeId(),
+              role: 'system',
+              content: normalizeContent(m.content),
+              timestamp: Date.now(),
+              serverIndex: m.serverIndex,
+              isPowerSteering: true,
+            })
+            continue
+          }
+
+          if (m.role === 'assistant') {
+            const toolCalls = m.tool_calls
+              ? m.tool_calls.map((tc: any) => ({ name: tc.name, result: tc.result || '', arguments: tc.arguments || '' }))
+              : []
+            // Inject [used tool: X] markers if toolCalls exist but markers don't
+            // (markers are streamed to UI but not stored in session)
+            let content = normalizeContent(m.content).trim()
+            if (toolCalls.length > 0) {
+              const markers = toolCalls
+                .filter(tc => !content.includes(`[used tool: ${tc.name}]`))
+                .map(tc => `[used tool: ${tc.name}]`)
+                .join('\n')
+              if (markers) {
+                content = markers + (content ? '\n\n' + content : '')
+              }
+            }
+
+            // If the last merged message is also assistant, merge into it
+            const last = merged[merged.length - 1]
+            if (last && last.role === 'assistant') {
+              if (toolCalls.length > 0) {
+                last.toolCalls = [...(last.toolCalls || []), ...toolCalls]
+              }
+              if (content) {
+                last.content = last.content ? last.content + '\n\n' + content : content
+              }
+              // Keep the first serverIndex when merging
+            } else {
+              // New assistant message
+              merged.push({
+                id: makeId(),
+                role: 'assistant',
+                content,
+                toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+                timestamp: Date.now(),
+                serverIndex: m.serverIndex,
+              })
+            }
+          } else {
+            merged.push({
+              id: makeId(),
+              role: m.role as 'user',
+              content: normalizeContent(m.content),
+              timestamp: Date.now(),
+              serverIndex: m.serverIndex,
+            })
+          }
+        }
+
+        // Preserve expanded tools state by keeping keys that still exist in the new message set
+        setMessages(prevMessages => {
+          const newMessages = [
+            { id: makeId(), role: 'system', content: `Loaded session: ${msg.session_id}`, timestamp: Date.now() },
+            ...merged,
+          ]
+          
+          // Create a mapping of old tool keys to determine which expanded states to preserve
+          const oldToolKeys = new Set<string>()
+          prevMessages.forEach(msg => {
+            if (msg.role === 'assistant' && msg.toolCalls) {
+              msg.toolCalls.forEach((tc, idx) => {
+                const oldKey = `${msg.id}:${tc.name}:${tc.arguments || 'no-args'}:${tc.result.substring(0, 20)}`
+                oldToolKeys.add(oldKey)
+              })
+            }
+          })
+          
+          // Create a mapping of new tool keys
+          const newToolKeys = new Set<string>()
+          newMessages.forEach(msg => {
+            if (msg.role === 'assistant' && msg.toolCalls) {
+              msg.toolCalls.forEach((tc, idx) => {
+                const newKey = `${msg.id}:${tc.name}:${tc.arguments || 'no-args'}:${tc.result.substring(0, 20)}`
+                newToolKeys.add(newKey)
+              })
+            }
+          })
+          
+          // Preserve expanded state for tools that still exist in the new message set
+          setExpandedTools(prevExpanded => {
+            const newExpanded: Record<string, boolean> = {}
+            Object.entries(prevExpanded).forEach(([key, value]) => {
+              if (oldToolKeys.has(key) && newToolKeys.has(key)) {
+                newExpanded[key] = value
+              }
+            })
+            return newExpanded
+          })
+
+          return newMessages
+        })
+
+        // Reset UI state after loading
+        setStreaming('')
+        setStreamingToolCalls([])
+        setInjectedPrompts([])
+        setEditingMessageId(null)
+        pendingToolCallsRef.current = []
+      }
+
+      if (msg.type === 'response') {
+        stopProcessingPoll()
+        setTyping(false)
+        setAwaitingResponse(false)
+        awaitingResponseRef.current = false
+        if (msg.context) setContextInfo(msg.context)
+        // Merge tool calls: prefer real-time events (have results) over final summary
+        const toolCalls = pendingToolCallsRef.current.length > 0
+          ? pendingToolCallsRef.current
+          : msg.tool_calls
+        pendingToolCallsRef.current = []
+        setStreamingToolCalls([])
+        // Clear injected prompts - they're now in the server's message list
+        setInjectedPrompts([])
+
+        // Server sends mapped messages with serverIndex — use them to backfill indices
+        const serverMsgs: any[] = msg.messages || []
+
+        // Update message count and hash for automated message polling
+        const lastServerMsg = serverMsgs[serverMsgs.length - 1]
+        lastMessageCountRef.current = serverMsgs.length
+        lastMessageHashRef.current = lastServerMsg ? `${lastServerMsg.role}:${(normalizeContent(lastServerMsg.content) || '').length}:${(normalizeContent(lastServerMsg.content) || '').slice(0, 50)}` : ''
+
+        // Use accumulated streaming content if available — msg.content only has the
+        // final LLM response (after tool calls), so it would wipe earlier streamed text.
+        setStreaming(prev => {
+          // Keep [used tool: X] markers — renderContentWithTools replaces them with accordions
+          const finalContent = (prev || normalizeContent(msg.content)).trim()
+
+          // If server sent messages, rebuild from server list to get correct ordering
+          // (important when messages were injected mid-conversation)
+          if (serverMsgs.length > 0) {
+            // Convert server messages to client format, adding the final assistant response
+            // Keep power steering messages but skip other system messages
+            const rebuilt: any[] = serverMsgs
+              .filter((sm: any) => sm.role !== 'system' || sm.isPowerSteering)
+              .map((sm: any) => ({
+                id: makeId(),
+                role: sm.role as 'user' | 'assistant' | 'tool' | 'system',
+                content: normalizeContent(sm.content),
+                toolCalls: sm.tool_calls,
+                serverIndex: sm.serverIndex,
+                timestamp: Date.now(),
+                isPowerSteering: sm.isPowerSteering,
+              }))
+
+            // Check if the last message is already the assistant response we're about to add
+            const lastMsg = rebuilt[rebuilt.length - 1]
+            if (lastMsg && lastMsg.role === 'assistant') {
+              // Update the last assistant message with streaming content and tool calls
+              rebuilt[rebuilt.length - 1] = {
+                ...lastMsg,
+                content: finalContent || lastMsg.content,
+                toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : lastMsg.toolCalls,
+              }
+            }
+
+            // Preserve expanded tools state by keeping keys that still exist in the new message set
+            setExpandedTools(prevExpanded => {
+              // Since we're rebuilding messages, preserve expanded states based on content similarity
+              const newExpanded: Record<string, boolean> = {}
+              Object.entries(prevExpanded).forEach(([key, value]) => {
+                if (key.includes(':')) {
+                  const [msgId] = key.split(':', 1)
+                  if (rebuilt.some(m => m.id === msgId)) {
+                    newExpanded[key] = value
+                  }
+                }
+              })
+              return newExpanded
+            })
+
+            return rebuilt
+          }
+
+          // No server messages - just add the final content as a new assistant message
+          return [...prev, {
+            id: makeId(),
+            role: 'assistant',
+            content: finalContent,
+            toolCalls: toolCalls,
+            timestamp: Date.now(),
+          }]
+        })
+
+        setAwaitingResponse(false)
+        awaitingResponseRef.current = false
+        smartScrollToBottom()
+      }
+
+      if (msg.type === 'response_chunk') {
+        setStreaming(prev => {
+          // For tool-only responses, show the tool calls as they arrive
+          if (msg.tool_call) {
+            const tc = msg.tool_call
+            const marker = `[used tool: ${tc.name}]`
+            if (prev.includes(marker)) {
+              return prev
+            }
+            return prev + (prev ? '\n\n' : '') + marker
+          }
+          // For text responses, append the new chunk
+          return prev + (msg.content || '')
+        })
+        smartScrollToBottom()
+      }
+
+      if (msg.type === 'tool_call') {
+        const tc = { name: msg.name, arguments: msg.arguments, result: msg.result || '' }
+        pendingToolCallsRef.current.push(tc)
+        setStreamingToolCalls(prev => [...prev, tc])
+
+        // Check for queued prompt and send it after tool call
+        if (promptQueueRef.current.length > 0) {
+          // Small delay to let the current tool result settle
+          setTimeout(() => {
+            sendNextQueuedPrompt()
+          }, 100)
+        }
+        // Smart auto-scroll only if user is at bottom
+        smartScrollToBottom()
+      }
+
+      if (msg.type === 'context_breakdown') {
+        setContextBreakdown(msg)
+        setShowContextBreakdown(true)
+      }
+
+      if (msg.type === 'heartbeat') {
+        const activity: HeartbeatActivity = {
+          sessionId: msg.session_id,
+          content: msg.content || 'Heartbeat ran',
+          status: msg.status || 'running',
+          timestamp: Date.now(),
+          serverIndex: msg.serverIndex,
+        }
+        setHeartbeat(activity)
+
+        // Auto-expand if this is a new heartbeat event
+        if (msg.status === 'ok-token' || msg.status === 'ok-empty') {
+          setExpandedHeartbeats(prev => ({ ...prev, [msg.session_id]: true }))
+        }
+
+        // Update context if provided
+        if (msg.context) setContextInfo(msg.context)
+
+        // Update messages with new heartbeat activity if it's a completion
+        if (msg.status === 'sent' || msg.status === 'failed') {
+          setMessages(prev => [
+            ...prev,
+            {
+              id: makeId(),
+              role: 'system',
+              content: `Heartbeat: ${msg.status === 'sent' ? 'activity sent' : 'activity failed'}${msg.error ? ` - ${msg.error}` : ''}`,
+              timestamp: Date.now(),
+            }
+          ])
+        }
+      }
+
+      if (msg.type === 'status') {
+        setMessages(prev => [...prev, {
+          id: makeId(),
+          role: 'system',
+          content: msg.content || 'Status update',
+          timestamp: Date.now(),
+        }])
+      }
+
+      if (msg.type === 'session_updated') {
+        // Session was updated by another client - reload if it matches current session
+        if (msg.session_id === currentSessionIdRef.current) {
+          // Don't reload if we're currently awaiting a response (would interrupt the user's experience)
+          if (!awaitingResponseRef.current && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({ type: 'load_session', session_id: msg.session_id }))
+          }
+        }
+      }
+
+      // Smart auto-scroll only if user is at bottom
+      smartScrollToBottom()
+    }
+
+    wsRef.current = ws
+  }
+
+  const sendToSession = async (content: string, isRetry = false) => {
+    if (!currentSessionIdRef.current) {
+      setMessages(prev => [...prev, { id: makeId(), role: 'system', content: 'No session - start one first', timestamp: Date.now() }])
+      return
+    }
+
+    // Clear any existing heartbeat activity
+    setHeartbeat(null)
+
+    // Add user message to UI immediately
+    const userMsg: ChatMessage = {
+      id: makeId(),
+      role: 'user',
+      content,
+      timestamp: Date.now(),
+    }
+    setMessages(prev => [...prev, userMsg])
+
+    // Send to WebSocket
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'message', content, agent: selectedAgent || undefined }))
+      setAwaitingResponse(true)
+      awaitingResponseRef.current = true
+      setTyping(true)
+    } else {
+      setMessages(prev => [...prev, { id: makeId(), role: 'system', content: 'Not connected - retrying...', timestamp: Date.now() }])
+      if (!isRetry) setTimeout(() => sendToSession(content, true), 1000)
+    }
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      if (input.trim()) sendToSession(input)
+      setInput('')
+    }
+  }
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (input.trim()) sendToSession(input)
+    setInput('')
+  }
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+
+    setUploading(true)
+    const file = files[0]
+
+    // Read file and send as base64
+    const reader = new FileReader()
+    reader.onload = () => {
+      const base64 = reader.result as string
+      const content = `[File: ${file.name} (${file.type}, ${(file.size / 1024).toFixed(1)}KB)]\n\n${base64}`
+      sendToSession(content)
+      setUploading(false)
+    }
+    reader.onerror = () => {
+      setMessages(prev => [...prev, { id: makeId(), role: 'system', content: 'Failed to read file', timestamp: Date.now() }])
+      setUploading(false)
+    }
+    reader.readAsDataURL(file)
+
+    // Reset input
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  // Auto-focus input on mount
+  useEffect(() => {
+    inputRef.current?.focus()
+  }, [])
+
+  const toggleAgent = (name: string) => {
+    setSelectedAgent(prev => prev === name ? null : name)
+    setMessages(prev => [...prev, { id: makeId(), role: 'system', content: prev === name ? 'Agent deselected' : `Selected agent: ${name}`, timestamp: Date.now() }])
+  }
+
+  // Handle context breakdown expansion
+  const toggleBreakdownSection = (section: string) => {
+    setExpandedBreakdown(prev => prev === section ? null : section)
+  }
+
+  const toggleHeartbeat = (sessionId: string) => {
+    setExpandedHeartbeats(prev => ({ ...prev, [sessionId]: !prev[sessionId] }))
+  }
+
+  // Get token count for context breakdown
+  const getTokenCount = (text: string) => {
+    // Simple approximation: 1 token ≈ 4 characters or 0.75 words
+    return Math.ceil(text.length / 4)
+  }
+
+  // Render HTML preview modal
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement
+      if (target.matches && target.matches('[data-html-preview]')) {
+        e.preventDefault()
+        setHtmlPreview(target.getAttribute('data-html-preview') || null)
+      }
+    }
+    document.addEventListener('click', handleClick)
+    return () => document.removeEventListener('click', handleClick)
+  }, [])
+
+  // Render markdown content with tool accordions inline where [used tool: X] markers appear
+  const renderContentWithTools = (
+    text: string,
+    toolCalls: { name: string; arguments?: string; result: string }[] | undefined,
+    keyPrefix: string,
+  ) => {
+    const nodes = renderMarkdown(text)
+    if (!toolCalls || toolCalls.length === 0) return nodes
+    // Map tool names to their data (use first match, consume in order)
+    const toolQueue = [...toolCalls]
+    return nodes.map((node, i) => {
+      // Check if this node is a tool placeholder <div data-tool-placeholder="toolName" />
+      if (React.isValidElement(node) && (node.props as any)?.['data-tool-placeholder']) {
+        const name = (node.props as any)['data-tool-placeholder'] as string
+        const idx = toolQueue.findIndex(t => t.name === name)
+        const tc = idx >= 0 ? toolQueue.splice(idx, 1)[0] : null
+        if (tc) {
+          // Create a more stable key that incorporates the tool name and content
+          const toolKey = `${keyPrefix}:${name}:${tc.arguments || 'no-args'}:${tc.result.substring(0, 20)}`
+          return (
+            <ToolAccordion
+              key={toolKey}
+              t={tc}
+              toolKey={toolKey}
+              isExpanded={expandedTools[toolKey] || false}
+              onToggle={() => setExpandedTools(prev => ({ ...prev, [toolKey]: !prev[toolKey] }))}
+              colors={colors}
+            />
+          )
+        }
+        // No matching tool data — show placeholder text
+        return <div key={i} style={{ color: colors.textSecondary, fontSize: 11, fontFamily: 'monospace', margin: '4px 0' }}>⚙ {name}</div>
+      }
+      return node
+    })
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: colors.bgPrimary, color: colors.textPrimary }}>
+      {/* Header */}
+      <div style={{ padding: '12px 16px', borderBottom: `1px solid ${colors.border}`, background: colors.bgSecondary }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+          <h1 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>Chat</h1>
+          
+          {/* Connection status */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+            <div style={{ width: 8, height: 8, borderRadius: '50%', background: connected ? colors.success : colors.warning }} />
+            <span>{connected ? 'Connected' : 'Connecting...'}</span>
+          </div>
+          
+          {/* Session picker */}
+          <button
+            onClick={() => { fetchSessionsList(); setShowSessionPicker(!showSessionPicker) }}
+            style={{
+              background: 'none', border: `1px solid ${colors.borderLight}`, borderRadius: 4, padding: '4px 10px',
+              fontSize: 12, color: colors.textSecondary, cursor: 'pointer',
+            }}
+          >
+            {currentSessionId ? `Session: ${currentSessionId.substring(0, 8)}...` : 'New Session'}
+          </button>
+          
+          {/* Show session picker */}
+          {showSessionPicker && (
+            <div style={{ position: 'absolute', top: 60, left: 16, background: colors.bgPrimary, border: `1px solid ${colors.border}`, borderRadius: 6, padding: 12, zIndex: 100, width: 300, maxHeight: 400, overflow: 'auto' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <h3 style={{ margin: 0, fontSize: 14 }}>Sessions</h3>
+                <button
+                  onClick={() => setShowSessionPicker(false)}
+                  style={{ background: 'none', border: 'none', color: colors.textSecondary, cursor: 'pointer', fontSize: 16 }}
+                >
+                  ×
+                </button>
+              </div>
+              {sessionsList.length === 0 ? (
+                <div style={{ color: colors.textMuted, fontSize: 12, fontStyle: 'italic' }}>No sessions found</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {sessionsList.map(s => (
+                    <div
+                      key={s.id}
+                      onClick={() => {
+                        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                          wsRef.current.send(JSON.stringify({ type: 'load_session', session_id: s.id }))
+                        }
+                        setShowSessionPicker(false)
+                      }}
+                      style={{ padding: 8, border: `1px solid ${colors.borderLight}`, borderRadius: 4, cursor: 'pointer', userSelect: 'none' }}
+                    >
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>{s.id.substring(0, 8)}...</div>
+                      <div style={{ fontSize: 11, color: colors.textMuted }}>{s.messageCount} messages • {s.channel}</div>
+                      <div style={{ fontSize: 11, color: colors.textSecondary }}>{s.updatedAt}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          
+          {/* Context info */}
+          {contextInfo && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: colors.textSecondary }}>
+              <span>Context: {contextInfo.used}/{contextInfo.limit} tokens ({contextInfo.percent}%)</span>
+              {contextInfo.percent > 80 && (
+                <button
+                  onClick={() => {
+                    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                      wsRef.current.send(JSON.stringify({ type: 'compact_context' }))
+                    }
+                  }}
+                  style={{
+                    background: colors.warning, color: 'white', border: 'none', borderRadius: 4,
+                    padding: '2px 8px', fontSize: 10, cursor: 'pointer',
+                  }}
+                >
+                  Compact
+                </button>
+              )}
+            </div>
+          )}
+          
+          {/* Context breakdown button */}
+          <button
+            onClick={() => setShowContextBreakdown(!showContextBreakdown)}
+            style={{
+              background: 'none', border: `1px solid ${colors.borderLight}`, borderRadius: 4, padding: '4px 10px',
+              fontSize: 12, color: colors.textSecondary, cursor: 'pointer',
+            }}
+          >
+            Context Breakdown
+          </button>
+          
+          {/* Model picker */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ fontSize: 12, color: colors.textSecondary }}>Model:</span>
+            <select
+              value={currentModel}
+              onChange={e => {
+                fetch('/api/models', { method: 'POST', body: JSON.stringify({ model: e.target.value }), headers: { 'Content-Type': 'application/json' } })
+                  .then(() => setCurrentModel(e.target.value))
+              }}
+              style={{ background: colors.bgTertiary, border: `1px solid ${colors.borderLight}`, borderRadius: 4, padding: '2px 6px', fontSize: 12 }}
+            >
+              {models.map(m => <option key={m.model} value={m.model}>{m.name}</option>)}
+            </select>
+          </div>
+          
+          {/* Multi-agent */}
+          {multiAgent && agentsList.length > 1 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 12, color: colors.textSecondary }}>Agent:</span>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {agentsList.map(a => (
+                  <button
+                    key={a.name}
+                    onClick={() => toggleAgent(a.name)}
+                    style={{
+                      background: selectedAgent === a.name ? colors.bgActive : colors.bgTertiary,
+                      border: `1px solid ${colors.borderLight}`,
+                      borderRadius: 4, padding: '2px 8px', fontSize: 12, cursor: 'pointer',
+                      color: selectedAgent === a.name ? colors.accent : colors.textSecondary,
+                    }}
+                  >
+                    {a.name}{a.isDefault ? ' (default)' : ''}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          
+          {/* Hide heartbeats toggle */}
+          <label style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 4 }}>
+            <input
+              type="checkbox"
+              checked={hideHeartbeats}
+              onChange={e => {
+                const hide = e.target.checked
+                setHideHeartbeats(hide)
+                localStorage.setItem('automate_hide_heartbeats', hide ? 'true' : 'false')
+              }}
+            />
+            Hide Heartbeats
+          </label>
+        </div>
+      </div>
+
+      {/* Context breakdown modal */}
+      {showContextBreakdown && contextBreakdown && (
+        <div style={{ position: 'absolute', top: 60, right: 16, background: colors.bgPrimary, border: `1px solid ${colors.border}`, borderRadius: 6, padding: 16, zIndex: 100, width: 400, maxHeight: 'calc(100vh - 80px)', overflow: 'auto' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <h3 style={{ margin: 0, fontSize: 16 }}>Context Breakdown</h3>
+            <button
+              onClick={() => setShowContextBreakdown(false)}
+              style={{ background: 'none', border: 'none', color: colors.textSecondary, cursor: 'pointer', fontSize: 18 }}
+            >
+              ×
+            </button>
+          </div>
+          
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+              <span>System Prompt</span>
+              <span>{contextBreakdown.systemPrompt}</span>
+            </div>
+            {contextBreakdown.details?.systemPrompt && (
+              <button
+                onClick={() => toggleBreakdownSection('system')}
+                style={{ background: 'none', border: 'none', color: colors.textSecondary, fontSize: 12, cursor: 'pointer', width: '100%', textAlign: 'left' }}
+              >
+                {expandedBreakdown === 'system' ? '▲' : '▼'} Detail ({contextBreakdown.details.systemPrompt.length} items)
+              </button>
+            )}
+            {expandedBreakdown === 'system' && contextBreakdown.details?.systemPrompt && (
+              <div style={{ marginLeft: 12, fontSize: 12, color: colors.textSecondary, maxHeight: 200, overflow: 'auto' }}>
+                {contextBreakdown.details.systemPrompt.map((item, i) => (
+                  <div key={i} style={{ marginBottom: 4 }}>
+                    <div>{item.name}</div>
+                    <div style={{ marginLeft: 8, color: colors.textMuted }}>{item.tokens} tokens</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+              <span>Tools</span>
+              <span>{contextBreakdown.toolDefinitions}</span>
+            </div>
+            {contextBreakdown.details?.tools && (
+              <button
+                onClick={() => toggleBreakdownSection('tools')}
+                style={{ background: 'none', border: 'none', color: colors.textSecondary, fontSize: 12, cursor: 'pointer', width: '100%', textAlign: 'left' }}
+              >
+                {expandedBreakdown === 'tools' ? '▲' : '▼'} Detail ({contextBreakdown.details.tools.length} tools)
+              </button>
+            )}
+            {expandedBreakdown === 'tools' && contextBreakdown.details?.tools && (
+              <div style={{ marginLeft: 12, fontSize: 12, color: colors.textSecondary, maxHeight: 200, overflow: 'auto' }}>
+                {contextBreakdown.details.tools.map((item, i) => (
+                  <div key={i} style={{ marginBottom: 4 }}>
+                    <div>{item.name}</div>
+                    <div style={{ marginLeft: 8, color: colors.textMuted }}>{item.tokens} tokens</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+              <span>User Messages</span>
+              <span>{contextBreakdown.userMessages}</span>
+            </div>
+          </div>
+          
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+              <span>Assistant Messages</span>
+              <span>{contextBreakdown.assistantMessages}</span>
+            </div>
+          </div>
+          
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+              <span>Tool Results</span>
+              <span>{contextBreakdown.toolResults}</span>
+            </div>
+          </div>
+          
+          <div style={{ borderTop: `1px solid ${colors.border}`, paddingTop: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 600 }}>
+              <span>Total</span>
+              <span>{contextBreakdown.total}/{contextBreakdown.limit}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Agent picker */}
+      {showAgentPicker && multiAgent && agentsList.length > 1 && (
+        <div style={{ background: colors.bgSecondary, padding: '12px 16px', borderBottom: `1px solid ${colors.border}` }}>
+          <div style={{ marginBottom: 8, color: colors.textSecondary, fontSize: 14, fontWeight: 600 }}>Select Agent</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {agentsList.map(a => (
+              <button
+                key={a.name}
+                onClick={() => { setSelectedAgent(a.name); setShowAgentPicker(false) }}
+                style={{
+                  background: selectedAgent === a.name ? colors.bgActive : colors.bgTertiary,
+                  border: `1px solid ${colors.borderLight}`,
+                  borderRadius: 4, padding: '6px 12px', cursor: 'pointer',
+                  color: selectedAgent === a.name ? colors.accent : colors.textSecondary,
+                }}
+              >
+                {a.name}{a.isDefault ? ' (default)' : ''}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Main content area */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        {/* Messages container */}
+        <div ref={messagesContainerRef} style={{ flex: 1, overflowY: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* Messages */}
+          {messages.map((m, i) => {
+            const isUser = m.role === 'user'
+            const isAssistant = m.role === 'assistant'
+            const isSystem = m.role === 'system'
+            const isPowerSteering = m.isPowerSteering
+
+            // Check if next message is from same role to determine grouping
+            const next = messages[i + 1]
+            const isLastInGroup = !next || next.role !== m.role || next.isPowerSteering !== m.isPowerSteering
+
+            return (
+              <div key={m.id} style={{ display: 'flex', flexDirection: isUser ? 'row-reverse' : 'row', gap: 12 }}>
+                {/* Avatar */}
+                <div style={{
+                  width: 32, height: 32, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: isUser ? colors.bgActive : isPowerSteering ? colors.bgWarning : isSystem ? colors.bgTertiary : colors.bgSecondary,
+                  border: `1px solid ${isUser ? colors.accent : isPowerSteering ? colors.warning : isSystem ? colors.borderLight : colors.border}`,
+                  flexShrink: 0, fontSize: 14, fontWeight: 600, color: isUser ? colors.accent : isPowerSteering ? colors.warning : isSystem ? colors.textSecondary : colors.textSecondary,
+                }}>
+                  {isUser ? 'U' : isPowerSteering ? '⚠' : isSystem ? '⚙' : 'A'}
+                </div>
+
+                {/* Content */}
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 'calc(100% - 44px)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 12, color: colors.textSecondary, fontWeight: 600 }}>
+                      {isUser ? 'User' : isPowerSteering ? 'Power Steering' : isSystem ? 'System' : 'Assistant'}
+                    </span>
+                    <span style={{ fontSize: 11, color: colors.textMuted }}>
+                      {new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div>{isAssistant ? renderContentWithTools(m.content, m.toolCalls, m.id) : m.content}</div>
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+
+          {/* Power Steering accordion */}
+          {/* This seems to be duplicated code that was in the original file - removing to simplify */}
+
+          {/* Typing indicator */}
+          {(typing || awaitingResponse) && (
+            <div style={{ display: 'flex', gap: 12 }}>
+              <div style={{
+                width: 32, height: 32, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: colors.bgSecondary, border: `1px solid ${colors.border}`, flexShrink: 0, fontSize: 14, fontWeight: 600, color: colors.textSecondary,
+              }}>
+                A
+              </div>
+              <div style={{ padding: '12px 16px', background: colors.bgSecondary, borderRadius: 8, maxWidth: 'calc(100% - 44px)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: colors.textSecondary }}>
+                  <div style={{ display: 'flex', gap: 2 }}>
+                    <div style={{ width: 6, height: 6, borderRadius: '50%', background: colors.textSecondary, animation: 'pulse 1.4s infinite' }} />
+                    <div style={{ width: 6, height: 6, borderRadius: '50%', background: colors.textSecondary, animation: 'pulse 1.4s infinite', animationDelay: '0.2s' }} />
+                    <div style={{ width: 6, height: 6, borderRadius: '50%', background: colors.textSecondary, animation: 'pulse 1.4s infinite', animationDelay: '0.4s' }} />
+                  </div>
+                  <span>Thinking...</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Streaming content */}
+          {streaming && (
+            <div style={{ display: 'flex', gap: 12 }}>
+              <div style={{
+                width: 32, height: 32, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: colors.bgSecondary, border: `1px solid ${colors.border}`, flexShrink: 0, fontSize: 14, fontWeight: 600, color: colors.textSecondary,
+              }}>
+                A
+              </div>
+              <div style={{ padding: '12px 16px', background: colors.bgSecondary, borderRadius: 8, maxWidth: 'calc(100% - 44px)' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div>{renderContentWithTools(streaming, streamingToolCalls, 'streaming')}</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Heartbeat activity */}
+          {heartbeat && !hideHeartbeats && (
+            <div style={{ display: 'flex', gap: 12 }}>
+              <div style={{
+                width: 32, height: 32, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: colors.bgTertiary, border: `1px solid ${colors.borderLight}`, flexShrink: 0, fontSize: 14, fontWeight: 600, color: colors.warning,
+              }}>
+                ⚡
+              </div>
+              <div style={{ flex: 1 }}>
+                <div
+                  onClick={() => toggleHeartbeat(heartbeat.sessionId)}
+                  style={{
+                    padding: '12px 16px', background: heartbeat.status === 'failed' ? colors.bgError : colors.bgTertiary,
+                    borderRadius: 8, cursor: 'pointer', border: `1px solid ${heartbeat.status === 'failed' ? colors.error : colors.borderLight}`,
+                    maxWidth: 'calc(100% - 44px)',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <span style={{ fontSize: 12, color: colors.textSecondary, fontWeight: 600 }}>Heartbeat</span>
+                    <span style={{ fontSize: 11, color: colors.textMuted }}>
+                      {new Date(heartbeat.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                    <span style={{ fontSize: 12, color: heartbeat.status === 'failed' ? colors.error : colors.success }}>
+                      {heartbeat.status === 'running' ? 'Running' : heartbeat.status === 'ok-token' ? 'Activity Generated' : heartbeat.status === 'ok-empty' ? 'No Activity' : heartbeat.status}
+                    </span>
+                  </div>
+                  <div>{heartbeat.content}</div>
+                </div>
+
+                {expandedHeartbeats[heartbeat.sessionId] && (
+                  <div style={{ marginTop: 8, padding: '8px 16px', background: colors.bgTertiary, borderRadius: 6, border: `1px solid ${colors.borderLight}`, fontSize: 12, color: colors.textSecondary }}>
+                    <div>Session: {heartbeat.sessionId.substring(0, 8)}...</div>
+                    {heartbeat.status === 'failed' && (
+                      <div>Check logs for error details</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Injected prompts indicator */}
+          {injectedPrompts.length > 0 && (
+            <div style={{ display: 'flex', gap: 12 }}>
+              <div style={{
+                width: 32, height: 32, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: colors.bgTertiary, border: `1px solid ${colors.borderLight}`, flexShrink: 0, fontSize: 14, fontWeight: 600, color: colors.warning,
+              }}>
+                ↪
+              </div>
+              <div style={{ padding: '12px 16px', background: colors.bgTertiary, borderRadius: 8, border: `1px solid ${colors.borderLight}`, maxWidth: 'calc(100% - 44px)' }}>
+                <div style={{ fontSize: 12, color: colors.textSecondary, marginBottom: 4 }}>Queued prompts:</div>
+                {injectedPrompts.map((p, i) => (
+                  <div key={i} style={{ fontSize: 12, color: colors.textSecondary, marginBottom: 2, fontStyle: 'italic' }}>• {p}</div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Bottom anchor for auto-scrolling */}
+          <div ref={bottomRef} style={{ height: 1 }} />
+        </div>
+
+        {/* Input area */}
+        <div style={{ padding: '12px 16px', borderTop: `1px solid ${colors.border}`, background: colors.bgSecondary }}>
+          {/* Slash command menu */}
+          {showSlashMenu && (
+            <div style={{ position: 'absolute', bottom: 70, left: 16, right: 16, background: colors.bgPrimary, border: `1px solid ${colors.border}`, borderRadius: 6, padding: 8, zIndex: 10, maxHeight: 300, overflow: 'auto' }}>
+              {SLASH_COMMANDS.filter(c => !slashFilter || c.cmd.toLowerCase().includes(slashFilter.toLowerCase())).map((c, i) => (
+                <div
+                  key={i}
+                  onClick={() => {
+                    setInput(c.cmd + ' ')
+                    setShowSlashMenu(false)
+                    inputRef.current?.focus()
+                  }}
+                  style={{ padding: '6px 10px', cursor: 'pointer', borderBottom: i < SLASH_COMMANDS.length - 1 ? `1px solid ${colors.border}` : 'none', display: 'flex', justifyContent: 'space-between' }}
+                >
+                  <span style={{ fontWeight: 600, color: colors.accent }}>{c.cmd}</span>
+                  <span style={{ color: colors.textSecondary }}>{c.desc}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} style={{ display: 'flex', gap: 8 }}>
+            <input
+              ref={inputRef}
+              type="text"
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Message..."
+              onFocus={() => setShowSlashMenu(false)}
+              style={{
+                flex: 1, padding: '10px 14px', background: colors.bgPrimary, border: `1px solid ${colors.border}`,
+                borderRadius: 8, color: colors.textPrimary, fontSize: 14,
+              }}
+            />
+            <button
+              type="submit"
+              disabled={!input.trim() || awaitingResponse || !connected}
+              style={{
+                padding: '10px 20px', background: input.trim() && connected ? colors.accent : colors.bgTertiary,
+                color: input.trim() && connected ? 'white' : colors.textMuted, border: 'none', borderRadius: 8,
+                cursor: input.trim() && connected ? 'pointer' : 'default', fontWeight: 600,
+              }}
+            >
+              {awaitingResponse ? '...' : 'Send'}
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              onChange={handleFileUpload}
+              style={{ display: 'none' }}
+              accept="*/*"
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading || !connected}
+              style={{
+                padding: '10px 14px', background: uploading || !connected ? colors.bgTertiary : colors.bgSecondary,
+                color: uploading || !connected ? colors.textMuted : colors.textSecondary, border: `1px solid ${colors.borderLight}`,
+                borderRadius: 8, cursor: uploading || !connected ? 'default' : 'pointer',
+              }}
+            >
+              {uploading ? '...' : 'File'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowSlashMenu(!showSlashMenu)}
+              style={{
+                padding: '10px 14px', background: colors.bgSecondary, color: colors.textSecondary,
+                border: `1px solid ${colors.borderLight}`, borderRadius: 8, cursor: 'pointer',
+              }}
+            >
+              /
+            </button>
+          </form>
+        </div>
+      </div>
+
+      {/* HTML Preview Modal */}
+      {htmlPreview && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.8)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: '90%', height: '90%', background: 'white', borderRadius: 8, overflow: 'hidden' }}>
+            <div style={{ padding: 16, background: '#f5f5f5', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ margin: 0 }}>HTML Preview</h3>
+              <button
+                onClick={() => setHtmlPreview(null)}
+                style={{ background: 'none', border: 'none', fontSize: 24, cursor: 'pointer' }}
+              >
+                ×
+              </button>
+            </div>
+            <iframe
+              srcDoc={htmlPreview}
+              style={{ width: '100%', height: 'calc(100% - 60px)', border: 'none' }}
+              title="HTML Preview"
+            />
+          </div>
+        </div>
+      )}
+
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 0.4; }
+          50% { opacity: 1; }
+        }
+      `}</style>
+    </div>
+  )
+}

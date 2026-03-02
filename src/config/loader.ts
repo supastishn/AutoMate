@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, watch, type FSWatch
 import { homedir } from 'node:os';
 import { join, resolve, extname } from 'node:path';
 import { ConfigSchema, type Config } from './schema.js';
+import { setSubAgentMaxConcurrent } from '../agent/tools/subagent.js';
 
 const CONFIG_DIR = join(homedir(), '.automate');
 const CONFIG_FILE_JSON = join(CONFIG_DIR, 'automate.json');
@@ -11,6 +12,8 @@ const CONFIG_FILE_YAML = join(CONFIG_DIR, 'automate.yaml');
 let configWatcher: FSWatcher | null = null;
 let configChangeCallbacks: ((config: Config) => void)[] = [];
 let lastConfigMtime = 0;
+// Cached config for getCurrentConfig()
+let cachedConfig: Config | null = null;
 
 export function resolveHome(p: string): string {
   if (p.startsWith('~')) return p.replace('~', homedir());
@@ -172,6 +175,107 @@ function getConfigFilePath(): string {
   return CONFIG_FILE_JSON;
 }
 
+/** Fix invalid config values that could cause validation errors */
+function fixInvalidConfigValues(config: Record<string, unknown>): Record<string, unknown> {
+  // Fix invalid thinkingLevel values
+  if (config.agent && typeof config.agent === 'object') {
+    const agent = config.agent as Record<string, unknown>;
+    if (agent.thinkingLevel && typeof agent.thinkingLevel === 'string') {
+      const validThinkingLevels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
+      if (!validThinkingLevels.includes(agent.thinkingLevel)) {
+        console.warn(`[config] Invalid thinkingLevel "${agent.thinkingLevel}", resetting to "off"`);
+        agent.thinkingLevel = 'off';
+      }
+    }
+  }
+
+  // Fix invalid powerSteering.role values
+  if (config.agent && typeof config.agent === 'object') {
+    const agent = config.agent as Record<string, unknown>;
+    if (agent.powerSteering && typeof agent.powerSteering === 'object') {
+      const powerSteering = agent.powerSteering as Record<string, unknown>;
+      if (powerSteering.role && typeof powerSteering.role === 'string') {
+        const validPowerSteeringRoles = ['system', 'user', 'both'];
+        if (!validPowerSteeringRoles.includes(powerSteering.role)) {
+          console.warn(`[config] Invalid powerSteering.role "${powerSteering.role}", resetting to "system"`);
+          powerSteering.role = 'system';
+        }
+      }
+    }
+  }
+
+  // Fix invalid gateway auth mode values
+  if (config.gateway && typeof config.gateway === 'object') {
+    const gateway = config.gateway as Record<string, unknown>;
+    if (gateway.auth && typeof gateway.auth === 'object') {
+      const auth = gateway.auth as Record<string, unknown>;
+      if (auth.mode && typeof auth.mode === 'string') {
+        const validAuthModes = ['none', 'token', 'password'];
+        if (!validAuthModes.includes(auth.mode)) {
+          console.warn(`[config] Invalid gateway.auth.mode "${auth.mode}", resetting to "token"`);
+          auth.mode = 'token';
+        }
+      }
+    }
+  }
+
+  // Fix invalid loadBalancing strategy values
+  if (config.agent && typeof config.agent === 'object') {
+    const agent = config.agent as Record<string, unknown>;
+    if (agent.loadBalancing && typeof agent.loadBalancing === 'object') {
+      const loadBalancing = agent.loadBalancing as Record<string, unknown>;
+      if (loadBalancing.strategy && typeof loadBalancing.strategy === 'string') {
+        const validStrategies = ['round-robin', 'random'];
+        if (!validStrategies.includes(loadBalancing.strategy)) {
+          console.warn(`[config] Invalid loadBalancing.strategy "${loadBalancing.strategy}", resetting to "round-robin"`);
+          loadBalancing.strategy = 'round-robin';
+        }
+      }
+    }
+  }
+
+  // Fix invalid TTS provider values
+  if (config.tts && typeof config.tts === 'object') {
+    const tts = config.tts as Record<string, unknown>;
+    if (tts.provider && typeof tts.provider === 'string') {
+      const validProviders = ['elevenlabs', 'openai'];
+      if (!validProviders.includes(tts.provider)) {
+        console.warn(`[config] Invalid tts.provider "${tts.provider}", resetting to "elevenlabs"`);
+        tts.provider = 'elevenlabs';
+      }
+    }
+  }
+
+  // Fix invalid memory embedding provider values
+  if (config.memory && typeof config.memory === 'object') {
+    const memory = config.memory as Record<string, unknown>;
+    if (memory.embedding && typeof memory.embedding === 'object') {
+      const embedding = memory.embedding as Record<string, unknown>;
+      if (embedding.provider && typeof embedding.provider === 'string') {
+        const validProviders = ['openai', 'gemini', 'voyage', 'local'];
+        if (!validProviders.includes(embedding.provider)) {
+          console.warn(`[config] Invalid memory.embedding.provider "${embedding.provider}", resetting to "openai"`);
+          embedding.provider = 'openai';
+        }
+      }
+    }
+  }
+
+  // Fix invalid memory citations values
+  if (config.memory && typeof config.memory === 'object') {
+    const memory = config.memory as Record<string, unknown>;
+    if (memory.citations && typeof memory.citations === 'string') {
+      const validCitations = ['full', 'file-only', 'none'];
+      if (!validCitations.includes(memory.citations)) {
+        console.warn(`[config] Invalid memory.citations "${memory.citations}", resetting to "full"`);
+        memory.citations = 'full';
+      }
+    }
+  }
+
+  return config;
+}
+
 export function loadConfig(path?: string): Config {
   const configPath = path || getConfigFilePath();
   ensureConfigDir();
@@ -183,6 +287,9 @@ export function loadConfig(path?: string): Config {
   
   // Apply AUTOMATE_* environment variable overrides
   applyEnvOverrides(raw);
+
+  // Fix any invalid config values that could cause validation errors
+  raw = fixInvalidConfigValues(raw);
 
   const config = ConfigSchema.parse(raw);
 
@@ -205,6 +312,12 @@ export function loadConfig(path?: string): Config {
   if (config.plugins?.directory) {
     mkdirSync(config.plugins.directory, { recursive: true });
   }
+
+  // Set subagent concurrency limit
+  setSubAgentMaxConcurrent(config.agent.subagent?.maxConcurrent ?? 3);
+
+  // Cache for getCurrentConfig()
+  cachedConfig = config;
 
   return config;
 }
@@ -248,6 +361,9 @@ export function reloadConfig(path?: string): Config {
   raw = substituteEnvVars(raw);
   applyEnvOverrides(raw);
   
+  // Fix any invalid config values that could cause validation errors
+  raw = fixInvalidConfigValues(raw);
+
   const config = ConfigSchema.parse(raw);
   config.skills.directory = resolveHome(config.skills.directory);
   config.sessions.directory = resolveHome(config.sessions.directory);
@@ -257,6 +373,13 @@ export function reloadConfig(path?: string): Config {
   if (config.plugins?.directory) {
     config.plugins.directory = resolveHome(config.plugins.directory);
   }
+
+  // Update subagent concurrency limit on reload
+  setSubAgentMaxConcurrent(config.agent.subagent?.maxConcurrent ?? 3);
+
+  // Update cache for getCurrentConfig()
+  cachedConfig = config;
+
   return config;
 }
 
@@ -272,6 +395,11 @@ export function getConfigPath(): string {
 
 export function getConfigDir(): string {
   return CONFIG_DIR;
+}
+
+/** Get the currently loaded config (returns null if not yet loaded) */
+export function getCurrentConfig(): Config | null {
+  return cachedConfig;
 }
 
 /** Register a callback to be called when config file changes */

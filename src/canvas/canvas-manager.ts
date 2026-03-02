@@ -5,6 +5,7 @@ import type { Tool } from '../agent/tool-registry.js';
 /**
  * Canvas (A2UI) - Unified agent-driven visual workspace tool.
  * Supports persistence, image uploads, file serving, and full service access.
+ * Each canvas is saved as an individual file in a dedicated canvases directory.
  */
 
 export interface CanvasState {
@@ -20,7 +21,7 @@ export interface CanvasState {
 export type CanvasBroadcaster = (event: CanvasEvent) => void;
 
 export interface CanvasEvent {
-  type: 'canvas_push' | 'canvas_reset' | 'canvas_snapshot';
+  type: 'canvas_push' | 'canvas_reset' | 'canvas_snapshot' | 'canvas_delete';
   canvas: {
     id: string;
     title: string;
@@ -43,8 +44,30 @@ export interface CanvasServices {
 const canvases: Map<string, CanvasState> = new Map();
 let broadcaster: CanvasBroadcaster | null = null;
 let persistPath: string | null = null;
+let canvasDir: string | null = null;
 let uploadDir: string | null = null;
 let coreServices: CanvasServices = {};
+
+/** Get file extension for content type */
+function getExtension(contentType: string): string {
+  switch (contentType) {
+    case 'html': return 'html';
+    case 'markdown': return 'md';
+    case 'json': return 'json';
+    case 'code': return 'txt';
+    default: return 'txt';
+  }
+}
+
+/** Get content type from file extension */
+function getContentType(ext: string): CanvasState['contentType'] {
+  switch (ext.toLowerCase()) {
+    case '.html': case '.htm': return 'html';
+    case '.md': case '.markdown': return 'markdown';
+    case '.json': return 'json';
+    default: return 'text';
+  }
+}
 
 export function setCanvasBroadcaster(fn: CanvasBroadcaster): void {
   broadcaster = fn;
@@ -53,6 +76,8 @@ export function setCanvasBroadcaster(fn: CanvasBroadcaster): void {
 /** Set the file path for canvas persistence and load existing data */
 export function setCanvasPersistPath(path: string): void {
   persistPath = path;
+  canvasDir = join(path, '..', 'canvases');
+  if (!existsSync(canvasDir)) mkdirSync(canvasDir, { recursive: true });
   loadCanvases();
 }
 
@@ -67,33 +92,125 @@ export function setCanvasServices(services: CanvasServices): void {
   coreServices = { ...coreServices, ...services };
 }
 
-/** Save all canvases to disk */
-function saveCanvases(): void {
-  if (!persistPath) return;
+/** Get the file path for a canvas */
+function getCanvasFilePath(canvasId: string, contentType: string): string {
+  if (!canvasDir) return '';
+  const ext = getExtension(contentType);
+  // Sanitize canvas ID for filename
+  const safeId = canvasId.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return join(canvasDir, `${safeId}.${ext}`);
+}
+
+/** Save a single canvas to its own file */
+function saveCanvasFile(canvas: CanvasState): void {
+  if (!canvasDir || !canvas.content) return;
   try {
-    const data: Record<string, CanvasState> = {};
-    for (const [id, canvas] of canvases) {
-      if (canvas.content) {
-        data[id] = canvas;
-      }
+    const filePath = getCanvasFilePath(canvas.id, canvas.contentType);
+    if (filePath) {
+      writeFileSync(filePath, canvas.content, 'utf-8');
     }
-    writeFileSync(persistPath, JSON.stringify(data, null, 2), 'utf-8');
+    // Also save metadata to the main JSON file
+    saveCanvasesMetadata();
   } catch {
     // Persistence errors are non-fatal
   }
 }
 
-/** Load canvases from disk */
-function loadCanvases(): void {
-  if (!persistPath || !existsSync(persistPath)) return;
+/** Save only canvas metadata (not content) to JSON file */
+function saveCanvasesMetadata(): void {
+  if (!persistPath) return;
   try {
-    const data = readFileSync(persistPath, 'utf-8');
-    const parsed = JSON.parse(data) as Record<string, CanvasState>;
-    for (const [id, canvas] of Object.entries(parsed)) {
-      canvases.set(id, canvas);
+    const metadata: Record<string, Omit<CanvasState, 'content'>> = {};
+    for (const [id, canvas] of canvases) {
+      metadata[id] = {
+        id: canvas.id,
+        title: canvas.title,
+        contentType: canvas.contentType,
+        language: canvas.language,
+        updatedAt: canvas.updatedAt,
+        history: canvas.history.slice(-5), // Keep last 5 history entries
+      };
     }
+    writeFileSync(persistPath, JSON.stringify(metadata, null, 2), 'utf-8');
   } catch {
-    // Load errors are non-fatal
+    // Persistence errors are non-fatal
+  }
+}
+
+/** Save all canvases to disk (legacy - saves full state to JSON) */
+function saveCanvases(): void {
+  saveCanvasFile(canvases.values().next().value!); // Will be called per-canvas
+}
+
+/** Load canvases from disk - loads metadata from JSON and content from individual files */
+function loadCanvases(): void {
+  // Load metadata from JSON
+  if (persistPath && existsSync(persistPath)) {
+    try {
+      const data = readFileSync(persistPath, 'utf-8');
+      const parsed = JSON.parse(data) as Record<string, Partial<CanvasState>>;
+      for (const [id, meta] of Object.entries(parsed)) {
+        canvases.set(id, {
+          id: meta.id || id,
+          title: meta.title || 'Canvas',
+          content: '',
+          contentType: meta.contentType || 'markdown',
+          language: meta.language,
+          updatedAt: meta.updatedAt || new Date().toISOString(),
+          history: meta.history || [],
+        });
+      }
+    } catch {
+      // Load errors are non-fatal
+    }
+  }
+
+  // Load content from individual canvas files
+  if (canvasDir && existsSync(canvasDir)) {
+    try {
+      const files = readdirSync(canvasDir);
+      for (const file of files) {
+        const ext = extname(file);
+        const baseName = basename(file, ext);
+        // Find matching canvas by sanitized ID
+        for (const [id, canvas] of canvases) {
+          const safeId = id.replace(/[^a-zA-Z0-9._-]/g, '_');
+          if (baseName === safeId) {
+            try {
+              const content = readFileSync(join(canvasDir, file), 'utf-8');
+              canvas.content = content;
+              canvas.contentType = getContentType(ext);
+            } catch {
+              // Ignore file read errors
+            }
+            break;
+          }
+        }
+      }
+      // Also load any canvas files that don't have metadata
+      for (const file of files) {
+        const ext = extname(file);
+        const baseName = basename(file, ext);
+        const safeId = baseName;
+        if (!canvases.has(safeId) && !canvases.has(baseName)) {
+          try {
+            const content = readFileSync(join(canvasDir, file), 'utf-8');
+            canvases.set(baseName, {
+              id: baseName,
+              title: baseName,
+              content,
+              contentType: getContentType(ext),
+              updatedAt: new Date().toISOString(),
+              history: [],
+            });
+          } catch {
+            // Ignore file read errors
+          }
+        }
+      }
+    } catch {
+      // Ignore directory read errors
+    }
   }
 }
 
@@ -119,6 +236,45 @@ export function getCanvas(sessionId: string): CanvasState | undefined {
 
 export function getAllCanvases(): CanvasState[] {
   return Array.from(canvases.values());
+}
+
+export function deleteCanvas(canvasId: string): boolean {
+  const canvas = canvases.get(canvasId);
+  const deleted = canvases.delete(canvasId);
+  if (deleted) {
+    // Delete the canvas file
+    if (canvasDir && canvas) {
+      const filePath = getCanvasFilePath(canvasId, canvas.contentType);
+      if (filePath && existsSync(filePath)) {
+        try { unlinkSync(filePath); } catch { /* ignore */ }
+      }
+    }
+    saveCanvasesMetadata();
+    broadcast({
+      type: 'canvas_delete',
+      canvas: { id: canvasId, title: '', content: '', contentType: 'markdown' },
+    });
+  }
+  return deleted;
+}
+
+export function updateCanvas(canvasId: string, updates: { title?: string; content?: string; contentType?: string; language?: string }): boolean {
+  const canvas = canvases.get(canvasId);
+  if (!canvas) return false;
+  
+  if (updates.title !== undefined) canvas.title = updates.title;
+  if (updates.content !== undefined) canvas.content = updates.content;
+  if (updates.contentType !== undefined) canvas.contentType = updates.contentType as any;
+  if (updates.language !== undefined) canvas.language = updates.language;
+  canvas.updatedAt = new Date().toISOString();
+  
+  saveCanvasFile(canvas);
+  broadcast({
+    type: 'canvas_push',
+    canvas: { id: canvas.id, title: canvas.title, content: canvas.content, contentType: canvas.contentType, language: canvas.language },
+  });
+  
+  return true;
 }
 
 // ── Upload helpers ──────────────────────────────────────────────────────
@@ -178,10 +334,11 @@ export const canvasTools: Tool[] = [
     name: 'canvas',
     description: [
       'Visual Canvas workspace for displaying rich content to connected clients.',
-      'Actions: push, reset, snapshot, upload, uploads, delete_upload, send_image, broadcast, services.',
+      'Actions: push, reset, snapshot, delete, upload, uploads, delete_upload, send_image, broadcast, services.',
       'push — push HTML/Markdown/JSON/code/text content to the canvas (rendered in real-time). Use mode=append (default) to add to existing content, or mode=overwrite to replace it.',
       'reset — clear the canvas.',
       'snapshot — get the current canvas state and content.',
+      'delete — delete a canvas by ID.',
       'upload — upload a local file (by path) to make it serveable via URL. Returns the URL. Great for screenshots, captchas, etc.',
       'uploads — list all uploaded files with URLs and sizes.',
       'delete_upload — delete an uploaded file by filename.',
@@ -194,7 +351,7 @@ export const canvasTools: Tool[] = [
       properties: {
         action: {
           type: 'string',
-          description: 'Action: push|reset|snapshot|upload|uploads|delete_upload|send_image|broadcast|services',
+          description: 'Action: push|reset|snapshot|delete|upload|uploads|delete_upload|send_image|broadcast|services',
         },
         title: { type: 'string', description: 'Title for the canvas content (for push, send_image)' },
         content: { type: 'string', description: 'Content to display: HTML, Markdown, JSON, text, or code (for push)' },
@@ -209,6 +366,7 @@ export const canvasTools: Tool[] = [
           enum: ['overwrite', 'append'],
           description: 'Push mode: append adds to existing content (default), overwrite replaces content',
         },
+        canvas_id: { type: 'string', description: 'Canvas ID to delete (for delete action)' },
         file_path: { type: 'string', description: 'Local file path (for upload, send_image)' },
         filename: { type: 'string', description: 'Filename to delete (for delete_upload)' },
         width: { type: 'string', description: 'Image display width, e.g. "100%", "500px" (for send_image, default: 100%)' },
@@ -231,42 +389,40 @@ export const canvasTools: Tool[] = [
           const mode = (params.mode as string) || 'append';
 
           if (canvas.content) {
-            canvas.history.push({ content: canvas.content, timestamp: canvas.updatedAt });
-            if (canvas.history.length > 20) canvas.history = canvas.history.slice(-20);
-          }
-
-          canvas.title = title;
-          canvas.content = mode === 'append' ? canvas.content + content : content;
-          canvas.contentType = contentType as any;
-          canvas.language = language;
-          canvas.updatedAt = new Date().toISOString();
-
-          broadcast({
-            type: 'canvas_push',
-            canvas: { id: canvas.id, title, content: canvas.content, contentType, language },
-          });
-
-          saveCanvases();
-
+                    canvas.history.push({ content: canvas.content, timestamp: canvas.updatedAt });
+                    if (canvas.history.length > 20) canvas.history = canvas.history.slice(-20);
+                  }
+            
+                  canvas.title = title;
+                  canvas.content = mode === 'append' ? canvas.content + content : content;
+                  canvas.contentType = contentType as any;
+                  canvas.language = language;
+                  canvas.updatedAt = new Date().toISOString();
+            
+                  broadcast({
+                    type: 'canvas_push',
+                    canvas: { id: canvas.id, title, content: canvas.content, contentType, language },
+                  });
+            
+                  saveCanvasFile(canvas);
           const modeLabel = mode === 'append' ? 'appended' : 'updated';
           return { output: `Canvas ${modeLabel}: "${title}" (${contentType}, ${canvas.content.length} chars)` };
         }
 
         case 'reset': {
           const canvas = getOrCreateCanvas(ctx.sessionId);
-          canvas.content = '';
-          canvas.title = 'Canvas';
-          canvas.contentType = 'markdown';
-          canvas.language = undefined;
-          canvas.updatedAt = new Date().toISOString();
-
-          broadcast({
-            type: 'canvas_reset',
-            canvas: { id: canvas.id, title: 'Canvas', content: '', contentType: 'markdown' },
-          });
-
-          saveCanvases();
-
+                  canvas.content = '';
+                  canvas.title = 'Canvas';
+                  canvas.contentType = 'markdown';
+                  canvas.language = undefined;
+                  canvas.updatedAt = new Date().toISOString();
+          
+                  broadcast({
+                    type: 'canvas_reset',
+                    canvas: { id: canvas.id, title: 'Canvas', content: '', contentType: 'markdown' },
+                  });
+          
+                  saveCanvasesMetadata();
           return { output: 'Canvas cleared.' };
         }
 
@@ -285,6 +441,12 @@ export const canvasTools: Tool[] = [
               updatedAt: canvas.updatedAt,
             }, null, 2),
           };
+        }
+
+        case 'delete': {
+          const canvasId = (params.canvas_id as string) || ctx.sessionId;
+          const deleted = deleteCanvas(canvasId);
+          return { output: deleted ? `Canvas "${canvasId}" deleted.` : `Canvas "${canvasId}" not found.` };
         }
 
         // ── Upload a local file to make it serveable ──────────────────
@@ -354,7 +516,7 @@ export const canvasTools: Tool[] = [
               type: 'canvas_push',
               canvas: { id: canvas.id, title, content: htmlContent, contentType: 'html' },
             });
-            saveCanvases();
+            saveCanvasFile(canvas);
 
             return {
               output: `Image pushed to canvas!\n  Title: ${title}\n  URL: ${result.url}\n  Size: ${(result.size / 1024).toFixed(1)} KB`,
@@ -382,7 +544,7 @@ export const canvasTools: Tool[] = [
         }
 
         default:
-          return { output: `Error: Unknown action "${action}". Valid: push, reset, snapshot, upload, uploads, delete_upload, send_image, broadcast, services` };
+          return { output: `Error: Unknown action "${action}". Valid: push, reset, snapshot, delete, upload, uploads, delete_upload, send_image, broadcast, services` };
       }
     },
   },

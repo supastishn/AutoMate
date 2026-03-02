@@ -84,8 +84,6 @@ function Cron() {
     sessionId: '',
   })
   const [creating, setCreating] = React.useState(false)
-  const [editingId, setEditingId] = React.useState<string | null>(null)
-  const isEditing = editingId !== null
   const [isMobile, setIsMobile] = React.useState(window.innerWidth < 360)
 
   React.useEffect(() => {
@@ -134,18 +132,6 @@ function Cron() {
       await fetchJobs()
     } catch {}
   }
-  
-  const startEditing = (job: CronJob) => {
-    setForm({
-      name: job.name,
-      prompt: job.prompt,
-      scheduleType: job.schedule.type,
-      cronExpression: job.schedule.cron || "",
-      intervalMinutes: job.schedule.every ? (job.schedule.every / 60 / 1000).toString() : "60",
-      sessionId: job.sessionId || "",
-    });
-    setEditingId(job.id);
-  }
 
   const createJob = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -187,53 +173,6 @@ function Cron() {
       setCreating(false)
     }
   }
-  
-  const updateJob = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!form.name.trim() || !form.prompt.trim() || !editingId) return;
-    
-    setCreating(true);
-    try {
-      const schedule: any = { type: form.scheduleType };
-      if (form.scheduleType === "cron") {
-        schedule.cron = form.cronExpression;
-      } else if (form.scheduleType === "interval") {
-        schedule.every = (parseInt(form.intervalMinutes, 10) || 60) * 60 * 1000;
-      }
-      
-      const body: any = {
-        name: form.name.trim(),
-        prompt: form.prompt.trim(),
-        schedule,
-      };
-      if (form.sessionId.trim()) {
-        body.sessionId = form.sessionId.trim();
-      }
-      
-      const res = await fetch(`/api/cron/${editingId}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      
-      setForm({
-        name: "",
-        prompt: "",
-        scheduleType: "interval",
-        cronExpression: "",
-        intervalMinutes: "60",
-        sessionId: "",
-      });
-      setEditingId(null);
-      await fetchJobs();
-    } catch (e: any) {
-      setError(e.message ?? "Failed to update job");
-    } finally {
-      setCreating(false);
-    }
-  };
 
   const gridStyle: React.CSSProperties = {
     display: 'grid',
@@ -327,37 +266,19 @@ function Cron() {
         <div style={gridStyle}>
           {jobs.map((job) => (
             <div key={job.id} style={cardStyle}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <h3 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>{job.name}</h3>
-                  <button
-                    style={{
-                      padding: "4px 8px",
-                      borderRadius: 4,
-                      border: `1px solid ${colors.border}`,
-                      background: colors.bgPrimary,
-                      color: colors.textSecondary,
-                      cursor: "pointer",
-                      fontSize: 11,
-                      fontWeight: 600,
-                    }}
-                    onClick={() => startEditing(job)}
-                    title="Edit job"
-                  >
-                    Edit
-                  </button>
-                </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>{job.name}</h3>
                 <span style={{
                   fontSize: 11,
                   fontWeight: 600,
-                  padding: "2px 8px",
+                  padding: '2px 8px',
                   borderRadius: 9999,
-                  textTransform: "uppercase",
+                  textTransform: 'uppercase',
                   letterSpacing: 0.5,
                   background: job.enabled ? colors.successMuted : colors.bgTertiary,
                   color: job.enabled ? colors.success : colors.textSecondary,
                 }}>
-                  {job.enabled ? "Enabled" : "Disabled"}
+                  {job.enabled ? 'Enabled' : 'Disabled'}
                 </span>
               </div>
 
@@ -441,8 +362,8 @@ function Cron() {
         borderRadius: 8,
         padding: 20,
       }}>
-        <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>{isEditing ? "Edit Job" : "Create Job"}</div>
-        <form onSubmit={isEditing ? updateJob : createJob}>
+        <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>Create Job</div>
+        <form onSubmit={createJob}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               <label style={{ fontSize: 12, fontWeight: 600, color: colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.5 }}>Name</label>
@@ -528,38 +449,8 @@ function Cron() {
             cursor: 'pointer',
             marginTop: 8,
           }} disabled={creating}>
-            {creating ? (isEditing ? "Updating…" : "Creating…") : (isEditing ? "Update Job" : "Create Job")}
+            {creating ? 'Creating…' : 'Create Job'}
           </button>
-            {isEditing && (
-              <button
-                type="button"
-                style={{
-                  padding: "10px 20px",
-                  background: colors.bgTertiary,
-                  color: colors.textSecondary,
-                  border: "none",
-                  borderRadius: 4,
-                  fontSize: 14,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  marginTop: 8,
-                }}
-                onClick={() => {
-                  setForm({
-                    name: "",
-                    prompt: "",
-                    scheduleType: "interval",
-                    cronExpression: "",
-                    intervalMinutes: "60",
-                    sessionId: "",
-                  });
-                  setEditingId(null);
-                }}
-                disabled={creating}
-              >
-                Cancel
-              </button>
-            )}
         </form>
       </div>
     </div>

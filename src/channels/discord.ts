@@ -11,7 +11,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Config } from '../config/schema.js';
 import type { Agent } from '../agent/agent.js';
-import { setImageBroadcaster, type ImageEvent } from '../agent/tools/image.js';
+import { setImageBroadcaster, setAddMessageToSession, type ImageEvent } from '../agent/tools/image.js';
 
 // Track per-channel thread usage for auto-thread creation
 interface ThreadTracker {
@@ -84,6 +84,15 @@ export class DiscordChannel {
         this.pendingImages.set(sessionId, existing);
       }
       if (originalBroadcaster) originalBroadcaster(event);
+    });
+
+    // Wire add message to session for add_to_chat action
+    setAddMessageToSession((sessionId, role, content) => {
+      const sessionManager = this.agent.getSessionManager();
+      const session = sessionManager.getSession(sessionId);
+      if (session) {
+        sessionManager.addMessage(sessionId, { role, content });
+      }
     });
 
     await this.client.login(this.config.channels.discord.token);
@@ -541,6 +550,53 @@ export class DiscordChannel {
     if (this.recentMessages.size > 500) {
       const firstKey = this.recentMessages.keys().next().value;
       if (firstKey) this.recentMessages.delete(firstKey);
+    }
+
+    // Handle autoload: all or autoload: tool1, tool2 (owner-only)
+    if (content.toLowerCase().startsWith('autoload:') || content.toLowerCase().startsWith('autoload ')) {
+      const isOwner = this.getUserAuthLevel(msg.author.id) === 'owner';
+      if (!isOwner) {
+        await msg.reply({
+          content: 'Only the bot owner can use autoload.',
+          allowedMentions: { repliedUser: false },
+        });
+        return;
+      }
+
+      const arg = content.split(/[:\s]+/, 2)[1]?.trim();
+      if (!arg) {
+        const available = this.agent.getDeferredToolNames();
+        await msg.reply({
+          content: `Usage: autoload: all | autoload: tool1, tool2\n\nAvailable tools: ${available.join(', ')}`,
+          allowedMentions: { repliedUser: false },
+        });
+        return;
+      }
+
+      let promoted: string[] = [];
+      if (arg.toLowerCase() === 'all') {
+        promoted = this.agent.promoteAllToolsForSession(sessionId);
+      } else {
+        const toolNames = arg.split(',').map(t => t.trim()).filter(Boolean);
+        for (const name of toolNames) {
+          if (this.agent.promoteToolForSession(sessionId, name)) {
+            promoted.push(name);
+          }
+        }
+      }
+
+      if (promoted.length > 0) {
+        await msg.reply({
+          content: `Loaded ${promoted.length} tool(s): ${promoted.join(', ')}`,
+          allowedMentions: { repliedUser: false },
+        });
+      } else {
+        await msg.reply({
+          content: `No tools loaded. Check tool names or use "autoload: all" to load all available tools.`,
+          allowedMentions: { repliedUser: false },
+        });
+      }
+      return;
     }
 
     // Handle text-based slash commands (owner-only)

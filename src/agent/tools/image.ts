@@ -1,16 +1,18 @@
 /**
- * Unified image tool — analyze, generate, and send images.
+ * Unified image tool — analyze, generate, send, and add images to chat.
  * Merges former analyze_image, image_generate, and image_send tools.
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { resolve, extname } from 'node:path';
 import type { Tool } from '../tool-registry.js';
+import type { ContentPart } from '../llm-client.js';
 
 let apiBase = 'http://localhost:4141/v1';
 let defaultModel = 'claude-opus-4.6';
 let apiKeyRef: string | undefined;
 let broadcastImageFn: ((event: ImageEvent) => void) | null = null;
+let addMessageToSessionFn: ((sessionId: string, role: 'user', content: string | ContentPart[]) => void) | null = null;
 
 export interface ImageEvent {
   type: 'image';
@@ -20,6 +22,7 @@ export interface ImageEvent {
   mimeType: string;
   alt?: string;
   filename?: string;
+  id?: string; // Optional ID - images with same ID replace previous ones
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -46,22 +49,27 @@ export function setImageBroadcaster(fn: (event: ImageEvent) => void): void {
   broadcastImageFn = fn;
 }
 
+export function setAddMessageToSession(fn: (sessionId: string, role: 'user', content: string | ContentPart[]) => void): void {
+  addMessageToSessionFn = fn;
+}
+
 export const imageTools: Tool[] = [
   {
     name: 'image',
     description: [
-      'Image operations: analyze, generate, send.',
-      'Actions: analyze, generate, send.',
+      'Image operations: analyze, generate, send, add_to_chat.',
+      'Actions: analyze, generate, send, add_to_chat.',
       'analyze — analyze an image using a vision model (OCR, describe, answer questions). Supports files and URLs.',
       'generate — generate an image via AI (DALL-E compatible API). Broadcasts to connected clients.',
-      'send — send an existing image (by URL or file path) to the current chat.',
+      'send — send an existing image (by URL or file path) to the current chat UI.',
+      'add_to_chat — add an image (file or URL) to the conversation so the AI can see it in context. The image becomes part of the chat history.',
     ].join(' '),
     parameters: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          description: 'Action: analyze|generate|send',
+          description: 'Action: analyze|generate|send|add_to_chat',
         },
         // For analyze
         image: { type: 'string', description: 'File path or URL of the image (for analyze)' },
@@ -73,9 +81,11 @@ export const imageTools: Tool[] = [
         quality: { type: 'string', description: 'Quality level (for generate, default "standard")', enum: ['standard', 'hd'] },
         save_path: { type: 'string', description: 'Local path to save image (for generate)' },
         // For send
-        url: { type: 'string', description: 'URL of image to send (for send)' },
-        file_path: { type: 'string', description: 'Local file path of image to send (for send)' },
-        alt: { type: 'string', description: 'Alt text / description (for send)' },
+        url: { type: 'string', description: 'URL of image to send (for send, add_to_chat)' },
+        file_path: { type: 'string', description: 'Local file path of image to send (for send, add_to_chat)' },
+        alt: { type: 'string', description: 'Alt text / description (for send, add_to_chat)' },
+        // For add_to_chat
+        caption: { type: 'string', description: 'Optional text caption to accompany the image (for add_to_chat)' },
       },
       required: ['action'],
     },
@@ -222,8 +232,71 @@ export const imageTools: Tool[] = [
           return { output: `Image sent: ${url || filePath}${alt ? ` — "${alt}"` : ''}` };
         }
 
+        case 'add_to_chat': {
+          const url = params.url as string | undefined;
+          const filePath = params.file_path as string | undefined;
+          const alt = (params.alt as string) || 'Image';
+          const caption = params.caption as string | undefined;
+
+          if (!url && !filePath) return { output: '', error: 'Provide either url or file_path for add_to_chat' };
+
+          let imageUrl: string;
+          let mimeType = 'image/png';
+          let filename: string | undefined;
+
+          if (url) {
+            imageUrl = url;
+            // Detect mime from URL extension
+            const ext = url.split('.').pop()?.toLowerCase()?.split('?')[0] || '';
+            mimeType = MIME_TYPES[ext] || 'image/png';
+          } else if (filePath) {
+            const resolvedPath = resolve(ctx.workdir, filePath);
+            if (!existsSync(resolvedPath)) return { output: '', error: `File not found: ${resolvedPath}` };
+            try {
+              const data = readFileSync(resolvedPath);
+              imageUrl = `data:${getMimeType(resolvedPath)};base64,${data.toString('base64')}`;
+              mimeType = getMimeType(resolvedPath);
+              filename = filePath.split('/').pop();
+            } catch (err) {
+              return { output: '', error: `Failed to read image file: ${err}` };
+            }
+          } else {
+            return { output: '', error: 'No image source provided' };
+          }
+
+          // Build multimodal message content
+          const contentParts: ContentPart[] = [];
+          
+          // Add caption/text first if provided
+          if (caption) {
+            contentParts.push({ type: 'text', text: caption });
+          } else {
+            contentParts.push({ type: 'text', text: `[Image: ${alt}]` });
+          }
+          
+          // Add image
+          contentParts.push({ type: 'image_url', image_url: { url: imageUrl } });
+
+          // Add to session messages
+          if (addMessageToSessionFn) {
+            addMessageToSessionFn(ctx.sessionId, 'user', contentParts);
+          } else {
+            return { output: '', error: 'Session message injector not configured' };
+          }
+
+          // Also broadcast to UI
+          if (broadcastImageFn) {
+            broadcastImageFn({
+              type: 'image', sessionId: ctx.sessionId,
+              url: url, mimeType, alt, filename,
+            });
+          }
+
+          return { output: `Image added to chat: ${url || filePath}${caption ? ` with caption: "${caption}"` : ''}. The AI can now see this image in the conversation context.` };
+        }
+
         default:
-          return { output: `Error: Unknown action "${action}". Valid: analyze, generate, send` };
+          return { output: `Error: Unknown action "${action}". Valid: analyze, generate, send, add_to_chat` };
       }
     },
   },

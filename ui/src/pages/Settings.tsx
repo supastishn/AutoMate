@@ -34,7 +34,8 @@ function deepSet(obj: any, path: string, value: any): any {
 interface FieldDef {
   key: string
   label: string
-  type: 'string' | 'number' | 'boolean' | 'array'
+  type: 'string' | 'number' | 'boolean' | 'array' | 'skills' | 'enum'
+  options?: string[]  // Options for enum type
 }
 
 interface SectionDef {
@@ -49,9 +50,10 @@ const SECTIONS: SectionDef[] = [
       { key: 'agent.model', label: 'Model', type: 'string' },
       { key: 'agent.apiBase', label: 'API Base URL', type: 'string' },
       { key: 'agent.apiKey', label: 'API Key', type: 'string' },
+      { key: 'agent.apiType', label: 'API Type', type: 'enum', options: ['chat', 'responses', 'puter'] },
       { key: 'agent.maxTokens', label: 'Max Tokens', type: 'number' },
       { key: 'agent.temperature', label: 'Temperature', type: 'number' },
-      { key: 'agent.thinkingLevel', label: 'Thinking Level', type: 'string' },
+      { key: 'agent.thinkingLevel', label: 'Thinking Level', type: 'enum', options: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'] },
     ],
   },
   {
@@ -59,7 +61,14 @@ const SECTIONS: SectionDef[] = [
     fields: [
       { key: 'agent.powerSteering.enabled', label: 'Enabled', type: 'boolean' },
       { key: 'agent.powerSteering.interval', label: 'Interval (messages)', type: 'number' },
-      { key: 'agent.powerSteering.role', label: 'Role (system/user)', type: 'string' },
+      { key: 'agent.powerSteering.role', label: 'Role', type: 'enum', options: ['system', 'user', 'both'] },
+      { key: 'agent.powerSteering.mode', label: 'Mode', type: 'enum', options: ['separate', 'append'] },
+    ],
+  },
+  {
+    title: 'Response Normalization',
+    fields: [
+      { key: 'agent.normalizePunctuation.enabled', label: 'Enabled', type: 'boolean' },
     ],
   },
   {
@@ -67,7 +76,7 @@ const SECTIONS: SectionDef[] = [
     fields: [
       { key: 'gateway.host', label: 'Host', type: 'string' },
       { key: 'gateway.port', label: 'Port', type: 'number' },
-      { key: 'gateway.auth.mode', label: 'Auth Mode', type: 'string' },
+      { key: 'gateway.auth.mode', label: 'Auth Mode', type: 'enum', options: ['none', 'token', 'password'] },
       { key: 'gateway.auth.token', label: 'Auth Token', type: 'string' },
       { key: 'gateway.auth.password', label: 'Auth Password', type: 'string' },
     ],
@@ -86,46 +95,125 @@ const SECTIONS: SectionDef[] = [
       { key: 'channels.discord.proactiveChannelId', label: 'Proactive Channel ID', type: 'string' },
       { key: 'channels.discord.useEmbeds', label: 'Use Embeds', type: 'boolean' },
       { key: 'channels.discord.useThreads', label: 'Use Threads', type: 'boolean' },
+      { key: 'channels.discord.threadThreshold', label: 'Thread Threshold (msgs)', type: 'number' },
       { key: 'channels.discord.streamEdits', label: 'Stream Edits', type: 'boolean' },
+      { key: 'channels.discord.streamEditInterval', label: 'Stream Edit Interval (ms)', type: 'number' },
       { key: 'channels.discord.showButtons', label: 'Show Buttons', type: 'boolean' },
       { key: 'channels.discord.registerSlashCommands', label: 'Register Slash Commands', type: 'boolean' },
+      { key: 'channels.discord.reactOnReceive', label: 'React On Receive', type: 'boolean' },
+      { key: 'channels.discord.trackEdits', label: 'Track Edits', type: 'boolean' },
+      { key: 'channels.discord.trackDeletes', label: 'Track Deletes', type: 'boolean' },
+    ],
+  },
+  {
+    title: 'Browser',
+    fields: [
+      { key: 'browser.enabled', label: 'Enabled', type: 'boolean' },
+      { key: 'browser.headless', label: 'Headless', type: 'boolean' },
+      { key: 'browser.profileDir', label: 'Profile Directory', type: 'string' },
+      { key: 'browser.extensions', label: 'Extensions (comma-separated paths)', type: 'string' },
     ],
   },
   {
     title: 'Features',
     fields: [
-      { key: 'browser.enabled', label: 'Browser', type: 'boolean' },
-      { key: 'browser.headless', label: 'Browser Headless', type: 'boolean' },
       { key: 'cron.enabled', label: 'Cron', type: 'boolean' },
       { key: 'webhooks.enabled', label: 'Webhooks', type: 'boolean' },
+      { key: 'webhooks.token', label: 'Webhook Token', type: 'string' },
       { key: 'canvas.enabled', label: 'Canvas', type: 'boolean' },
       { key: 'plugins.enabled', label: 'Plugins', type: 'boolean' },
-      { key: 'heartbeat.enabled', label: 'Heartbeat', type: 'boolean' },
-      { key: 'heartbeat.intervalMinutes', label: 'Heartbeat Interval (min)', type: 'number' },
-      { key: 'heartbeat.jitterMinutes', label: 'Heartbeat Jitter ±(min)', type: 'number' },
+      { key: 'plugins.notificationSession', label: 'Plugin Notification Session', type: 'string' },
     ],
   },
   {
-    title: 'Memory & Sessions',
+    title: 'Heartbeat',
+    fields: [
+      { key: 'heartbeat.enabled', label: 'Enabled', type: 'boolean' },
+      { key: 'heartbeat.intervalMinutes', label: 'Interval (min)', type: 'number' },
+      { key: 'heartbeat.jitterMinutes', label: 'Jitter ±(min)', type: 'number' },
+      { key: 'heartbeat.separateSession', label: 'Use Separate Session', type: 'boolean' },
+      { key: 'heartbeat.sessionId', label: 'Custom Session ID', type: 'string' },
+    ],
+  },
+  {
+    title: 'Skills',
+    fields: [
+      { key: 'skills.directory', label: 'Skills Directory', type: 'string' },
+      { key: 'skills.extraDirs', label: 'Extra Directories', type: 'array' },
+      { key: 'skills.autoLoad', label: 'Auto-Load Skills', type: 'skills' },
+    ],
+  },
+  {
+    title: 'Load Balancing',
+    fields: [
+      { key: 'agent.loadBalancing.enabled', label: 'Enabled', type: 'boolean' },
+      { key: 'agent.loadBalancing.switchEvery', label: 'Switch Every N Requests', type: 'number' },
+      { key: 'agent.loadBalancing.strategy', label: 'Strategy', type: 'enum', options: ['round-robin', 'random'] },
+    ],
+  },
+  {
+    title: 'Rate Limiting',
+    fields: [
+      { key: 'agent.rateLimit.enabled', label: 'Enabled', type: 'boolean' },
+      { key: 'agent.rateLimit.minDelayMs', label: 'Min Delay (ms)', type: 'number' },
+      { key: 'agent.rateLimit.maxDelayMs', label: 'Max Delay (ms)', type: 'number' },
+      { key: 'agent.rateLimit.perTokenDelayMs', label: 'Per-Token Delay (ms)', type: 'number' },
+    ],
+  },
+  {
+    title: 'Subagents',
+    fields: [
+      { key: 'agent.subagent.defaultModel', label: 'Default Model', type: 'string' },
+      { key: 'agent.subagent.useParentApiKey', label: 'Use Parent API Key', type: 'boolean' },
+      { key: 'agent.subagent.maxConcurrent', label: 'Max Concurrent', type: 'number' },
+    ],
+  },
+  {
+    title: 'Memory',
     fields: [
       { key: 'memory.directory', label: 'Memory Directory', type: 'string' },
       { key: 'memory.sharedDirectory', label: 'Shared Memory Directory', type: 'string' },
+      { key: 'memory.indexTranscripts', label: 'Index Transcripts', type: 'boolean' },
+      { key: 'memory.citations', label: 'Citations Mode', type: 'enum', options: ['full', 'file-only', 'none'] },
+    ],
+  },
+  {
+    title: 'Embedding',
+    fields: [
+      { key: 'memory.embedding.enabled', label: 'Enabled', type: 'boolean' },
+      { key: 'memory.embedding.provider', label: 'Provider', type: 'enum', options: ['openai', 'gemini', 'voyage', 'local'] },
+      { key: 'memory.embedding.model', label: 'Model', type: 'string' },
+      { key: 'memory.embedding.apiBase', label: 'API Base', type: 'string' },
+      { key: 'memory.embedding.apiKey', label: 'API Key', type: 'string' },
+      { key: 'memory.embedding.chunkSize', label: 'Chunk Size (chars)', type: 'number' },
+      { key: 'memory.embedding.chunkOverlap', label: 'Chunk Overlap (chars)', type: 'number' },
+      { key: 'memory.embedding.vectorWeight', label: 'Vector Weight', type: 'number' },
+      { key: 'memory.embedding.bm25Weight', label: 'BM25 Weight', type: 'number' },
+      { key: 'memory.embedding.topK', label: 'Top K Results', type: 'number' },
+    ],
+  },
+  {
+    title: 'Sessions',
+    fields: [
       { key: 'sessions.directory', label: 'Sessions Directory', type: 'string' },
       { key: 'sessions.contextLimit', label: 'Context Limit (tokens)', type: 'number' },
       { key: 'sessions.reserveTokens', label: 'Reserve Tokens', type: 'number' },
       { key: 'sessions.compactAt', label: 'Compact At (ratio)', type: 'number' },
       { key: 'sessions.autoResetHour', label: 'Auto Reset Hour (-1=off)', type: 'number' },
-      { key: 'memory.embedding.enabled', label: 'Embedding Enabled', type: 'boolean' },
-      { key: 'memory.embedding.model', label: 'Embedding Model', type: 'string' },
-      { key: 'memory.embedding.apiBase', label: 'Embedding API Base', type: 'string' },
-      { key: 'memory.embedding.apiKey', label: 'Embedding API Key', type: 'string' },
+    ],
+  },
+  {
+    title: 'Tools',
+    fields: [
+      { key: 'tools.deferredLoading', label: 'Deferred Loading', type: 'boolean' },
+      { key: 'tools.disableFilePagination', label: 'Disable File Pagination (always read full files)', type: 'boolean' },
     ],
   },
   {
     title: 'Context Pruning',
     fields: [
       { key: 'sessions.pruning.enabled', label: 'Enabled', type: 'boolean' },
-      { key: 'sessions.pruning.ttlMs', label: 'TTL (ms)', type: 'number' },
+      { key: 'sessions.pruning.maxToolResults', label: 'Max Tool Results', type: 'number' },
       { key: 'sessions.pruning.keepLastAssistants', label: 'Keep Last N Assistant Turns', type: 'number' },
       { key: 'sessions.pruning.softTrimRatio', label: 'Soft Trim Ratio', type: 'number' },
       { key: 'sessions.pruning.hardClearRatio', label: 'Hard Clear Ratio', type: 'number' },
@@ -149,19 +237,18 @@ const SECTIONS: SectionDef[] = [
     title: 'TTS (Text-to-Speech)',
     fields: [
       { key: 'tts.enabled', label: 'Enabled', type: 'boolean' },
-      { key: 'tts.provider', label: 'Provider', type: 'string' },
+      { key: 'tts.provider', label: 'Provider', type: 'enum', options: ['elevenlabs', 'openai'] },
       { key: 'tts.apiKey', label: 'API Key', type: 'string' },
       { key: 'tts.voice', label: 'Voice', type: 'string' },
       { key: 'tts.model', label: 'Model', type: 'string' },
+      { key: 'tts.outputDir', label: 'Output Directory', type: 'string' },
     ],
   },
   {
     title: 'Directories',
     fields: [
-      { key: 'skills.directory', label: 'Skills Directory', type: 'string' },
       { key: 'cron.directory', label: 'Cron Directory', type: 'string' },
       { key: 'plugins.directory', label: 'Plugins Directory', type: 'string' },
-      { key: 'browser.profileDir', label: 'Browser Profile Directory', type: 'string' },
     ],
   },
 ]
@@ -428,7 +515,7 @@ export default function Settings() {
       )
     }
 
-    if (field.type === 'array') {
+    if (field.type === 'array' || field.type === 'skills') {
       const arr: string[] = Array.isArray(value) ? value : []
       const inputVal = tagInputs[field.key] || ''
       return (
@@ -449,7 +536,7 @@ export default function Settings() {
               value={inputVal}
               onChange={e => setTagInputs(prev => ({ ...prev, [field.key]: e.target.value }))}
               onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addTag(field.key) } }}
-              placeholder="Type and press Enter"
+              placeholder="Type skill name and press Enter"
             />
             <button
               onClick={() => addTag(field.key)}
@@ -484,6 +571,31 @@ export default function Settings() {
               handleChange(field.key, v === '' ? undefined : Number(v))
             }}
           />
+        </div>
+      )
+    }
+
+    if (field.type === 'enum' && field.options) {
+      return (
+        <div key={field.key} style={fieldRowStyle}>
+          <span style={labelStyle}>{field.label}</span>
+          <select
+            style={{
+              ...inputStyle,
+              background: colors.bgTertiary,
+              border: `1px solid ${colors.borderLight}`,
+              borderRadius: 4,
+              padding: '6px 10px',
+              fontSize: 13,
+              color: colors.textPrimary,
+            }}
+            value={value ?? ''}
+            onChange={e => handleChange(field.key, e.target.value)}
+          >
+            {field.options.map((option: string) => (
+              <option key={option} value={option}>{option}</option>
+            ))}
+          </select>
         </div>
       )
     }
@@ -561,6 +673,35 @@ export default function Settings() {
             />
             <div style={{ fontSize: 11, color: colors.inputPlaceholder, marginTop: 6 }}>
               This prompt is injected at the start of every conversation. Markdown supported.
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Reminder Prompt Editor */}
+      <div style={cardStyle}>
+        <div style={sectionHeaderStyle} onClick={() => toggleSection('Reminder Prompt')}>
+          <span>Reminder Prompt</span>
+          <span style={{ color: colors.textSecondary, fontSize: 18, transform: collapsed['Reminder Prompt'] ? 'rotate(-90deg)' : 'rotate(0deg)', transition: 'transform .2s' }}>
+            ▼
+          </span>
+        </div>
+        {!collapsed['Reminder Prompt'] && (
+          <div style={{ padding: 20 }}>
+            <textarea
+              value={deepGet(config, 'agent.reminderPrompt') || ''}
+              onChange={e => handleChange('agent.reminderPrompt', e.target.value)}
+              placeholder="Leave empty to use full system prompt for power steering reminders..."
+              style={{
+                width: '100%', minHeight: 150, resize: 'vertical',
+                background: colors.bgTertiary, border: `1px solid ${colors.borderLight}`, borderRadius: 4,
+                color: colors.textPrimary, padding: 16, fontFamily: 'monospace', fontSize: 13,
+                lineHeight: 1.6, outline: 'none', boxSizing: 'border-box' as const,
+              }}
+              spellCheck={false}
+            />
+            <div style={{ fontSize: 11, color: colors.inputPlaceholder, marginTop: 6 }}>
+              Shorter prompt used for power steering (periodic reminders). Falls back to system prompt if empty.
             </div>
           </div>
         )}

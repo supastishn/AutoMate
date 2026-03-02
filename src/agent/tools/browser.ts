@@ -254,6 +254,30 @@ async function ensureSeleniumBrowser(): Promise<void> {
   });
 }
 
+// Xvfb process for non-headless Playwright (auto-started when needed)
+let xvfbProc: ChildProcess | null = null;
+
+function ensureXvfb(): void {
+  if (xvfbProc && !xvfbProc.killed) return; // already running
+  if (process.env.DISPLAY) return; // X display already available
+
+  // Find a free display number
+  const displayNum = 99;
+  try {
+    xvfbProc = spawn('Xvfb', [`:${displayNum}`, '-screen', '0', '1280x720x24', '-ac'], {
+      stdio: 'ignore',
+      detached: true,
+    });
+    xvfbProc.unref();
+    process.env.DISPLAY = `:${displayNum}`;
+    // Give Xvfb a moment to start
+    spawnSync('sleep', ['1']);
+    console.log(`[browser] Xvfb started on display :${displayNum}`);
+  } catch (e) {
+    console.warn(`[browser] Failed to start Xvfb: ${e}. Non-headless mode may fail.`);
+  }
+}
+
 async function ensurePlaywrightBrowser(): Promise<void> {
   if (pyProc && !pyProc.killed) {
     try {
@@ -284,12 +308,40 @@ async function ensurePlaywrightBrowser(): Promise<void> {
       ]
     : [];
   const effectiveHeadless = extensionList.length > 0 ? false : browserHeadless;
+
+  // Termux/proot: headless mode triggers GPU FATAL crash. Always use Xvfb + non-headless.
+  // /proc/bus/pci exists on proot but /proc/bus/pci/devices is unreadable
+  let isProot = false;
+  try { require('fs').accessSync('/proc/bus/pci/devices', require('fs').constants.R_OK); } catch { isProot = true; }
+  const useXvfb = isProot || !effectiveHeadless;
+  if (useXvfb) {
+    ensureXvfb();
+  }
+
+  // Chromium stability flags for Termux/proot (GPU process crashes without these)
+  const stabilityArgs: string[] = [
+    '--no-sandbox',
+    '--disable-gpu',
+    '--disable-dev-shm-usage',
+    '--disable-software-rasterizer',
+    '--disable-gpu-compositing',
+    '--disable-features=VizDisplayCompositor',
+    '--no-zygote',
+    '--single-process',
+  ];
+
   const launchOptions: Record<string, unknown> = {
-    headless: effectiveHeadless,
-    args: extensionArgs,
+    headless: isProot ? false : effectiveHeadless,  // never headless on proot
+    args: [...stabilityArgs, ...extensionArgs],
   };
+  // On proot, use the raw binary directly (wrapper adds --enable-extensions conflicting with Playwright)
   if (browserChromiumPath) {
-    launchOptions.executablePath = browserChromiumPath;
+    let execPath = browserChromiumPath;
+    if (isProot && execPath.includes('/sbin/')) {
+      const rawBin = '/usr/lib64/chromium-browser/chromium-browser';
+      if (require('fs').existsSync(rawBin)) execPath = rawBin;
+    }
+    launchOptions.executablePath = execPath;
   }
   pwContext = await playwright.chromium.launchPersistentContext(
     browserProfileDir || undefined,
