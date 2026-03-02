@@ -1069,6 +1069,16 @@ export default function Chat({ loadSessionId, onSessionLoaded }: { loadSessionId
           timestamp: msg.timestamp || Date.now(),
         })
       }
+      // Handle cross-session notifications (heartbeat → chat, work → chat, etc.)
+      if (msg.type === 'cross_session_notification') {
+        setMessages(prev => [...prev, {
+          id: makeId(),
+          role: 'assistant' as const,
+          content: `🔔 **${msg.source || 'system'}**: ${msg.content}`,
+          timestamp: msg.timestamp || Date.now(),
+        }])
+        scrollToBottom()
+      }
       // Handle image events
       if (msg.type === 'image') {
         const imgData = {

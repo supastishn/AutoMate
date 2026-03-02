@@ -11,15 +11,73 @@ export function setAgent(a: any): void {
   agentRef = a;
 }
 
+/**
+ * Send a notification to the chat session from any context (heartbeat, work session, etc.)
+ * Appears as a system notification in the user's chat. Does NOT trigger agent processing.
+ */
+export function notifyChatSession(message: string, source: string = 'system'): boolean {
+  if (!sessionManagerRef || !agentRef) return false;
+  const roles = sessionManagerRef.getSessionRoles();
+  const chatId = roles?.chat;
+  if (!chatId) return false;
+
+  // Push notification to WebSocket so user sees it in real-time
+  agentRef.sendEventToSession(chatId, {
+    type: 'cross_session_notification',
+    content: message,
+    source,
+    timestamp: Date.now(),
+  });
+
+  // Also add as a system message in the chat session history
+  const session = sessionManagerRef.getSession(chatId);
+  if (session) {
+    session.messages.push({
+      role: 'assistant',
+      content: `🔔 **${source}**: ${message}`,
+    });
+    sessionManagerRef.saveSession(chatId);
+  }
+  return true;
+}
+
+/**
+ * Get the last N actions/messages from a session (for cross-session context).
+ */
+export function getRecentSessionActivity(sessionId: string, count: number = 3): string[] {
+  if (!sessionManagerRef) return [];
+  const session = sessionManagerRef.getSession(sessionId);
+  if (!session) return [];
+  const msgs = session.messages.slice(-count * 2); // get more, then filter
+  const activities: string[] = [];
+  for (const m of msgs) {
+    if (m.role === 'assistant' && m.content) {
+      const text = typeof m.content === 'string' ? m.content : '';
+      if (text && !text.startsWith('🔔')) {
+        activities.push(text.slice(0, 150));
+      }
+    } else if (m.role === 'user' && m.content) {
+      const text = typeof m.content === 'string' ? m.content : '';
+      if (text && !text.startsWith('[SCHEDULED') && !text.startsWith('[AUTONOMOUS')) {
+        activities.push(`[user]: ${text.slice(0, 150)}`);
+      }
+    }
+    if (activities.length >= count) break;
+  }
+  return activities;
+}
+
 export const sessionTools: Tool[] = [
   {
     name: 'session',
     description: [
       'Manage chat sessions.',
-      'Actions: list, history, send, spawn.',
-      'list — list all active sessions.',
+      'Actions: list, history, send, notify, delegate, spawn.',
+      'list — list all active sessions with roles.',
       'history — get message history of a session.',
-      'send — send a message to another session.',
+      'send — send a message to another session (triggers agent processing).',
+      'notify — send a notification to the chat session (no processing, just display).',
+      'delegate — delegate a task from chat to the work session for background processing.',
       'spawn — spawn a new background sub-session with a task.',
     ].join(' '),
     parameters: {
@@ -27,13 +85,14 @@ export const sessionTools: Tool[] = [
       properties: {
         action: {
           type: 'string',
-          description: 'Action: list|history|send|spawn',
+          description: 'Action: list|history|send|notify|delegate|spawn',
         },
         session_id: { type: 'string', description: 'Session ID (for history, send)' },
-        message: { type: 'string', description: 'Message to send (for send action)' },
+        message: { type: 'string', description: 'Message to send/notify/delegate' },
         prompt: { type: 'string', description: 'Task/prompt for spawned session (for spawn action)' },
         session_name: { type: 'string', description: 'Optional name for spawned session (for spawn action)' },
         limit: { type: 'number', description: 'Max messages to return (for history, default 20)' },
+        notify_on_complete: { type: 'boolean', description: 'For delegate: notify chat session when done (default true)' },
       },
       required: ['action'],
     },
@@ -45,9 +104,13 @@ export const sessionTools: Tool[] = [
           if (!sessionManagerRef) return { output: 'Session manager not available' };
           const sessions = sessionManagerRef.listSessions();
           if (sessions.length === 0) return { output: 'No active sessions' };
-          const lines = sessions.map((s: any) =>
-            `${s.id} | channel=${s.channel} | messages=${s.messageCount} | created=${s.createdAt}`
-          );
+          const roles = sessionManagerRef.getSessionRoles();
+          const lines = sessions.map((s: any) => {
+            let role = '';
+            if (roles?.chat === s.id) role = ' [💬 chat]';
+            else if (roles?.work === s.id) role = ' [🔧 work]';
+            return `${s.id}${role} | channel=${s.channel} | messages=${s.messageCount} | created=${s.createdAt}`;
+          });
           return { output: lines.join('\n') };
         }
 
@@ -62,12 +125,40 @@ export const sessionTools: Tool[] = [
         }
 
         case 'send': {
-          if (!sessionManagerRef) return { output: 'Session manager not available' };
-          const session = sessionManagerRef.getSession(params.session_id as string);
-          if (!session) return { output: '', error: `Session not found: ${params.session_id}` };
-          session.messages.push({ role: 'user', content: params.message as string });
-          sessionManagerRef.saveSession(params.session_id as string);
-          return { output: `Message sent to session ${params.session_id}` };
+          // Actually triggers agent processing in the target session
+          if (!agentRef) return { output: '', error: 'Agent not available' };
+          const targetId = params.session_id as string;
+          if (!targetId) return { output: '', error: 'session_id required' };
+          const message = params.message as string;
+          if (!message) return { output: '', error: 'message required' };
+          agentRef.injectMessage(targetId, message, { role: 'user', source: 'cross-session' });
+          return { output: `Message sent to session ${targetId} (will be processed by the agent)` };
+        }
+
+        case 'notify': {
+          // Send notification to chat session without triggering processing
+          const message = params.message as string;
+          if (!message) return { output: '', error: 'message required' };
+          const sent = notifyChatSession(message, 'work session');
+          if (!sent) return { output: 'No chat session available to notify' };
+          return { output: 'Notification sent to chat session' };
+        }
+
+        case 'delegate': {
+          // Delegate a task from chat to the work session
+          if (!sessionManagerRef || !agentRef) return { output: '', error: 'Not available' };
+          const roles = sessionManagerRef.getSessionRoles();
+          const workId = roles?.work;
+          if (!workId) return { output: '', error: 'No work session assigned. Set one first via the Sessions page.' };
+          const message = params.message as string;
+          if (!message) return { output: '', error: 'message required (the task to delegate)' };
+
+          const notifyOnComplete = params.notify_on_complete !== false;
+          const delegatePrompt = `[DELEGATED TASK from chat session]\n\n${message}${notifyOnComplete ? '\n\nWhen done, use `session action=notify message="<brief result summary>"` to notify the chat session.' : ''}`;
+
+          agentRef.injectMessage(workId, delegatePrompt, { role: 'user', source: 'delegation' });
+
+          return { output: `Task delegated to work session (${workId}). ${notifyOnComplete ? 'Chat will be notified on completion.' : ''}` };
         }
 
         case 'spawn': {
@@ -79,7 +170,7 @@ export const sessionTools: Tool[] = [
         }
 
         default:
-          return { output: `Error: Unknown action "${action}". Valid: list, history, send, spawn` };
+          return { output: `Error: Unknown action "${action}". Valid: list, history, send, notify, delegate, spawn` };
       }
     },
   },

@@ -6,7 +6,7 @@ import { ToolRegistry, type ToolContext, type Tool, type SessionToolView, type T
 import { bashTool, bashTools, setBackgroundShellNotifier } from './tools/bash.js';
 import { readFileTool, writeFileTool, editFileTool, applyPatchTool, listFilesTool, searchInFileTool } from './tools/files.js';
 import { browserTools, setBrowserConfig, setBrowserImageBroadcaster } from './tools/browser.js';
-import { sessionTools, setSessionManager, setAgent } from './tools/sessions.js';
+import { sessionTools, setSessionManager, setAgent, getRecentSessionActivity } from './tools/sessions.js';
 import { memoryTools, setMemoryManager } from './tools/memory.js';
 import { webTools } from './tools/web.js';
 import { imageTools, setImageConfig, setImageBroadcaster, setAddMessageToSession } from './tools/image.js';
@@ -535,7 +535,22 @@ export class Agent {
         if (roles.work && (!currentRole || currentRole !== 'work')) {
           lines.push(`🔧 Work session: \`${roles.work}\` — heartbeats, cron, autonomous tasks`);
         }
-        lines.push('Use `session action=history session_id=<id>` to check the other session, or `session action=send` to message it.');
+        lines.push('');
+        lines.push('**Cross-session actions**: `session action=send` (trigger processing), `session action=notify` (notification only), `session action=delegate` (offload task to work session).');
+
+        // Cross-session context: show recent activity from the other session
+        const otherRole = currentRole === 'chat' ? 'work' : 'chat';
+        const otherId = roles[otherRole];
+        if (otherId && sessionId !== otherId) {
+          const activity = getRecentSessionActivity(otherId, 3);
+          if (activity.length > 0) {
+            lines.push('');
+            lines.push(`**Recent ${otherRole} session activity** (\`${otherId}\`):`);
+            for (const a of activity) {
+              lines.push(`- ${a}`);
+            }
+          }
+        }
         lines.push('');
       }
     }

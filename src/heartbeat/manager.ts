@@ -29,6 +29,7 @@ import {
   generateDailyReport,
   getGoalsSummary,
 } from '../agent/tools/goals.js';
+import { notifyChatSession } from '../agent/tools/sessions.js';
 
 const HEARTBEAT_JOB_PREFIX = '__heartbeat__';
 const HEARTBEAT_TASK_PREFIX = '__hbtask__';
@@ -681,6 +682,13 @@ export class HeartbeatManager {
           timestamp: Date.now(),
         });
         await this.runPostHooks(memoryDir, sessionId);
+        // Notify chat if autonomy pre-hooks did something even though heartbeat acked OK
+        if (autonomyNotes) {
+          notifyChatSession(
+            `Heartbeat${this.agentName ? ` (${this.agentName})` : ''} — nothing urgent, but:${autonomyNotes}`,
+            'heartbeat'
+          );
+        }
         return null;
       }
 
@@ -714,6 +722,13 @@ export class HeartbeatManager {
 
       // ── Post-response autonomy hooks ──
       await this.runPostHooks(memoryDir, sessionId);
+
+      // ── Notify chat session about heartbeat activity ──
+      const summary = responseText.slice(0, 200).replace(/\n/g, ' ');
+      notifyChatSession(
+        `Heartbeat${this.agentName ? ` (${this.agentName})` : ''}: ${summary}${responseText.length > 200 ? '…' : ''}${autonomyNotes ? `\n${autonomyNotes.trim()}` : ''}`,
+        'heartbeat'
+      );
 
       return responseText;
     } catch (err) {
