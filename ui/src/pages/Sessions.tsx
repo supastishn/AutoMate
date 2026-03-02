@@ -32,7 +32,6 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
   const [folder, setFolder] = useState<'normal' | 'heartbeat' | 'subagents'>('normal')
-  const [mainSessionId, setMainSessionId] = useState<string | null>(null)
   const [sessionRoles, setSessionRoles] = useState<{ chat: string | null; work: string | null }>({ chat: null, work: null })
   const [jsonEditor, setJsonEditor] = useState<{ sessionId: string; raw: string } | null>(null)
   const [jsonError, setJsonError] = useState<string | null>(null)
@@ -58,13 +57,6 @@ export default function Sessions({ onOpenInChat }: { onOpenInChat?: (sessionId: 
     } catch { /* ignore */ }
   }
 
-  const fetchMainSession = async () => {
-    try {
-      const r = await fetch('/api/sessions/main')
-      const data = await r.json() as any
-      setMainSessionId(data.mainSessionId || null)
-    } catch { /* ignore */ }
-  }
 
 const fetchSubAgents = async () => {
   try {
@@ -90,19 +82,6 @@ const killSubAgent = async (id: string, e?: React.MouseEvent) => {
   } catch { /* ignore */ }
 }
 
-  const toggleMainSession = async (id: string, e?: React.MouseEvent) => {
-    if (e) e.stopPropagation()
-    const newId = mainSessionId === id ? null : id
-    try {
-      await fetch('/api/sessions/main', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: newId }),
-      })
-      setMainSessionId(newId)
-    } catch { /* ignore */ }
-  }
-
   const toggleSessionRole = async (id: string, role: 'chat' | 'work', e?: React.MouseEvent) => {
     if (e) e.stopPropagation()
     const current = sessionRoles[role]
@@ -120,7 +99,6 @@ const killSubAgent = async (id: string, e?: React.MouseEvent) => {
 
   useEffect(() => {
     fetchSessions()
-    fetchMainSession()
     const i = setInterval(fetchSessions, 30000)
     return () => clearInterval(i)
   }, [])

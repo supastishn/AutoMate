@@ -2019,24 +2019,6 @@ export class Agent {
       return await this.sessionManager.compactWithSummary(sessionId, this.llm, instructions);
     }
 
-    // /session main — mark current session as the main session
-    if (parts[0] === '/session' && parts[1] === 'main') {
-      const current = this.sessionManager.getMainSessionId();
-      if (current === sessionId) {
-        // Toggle off
-        this.sessionManager.setMainSession(null);
-        if (this.heartbeatManager?.setTargetSession) {
-          this.heartbeatManager.setTargetSession('webchat:heartbeat');
-        }
-        return `Cleared main session (was ${sessionId}).`;
-      }
-      this.sessionManager.setMainSession(sessionId);
-      if (this.heartbeatManager?.setTargetSession) {
-        this.heartbeatManager.setTargetSession(sessionId);
-      }
-      return `Set ${sessionId} as main session. New webchat connections and heartbeats will use this session.`;
-    }
-
     // /elevated on|off
     if (parts[0] === '/elevated') {
       const arg = parts[1];
@@ -2151,7 +2133,7 @@ export class Agent {
         '  /status — show session status',
         '  /stats — show token statistics (session + this run)',
         '  /compact [instructions] — compact session with AI summary',
-        '  /session main — toggle this as main session',
+        '  /session export — export session as JSON',
         '  /elevated on|off — toggle elevated permissions',
         '  /model [name|index] — list/switch models',
         '  /context — show context diagnostics',

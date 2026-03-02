@@ -492,22 +492,6 @@ export class GatewayServer {
       return { ok: true, session: { id: dup.id, channel: dup.channel, messageCount: dup.messageCount } };
     });
 
-    // Main session: get/set
-    this.app.get('/api/sessions/main', async () => {
-      return { mainSessionId: this.sessionManager.getMainSessionId() };
-    });
-
-    this.app.post<{ Body: { sessionId: string | null } }>('/api/sessions/main', async (req) => {
-      const { sessionId } = req.body as any;
-      this.sessionManager.setMainSession(sessionId || null);
-      // Update heartbeat target session if heartbeat manager exists
-      const hb = this.agent.getHeartbeatManager?.();
-      if (hb && typeof hb.setTargetSession === 'function') {
-        hb.setTargetSession(sessionId || 'webchat:heartbeat');
-      }
-      return { ok: true, mainSessionId: this.sessionManager.getMainSessionId() };
-    });
-
     // Session roles: get/set (chat/work split)
     this.app.get('/api/sessions/roles', async () => {
       return this.sessionManager.getSessionRoles();
@@ -1646,7 +1630,7 @@ this.app.post<{ Params: { id: string } }>('/api/subagents/:id/kill', async (req,
       const rejoinSessionId = query?.rejoin_session_id;
       
       // Each WebSocket client gets its own session for proper isolation
-      // The "main session" feature is for automated processes (heartbeats, etc), not webchat
+      // Each WebSocket client gets its own session unless rejoining or using chat role
       // But if rejoining a processing session, use that instead
       let sessionId = `webchat:${clientId}`;
       let rejoinedProcessing = false;

@@ -73,8 +73,6 @@ export class SessionManager {
   private resetTimer: NodeJS.Timeout | null = null;
   private llm: LLMClient | null = null;
   private compactingSessions: Set<string> = new Set(); // prevent concurrent compactions
-  private mainSessionId: string | null = null;
-  private mainSessionFile: string;
   private sessionRoles: { chat: string | null; work: string | null } = { chat: null, work: null };
   private sessionRolesFile: string;
   private dndEnabled: boolean = false;
@@ -96,11 +94,9 @@ export class SessionManager {
     this.config = config;
     this.dir = config.sessions.directory;
     mkdirSync(this.dir, { recursive: true });
-    this.mainSessionFile = join(this.dir, '.main-session');
     this.sessionRolesFile = join(this.dir, '.session-roles');
     this.dndFile = join(this.dir, '.dnd');
     this.loadAll();
-    this.loadMainSession();
     this.loadSessionRoles();
     this.loadDnd();
     this.startAutoReset();
@@ -275,36 +271,6 @@ export class SessionManager {
       }
     }
     this.sanitizeToolPairs(session);
-  }
-
-  /** Load main session ID from disk */
-  private loadMainSession(): void {
-    try {
-      if (existsSync(this.mainSessionFile)) {
-        this.mainSessionId = readFileSync(this.mainSessionFile, 'utf-8').trim() || null;
-      }
-    } catch {
-      this.mainSessionId = null;
-    }
-  }
-
-  /** Get the main session ID (or null if not set) */
-  getMainSessionId(): string | null {
-    return this.mainSessionId;
-  }
-
-  /** Set a session as the main session. Pass null to clear. */
-  setMainSession(sessionId: string | null): void {
-    this.mainSessionId = sessionId;
-    try {
-      if (sessionId) {
-        writeFileSync(this.mainSessionFile, sessionId);
-      } else if (existsSync(this.mainSessionFile)) {
-        unlinkSync(this.mainSessionFile);
-      }
-    } catch (err) {
-      console.error(`[session] Failed to persist main session: ${err}`);
-    }
   }
 
   // ── Session Roles (chat / work) ──────────────────────────────────────
