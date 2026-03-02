@@ -17,6 +17,7 @@ import type { Tool } from '../tool-registry.js';
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { getCurrentConfig, saveConfig } from '../../config/loader.js';
 
 let spawnFn: ((opts: SubAgentOpts) => Promise<SubAgentResult>) | null = null;
 /** Callback to notify the parent session when a parallel sub-agent finishes */
@@ -410,22 +411,74 @@ export const subAgentTools: Tool[] = [
     parameters: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Name for this sub-agent (e.g. "researcher", "code-reviewer")' },
-        task: { type: 'string', description: 'The task/prompt to give the sub-agent' },
+        action: { type: 'string', enum: ['spawn', 'add_profile', 'remove_profile', 'list_profiles'], description: 'Action to perform (default: spawn).' },
+        name: { type: 'string', description: 'Name for this sub-agent or profile name' },
+        task: { type: 'string', description: 'The task/prompt to give the sub-agent (for spawn)' },
         mode: { type: 'string', description: 'blocking (wait for result) or parallel (background, poll later)', enum: ['blocking', 'parallel'] },
         model: { type: 'string', description: 'Model to use for this subagent (e.g. "gpt-4", "claude-opus", or alias like "fast"). Uses parent model if not specified.' },
         profile: { type: 'string', description: 'Optional subagent profile name from config.agent.subagent.profiles.' },
-        system_prompt: { type: 'string', description: 'Optional system prompt override for this subagent.' },
+        system_prompt: { type: 'string', description: 'Optional system prompt override for this subagent or profile.' },
         timeout_ms: { type: 'number', description: 'Optional timeout in ms (max 24h).' },
-        max_iterations: { type: 'number', description: 'Optional max iterations for this subagent run.' },
+        max_iterations: { type: 'number', description: 'Optional max iterations for this subagent run or profile.' },
       },
-      required: ['name', 'task'],
+      required: ['name'],
     },
     async execute(params, ctx) {
-      if (!spawnFn) return { output: '', error: 'Sub-agent spawner not available' };
-
+      const action = (params.action as string) || 'spawn';
       const name = params.name as string;
+
+      // Profile management actions
+      if (action === 'list_profiles') {
+        if (subagentProfiles.size === 0) return { output: 'No subagent profiles configured.' };
+        const lines = ['Configured subagent profiles:'];
+        for (const [pname, p] of subagentProfiles.entries()) {
+          lines.push(`- ${pname}: model=${p.model || 'parent'}, maxIter=${p.maxIterations || 'default'}, timeout=${p.timeoutMs ? `${p.timeoutMs / 1000}s` : 'default'}`);
+        }
+        return { output: lines.join('\n') };
+      }
+
+      if (action === 'add_profile') {
+        if (!name) return { output: '', error: 'Profile name is required.' };
+        const profile = {
+          name,
+          model: params.model as string | undefined,
+          systemPrompt: params.system_prompt as string | undefined,
+          maxIterations: params.max_iterations as number | undefined,
+          timeoutMs: params.timeout_ms as number | undefined,
+        };
+        subagentProfiles.set(name.toLowerCase(), profile);
+        // Persist to config
+        try {
+          const config = getCurrentConfig();
+          if (config) {
+            const profiles = [...(config.agent.subagent?.profiles || []).filter((p: any) => p.name?.toLowerCase() !== name.toLowerCase()), profile];
+            (config as any).agent.subagent = { ...config.agent.subagent, profiles };
+            saveConfig(config);
+          }
+        } catch {}
+        return { output: `Subagent profile "${name}" saved. Use profile="${name}" when spawning subagents.` };
+      }
+
+      if (action === 'remove_profile') {
+        if (!name) return { output: '', error: 'Profile name is required.' };
+        if (!subagentProfiles.has(name.toLowerCase())) return { output: '', error: `Profile "${name}" not found.` };
+        subagentProfiles.delete(name.toLowerCase());
+        // Persist removal
+        try {
+          const config = getCurrentConfig();
+          if (config) {
+            const profiles = (config.agent.subagent?.profiles || []).filter((p: any) => p.name?.toLowerCase() !== name.toLowerCase());
+            (config as any).agent.subagent = { ...config.agent.subagent, profiles };
+            saveConfig(config);
+          }
+        } catch {}
+        return { output: `Subagent profile "${name}" removed.` };
+      }
+
+      // Default: spawn action
+      if (!spawnFn) return { output: '', error: 'Sub-agent spawner not available' };
       const task = params.task as string;
+      if (!task) return { output: '', error: 'Task is required for spawning a sub-agent.' };
       const profileName = params.profile as string | undefined;
       const profile = profileName ? subagentProfiles.get(profileName.toLowerCase()) : undefined;
       if (profileName && !profile) {
