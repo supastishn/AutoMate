@@ -341,6 +341,9 @@ export const ConfigSchema = z.object({
     }).default({}),
   }).default({}),
   tts: TTSConfigSchema,
+  // User timezone (IANA format, e.g. "Asia/Jerusalem", "America/New_York")
+  // Used for daily reports, cron display, and time-aware features
+  timezone: z.string().default(Intl.DateTimeFormat().resolvedOptions().timeZone),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

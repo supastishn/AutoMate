@@ -40,6 +40,11 @@ program
     const config = loadConfig(opts.config);
     if (opts.port) config.gateway.port = parseInt(opts.port);
 
+    // Sync process timezone to user's configured timezone
+    if (config.timezone && config.timezone !== 'UTC') {
+      process.env.TZ = config.timezone;
+    }
+
     const startTime = Date.now();
     
     // Load skills
@@ -302,6 +307,12 @@ program
   .option('-c, --config <path>', 'Config file path')
   .action(async (opts) => {
     const config = loadConfig(opts.config);
+
+    // Sync timezone
+    if (config.timezone && config.timezone !== 'UTC') {
+      process.env.TZ = config.timezone;
+    }
+
     const sessionManager = new SessionManager(config);
     const skillsLoader = new SkillsLoader(config);
     skillsLoader.loadAll();

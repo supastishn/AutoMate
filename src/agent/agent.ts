@@ -440,7 +440,7 @@ export class Agent {
       elevated: isElevated,
       thinkingLevel: (this.config.agent as any).thinkingLevel ?? 'off',
     }));
-    lines.push(`Date: ${dateStr}, ${timeStr}`);
+    lines.push(`Date: ${dateStr}, ${timeStr} (${this.config.timezone || 'UTC'})`);
     lines.push('');
 
     // ── Model Aliases ──────────────────────────────────────────────────────
@@ -1267,25 +1267,10 @@ export class Agent {
   injectMessage(sessionId: string, message: string, options?: { role?: 'user' | 'system'; source?: string }): void {
     const role = options?.role || 'user';
     const source = options?.source || 'plugin';
-    const originalSessionId = sessionId;
 
     // DND redirect: route automated messages to work session when DND is enabled
     if (source !== 'websocket' && source !== 'cross-session' && source !== 'delegation') {
       sessionId = this.sessionManager.getAutomatedSessionTarget(sessionId);
-
-      // If redirected, notify the chat session so user knows something arrived
-      if (sessionId !== originalSessionId && this.sendToSessionFn) {
-        const chatId = this.sessionManager.getSessionByRole('chat');
-        if (chatId) {
-          const preview = message.slice(0, 120).replace(/\n/g, ' ');
-          this.sendToSessionFn(chatId, {
-            type: 'cross_session_notification',
-            content: `${preview}${message.length > 120 ? '…' : ''} → routed to work session (DND)`,
-            source: source,
-            timestamp: Date.now(),
-          });
-        }
-      }
     }
 
     if (this.processing.has(sessionId)) {

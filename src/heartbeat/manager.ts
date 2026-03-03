@@ -723,12 +723,13 @@ export class HeartbeatManager {
       // ── Post-response autonomy hooks ──
       await this.runPostHooks(memoryDir, sessionId);
 
-      // ── Notify chat session about heartbeat activity ──
-      const summary = responseText.slice(0, 200).replace(/\n/g, ' ');
-      notifyChatSession(
-        `Heartbeat${this.agentName ? ` (${this.agentName})` : ''}: ${summary}${responseText.length > 200 ? '…' : ''}${autonomyNotes ? `\n${autonomyNotes.trim()}` : ''}`,
-        'heartbeat'
-      );
+      // Notify chat only about autonomy activity (goal completions, escalations, etc.)
+      if (autonomyNotes) {
+        notifyChatSession(
+          `Heartbeat${this.agentName ? ` (${this.agentName})` : ''}:${autonomyNotes}`,
+          'heartbeat'
+        );
+      }
 
       return responseText;
     } catch (err) {
