@@ -803,8 +803,10 @@ export class SessionManager {
     const client = llm || this.llm;
     const session = this.sessions.get(sessionId);
     if (!session) return 'No active session.';
+    const tag = isAutoCompaction ? 'auto-compact' : 'compact';
+    
     if (!client) {
-      // No LLM available — emergency truncation: keep only last 4 non-system messages
+      console.log(`[${tag}] No LLM available — emergency truncation for ${sessionId}`);
       this.emergencyTruncate(session);
       this.saveSession(sessionId);
       return 'Compacted (no LLM available for summary — emergency truncation applied).';
@@ -812,19 +814,30 @@ export class SessionManager {
 
     const beforeCount = session.messages.length;
     const beforeTokens = this.estimateTokensForMessages(session.messages);
+    const userMsgCount = session.messages.filter(m => m.role === 'user').length;
+    const assistantMsgCount = session.messages.filter(m => m.role === 'assistant').length;
+    const toolMsgCount = session.messages.filter(m => m.role === 'tool').length;
+    const systemMsgCount = session.messages.filter(m => m.role === 'system').length;
+    
+    console.log(`[${tag}] Starting compaction for ${sessionId}`);
+    console.log(`[${tag}]   Before: ${beforeCount} messages (~${beforeTokens} tokens)`);
+    console.log(`[${tag}]   Breakdown: ${userMsgCount} user, ${assistantMsgCount} assistant, ${toolMsgCount} tool, ${systemMsgCount} system`);
 
     // Fire pre-compaction flush hook (saves to daily log)
     if (this.onBeforeCompact) {
       const msgs = [...session.messages];
       await this.onBeforeCompact(sessionId, msgs).catch(() => {});
+      console.log(`[${tag}]   Pre-compact flush hook fired (daily log saved)`);
     }
 
     // Index transcript before compaction so it's searchable
     await this.indexSessionTranscript(sessionId).catch(() => {});
+    console.log(`[${tag}]   Transcript indexed for search`);
 
     // Extract tool failures and file operations for context
     const toolFailures = this.extractToolFailures(session.messages);
     const fileOps = this.extractFileOperations(session.messages);
+    console.log(`[${tag}]   Extracted ${toolFailures.length} tool failures, ${fileOps.read.length} reads, ${fileOps.modified.length} modifications`);
 
     // Build conversation text for summarization (skip system messages)
     const nonSystem = session.messages.filter(m => m.role !== 'system');
@@ -833,22 +846,26 @@ export class SessionManager {
     const contextTokens = this.config.sessions.contextLimit;
     const conversationTokens = this.estimateTokensForMessages(nonSystem);
     const needsMultiStage = conversationTokens > contextTokens * 0.4; // >40% of context
+    console.log(`[${tag}]   Summarization mode: ${needsMultiStage ? 'multi-stage' : 'single-stage'} (${conversationTokens} tokens, ${Math.round(conversationTokens / contextTokens * 100)}% of context)`);
 
     let summary = '';
     try {
+      const startTime = Date.now();
       if (needsMultiStage) {
         summary = await this.multiStageSummarize(client, nonSystem, instructions, contextTokens);
       } else {
         summary = await this.singleStageSummarize(client, nonSystem, instructions);
       }
+      console.log(`[${tag}]   Summary generated in ${Date.now() - startTime}ms (${summary.length} chars)`);
     } catch (err) {
-      console.error(`[session] Summary generation failed: ${err}`);
+      console.error(`[${tag}]   Summary generation FAILED: ${err}`);
       this.emergencyTruncate(session);
       this.saveSession(sessionId);
       return `Summary generation failed, applied emergency truncation.`;
     }
 
     if (!summary || summary.length < 20) {
+      console.log(`[${tag}]   Summary too short (${summary?.length || 0} chars) — emergency truncation`);
       this.emergencyTruncate(session);
       this.saveSession(sessionId);
       return `Summary was too short, applied emergency truncation.`;
@@ -873,6 +890,11 @@ export class SessionManager {
     // Keep system messages, summary, and last 10 messages for continuity
     const systemMsgs = session.messages.filter(m => m.role === 'system' && getTextFromContent(m.content).trim().length > 0);
     const recentMessages = session.messages.slice(-10);
+    const recentBreakdown = {
+      user: recentMessages.filter(m => m.role === 'user').length,
+      assistant: recentMessages.filter(m => m.role === 'assistant').length,
+      tool: recentMessages.filter(m => m.role === 'tool').length,
+    };
     session.messages = [
       ...systemMsgs,
       {
@@ -882,16 +904,19 @@ export class SessionManager {
       ...recentMessages,
     ];
 
+    console.log(`[${tag}]   Kept: ${systemMsgs.length} system msgs + 1 summary + ${recentMessages.length} recent (${recentBreakdown.user}u/${recentBreakdown.assistant}a/${recentBreakdown.tool}t)`);
+
     // For auto-compaction, notify callback to trigger continuation processing
     // The callback (agent) will add the message via processMessage
     if (isAutoCompaction && this.onAutoCompactContinuation) {
       const continuationMessage = 'Continue the task u were doing';
+      console.log(`[${tag}]   Sending continuation message to agent`);
       // Use setImmediate to ensure the current call stack completes first
       setImmediate(() => {
         try {
           this.onAutoCompactContinuation!(sessionId, continuationMessage);
         } catch (err) {
-          console.error(`[session] Auto-compact continuation callback failed:`, err);
+          console.error(`[${tag}]   Auto-compact continuation callback failed:`, err);
         }
       });
     }
@@ -901,7 +926,10 @@ export class SessionManager {
     this.saveSession(sessionId);
 
     const afterTokens = this.estimateTokensForMessages(session.messages);
-    return `Compacted with AI summary: ${beforeCount} → ${session.messages.length} messages (~${beforeTokens} → ~${afterTokens} tokens).`;
+    const saved = beforeTokens - afterTokens;
+    const result = `Compacted: ${beforeCount} → ${session.messages.length} msgs (~${beforeTokens} → ~${afterTokens} tokens, saved ~${saved}). Summary: ${summary.length} chars. Kept ${recentMessages.length} recent + ${systemMsgs.length} system msgs.`;
+    console.log(`[${tag}]   ✅ ${result}`);
+    return result;
   }
 
   /**
