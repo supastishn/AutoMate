@@ -671,7 +671,7 @@ export class SessionManager {
   private emergencyTruncate(session: Session): void {
     const systemMsgs = session.messages.filter(m => m.role === 'system');
     const nonSystem = session.messages.filter(m => m.role !== 'system');
-    const kept = nonSystem.slice(-4);
+    const kept = nonSystem.slice(-10);
     const removedCount = nonSystem.length - kept.length;
     session.messages = [
       ...systemMsgs,
@@ -870,14 +870,16 @@ export class SessionManager {
       }
     }
 
-    // Keep only system messages with actual content, delete everything else, insert summary
+    // Keep system messages, summary, and last 10 messages for continuity
     const systemMsgs = session.messages.filter(m => m.role === 'system' && getTextFromContent(m.content).trim().length > 0);
+    const recentMessages = session.messages.slice(-10);
     session.messages = [
       ...systemMsgs,
       {
         role: 'system',
         content: `[Conversation Summary — ${beforeCount} messages compacted at ${new Date().toISOString()}]\n\n${summary}`,
       },
+      ...recentMessages,
     ];
 
     // For auto-compaction, notify callback to trigger continuation processing

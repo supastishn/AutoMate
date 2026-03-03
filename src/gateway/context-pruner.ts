@@ -23,6 +23,7 @@ function getTextFromContent(content: string | ContentPart[] | null): string {
 export interface PruningSettings {
   enabled: boolean;
   maxToolResults: number;     // maximum tool results before pruning starts
+  maxToolResultChars: number; // auto-trim any single tool result above this size
   keepLastAssistants: number; // protect tool results from last N assistant turns
   softTrimRatio: number;      // start soft trimming at this context ratio
   hardClearRatio: number;     // start hard clearing at this context ratio
@@ -41,6 +42,7 @@ export interface PruningSettings {
 export const DEFAULT_PRUNING_SETTINGS: PruningSettings = {
   enabled: true,
   maxToolResults: 100,            // maximum tool results before pruning starts
+  maxToolResultChars: 30000,      // auto-trim any single tool result above this size
   keepLastAssistants: 3,          // protect last 3 assistant turns
   softTrimRatio: 0.3,             // start trimming at 30% of context
   hardClearRatio: 0.5,            // hard clear at 50% of context
@@ -155,9 +157,25 @@ export function pruneContextMessages(
     return { messages, pruned: false, stats: { softTrimmed: 0, hardCleared: 0, charsSaved: 0 } };
   }
 
+  // Phase 0: Auto-trim oversized individual tool results (always applies, regardless of ratio)
+  const maxChars = settings.maxToolResultChars || 30000;
+  let didAutoTrim = false;
+  const result0 = messages.map(m => {
+    if (m.role === 'tool' && m.content) {
+      const text = getTextFromContent(m.content);
+      if (text.length > maxChars) {
+        didAutoTrim = true;
+        return { ...m, content: softTrimContent(text, settings.softTrim) };
+      }
+    }
+    return m;
+  });
+  // Use auto-trimmed messages for subsequent phases
+  const msgs = didAutoTrim ? result0 : messages;
+
   // Estimate current char usage (rough: 4 chars per token)
   let totalChars = 0;
-  for (const m of messages) {
+  for (const m of msgs) {
     if (m.content) totalChars += m.content.length;
     if (m.tool_calls) totalChars += JSON.stringify(m.tool_calls).length;
   }
@@ -166,31 +184,31 @@ export function pruneContextMessages(
   const ratio = totalChars / charWindow;
 
   // Check if we should prune based on count (independent of context ratio)
-  const totalToolResults = messages.filter(m => m.role === 'tool').length;
+  const totalToolResults = msgs.filter(m => m.role === 'tool').length;
   const wouldPruneByCount = totalToolResults > settings.maxToolResults;
   
   // Calculate prunable chars to check minPrunableChars requirement
-  const prunablesForCheck = findPrunableToolResults(messages, settings.keepLastAssistants, settings.maxToolResults);
+  const prunablesForCheck = findPrunableToolResults(msgs, settings.keepLastAssistants, settings.maxToolResults);
   const prunableChars = prunablesForCheck.reduce((sum, p) => sum + p.originalLength, 0);
   
   // If context ratio is below threshold AND minPrunableChars not met AND we're not pruning by count, return without pruning
   if (ratio < settings.softTrimRatio && prunableChars < settings.minPrunableChars && !wouldPruneByCount) {
-    return { messages, pruned: false, stats: { softTrimmed: 0, hardCleared: 0, charsSaved: 0 } };
+    return { messages: msgs, pruned: didAutoTrim, stats: { softTrimmed: didAutoTrim ? 1 : 0, hardCleared: 0, charsSaved: 0 } };
   }
 
   // Find prunable tool results
-  const prunables = findPrunableToolResults(messages, settings.keepLastAssistants, settings.maxToolResults);
+  const prunables = findPrunableToolResults(msgs, settings.keepLastAssistants, settings.maxToolResults);
 
   // Calculate total prunable chars
   const totalPrunableChars = prunables.reduce((sum, p) => sum + p.originalLength, 0);
   
   // If prunable chars are below threshold AND we're not pruning by count, return without pruning
   if (totalPrunableChars < settings.minPrunableChars && !wouldPruneByCount) {
-    return { messages, pruned: false, stats: { softTrimmed: 0, hardCleared: 0, charsSaved: 0 } };
+    return { messages: msgs, pruned: didAutoTrim, stats: { softTrimmed: didAutoTrim ? 1 : 0, hardCleared: 0, charsSaved: 0 } };
   }
 
   // Clone messages for modification
-  const result = messages.map(m => ({ ...m }));
+  const result = msgs.map(m => ({ ...m }));
   const stats: PruneStats = { softTrimmed: 0, hardCleared: 0, charsSaved: 0 };
 
   // Phase 1: Soft trim (at softTrimRatio threshold)
@@ -233,7 +251,7 @@ export function pruneContextMessages(
   }
   
   // Phase 3: Count-based hard clear (clear excess tool results beyond maxToolResults)
-  const currentTotalToolResults = messages.filter(m => m.role === 'tool').length;
+  const currentTotalToolResults = msgs.filter(m => m.role === 'tool').length;
   if (currentTotalToolResults > settings.maxToolResults && settings.hardClear.enabled) {
     // Find tool results that exceed the maxToolResults limit (oldest ones)
     let toolResultCount = 0;

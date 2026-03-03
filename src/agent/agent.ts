@@ -1511,6 +1511,22 @@ export class Agent {
       this.sessionManager.addMessage(sessionId, { role: 'user', content: userMessage });
     }
 
+    // Auto memory search: inject relevant memory results before LLM call
+    if (!skipAddMessage && this.memoryManager && this.config.memory.autoSearch?.enabled && userMessage.length > 10) {
+      try {
+        const { maxResults = 3, minScore = 0.3 } = this.config.memory.autoSearch;
+        const results = await this.memoryManager.semanticSearch(userMessage, maxResults);
+        const relevant = results.filter(r => r.score >= minScore);
+        if (relevant.length > 0) {
+          const snippets = relevant.map(r => `[${r.file}] ${r.text.slice(0, 300)}`).join('\n---\n');
+          this.sessionManager.addMessage(sessionId, {
+            role: 'system',
+            content: `[Auto memory recall]\n${snippets}`,
+          });
+        }
+      } catch { /* memory search failure is non-fatal */ }
+    }
+
     // Get per-session tool view
     const sessionView = this.tools.getSessionView(sessionId);
     

@@ -242,6 +242,12 @@ export const ConfigSchema = z.object({
     }).default({}),
     // Citation mode: how to cite sources in search results
     citations: z.enum(['full', 'file-only', 'none']).default('full'),
+    // Auto-search: automatically search memory after each user message and inject relevant results
+    autoSearch: z.object({
+      enabled: z.boolean().default(false),
+      maxResults: z.number().default(3),       // max results to inject
+      minScore: z.number().default(0.3),       // minimum relevance score (0-1)
+    }).default({}),
   }).default({}),
   cron: z.object({
     enabled: z.boolean().default(true),
