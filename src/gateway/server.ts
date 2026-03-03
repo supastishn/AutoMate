@@ -1884,9 +1884,20 @@ this.app.post<{ Params: { id: string } }>('/api/subagents/:id/kill', async (req,
 
           // Delete a message and its associated responses
           if (msg.type === 'delete_message') {
+            const index = msg.index as number;
+            const deleted = this.sessionManager.deleteMessageAt(sessionId, index);
+            const session = this.sessionManager.getSession(sessionId);
+            socket.send(JSON.stringify({
+              type: 'messages_updated',
+              session_id: sessionId,
+              messages: session ? this.mapSessionMessages(session.messages) : [],
+              context: this.getContextInfo(sessionId),
+              deleted_count: deleted.length,
+            }));
+          }
 
           // Set session role (chat/work)
-          } else if (msg.type === 'set_role') {
+          if (msg.type === 'set_role') {
             const role = msg.role as 'chat' | 'work';
             const targetId = msg.session_id as string || sessionId;
             if (role !== 'chat' && role !== 'work') {
@@ -1903,19 +1914,6 @@ this.app.post<{ Params: { id: string } }>('/api/subagents/:id/kill', async (req,
             socket.send(JSON.stringify({
               type: 'roles_updated',
               roles: this.sessionManager.getSessionRoles(),
-            }));
-
-          // Delete a message and its associated responses
-          } else if (msg.type === 'delete_message') {
-            const index = msg.index as number;
-            const deleted = this.sessionManager.deleteMessageAt(sessionId, index);
-            const session = this.sessionManager.getSession(sessionId);
-            socket.send(JSON.stringify({
-              type: 'messages_updated',
-              session_id: sessionId,
-              messages: session ? this.mapSessionMessages(session.messages) : [],
-              context: this.getContextInfo(sessionId),
-              deleted_count: deleted.length,
             }));
           }
 
