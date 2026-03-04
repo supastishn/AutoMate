@@ -807,38 +807,27 @@ export class SessionManager {
     const tag = isAutoCompaction ? 'auto-compact' : 'compact';
     
     if (!client) {
-      console.log(`[${tag}] No LLM available — emergency truncation for ${sessionId}`);
       this.emergencyTruncate(session);
       this.saveSession(sessionId);
-      return 'Compacted (no LLM available for summary — emergency truncation applied).';
+      console.log(`[${tag}] Emergency truncation (no LLM) for ${sessionId}`);
+      return 'Compacted (no LLM available — emergency truncation).';
     }
 
     const beforeCount = session.messages.length;
     const beforeTokens = this.estimateTokensForMessages(session.messages);
-    const userMsgCount = session.messages.filter(m => m.role === 'user').length;
-    const assistantMsgCount = session.messages.filter(m => m.role === 'assistant').length;
-    const toolMsgCount = session.messages.filter(m => m.role === 'tool').length;
-    const systemMsgCount = session.messages.filter(m => m.role === 'system').length;
-    
-    console.log(`[${tag}] Starting compaction for ${sessionId}`);
-    console.log(`[${tag}]   Before: ${beforeCount} messages (~${beforeTokens} tokens)`);
-    console.log(`[${tag}]   Breakdown: ${userMsgCount} user, ${assistantMsgCount} assistant, ${toolMsgCount} tool, ${systemMsgCount} system`);
+    console.log(`[${tag}] ${sessionId}: ${beforeCount} msgs ~${beforeTokens} tokens`);
 
     // Fire pre-compaction flush hook (saves to daily log)
     if (this.onBeforeCompact) {
-      const msgs = [...session.messages];
-      await this.onBeforeCompact(sessionId, msgs).catch(() => {});
-      console.log(`[${tag}]   Pre-compact flush hook fired (daily log saved)`);
+      await this.onBeforeCompact(sessionId, [...session.messages]).catch(() => {});
     }
 
     // Index transcript before compaction so it's searchable
     await this.indexSessionTranscript(sessionId).catch(() => {});
-    console.log(`[${tag}]   Transcript indexed for search`);
 
     // Extract tool failures and file operations for context
     const toolFailures = this.extractToolFailures(session.messages);
     const fileOps = this.extractFileOperations(session.messages);
-    console.log(`[${tag}]   Extracted ${toolFailures.length} tool failures, ${fileOps.read.length} reads, ${fileOps.modified.length} modifications`);
 
     // Build conversation text for summarization (skip system messages)
     const nonSystem = session.messages.filter(m => m.role !== 'system');
@@ -846,27 +835,23 @@ export class SessionManager {
     // Determine if we need multi-stage summarization
     const contextTokens = this.config.sessions.contextLimit;
     const conversationTokens = this.estimateTokensForMessages(nonSystem);
-    const needsMultiStage = conversationTokens > contextTokens * 0.4; // >40% of context
-    console.log(`[${tag}]   Summarization mode: ${needsMultiStage ? 'multi-stage' : 'single-stage'} (${conversationTokens} tokens, ${Math.round(conversationTokens / contextTokens * 100)}% of context)`);
+    const needsMultiStage = conversationTokens > contextTokens * 0.4;
 
     let summary = '';
     try {
-      const startTime = Date.now();
       if (needsMultiStage) {
         summary = await this.multiStageSummarize(client, nonSystem, instructions, contextTokens);
       } else {
         summary = await this.singleStageSummarize(client, nonSystem, instructions);
       }
-      console.log(`[${tag}]   Summary generated in ${Date.now() - startTime}ms (${summary.length} chars)`);
     } catch (err) {
-      console.error(`[${tag}]   Summary generation FAILED: ${err}`);
+      console.error(`[${tag}] Summary failed: ${err}`);
       this.emergencyTruncate(session);
       this.saveSession(sessionId);
       return `Summary generation failed, applied emergency truncation.`;
     }
 
     if (!summary || summary.length < 20) {
-      console.log(`[${tag}]   Summary too short (${summary?.length || 0} chars) — emergency truncation`);
       this.emergencyTruncate(session);
       this.saveSession(sessionId);
       return `Summary was too short, applied emergency truncation.`;
@@ -888,15 +873,10 @@ export class SessionManager {
       }
     }
 
-    // Keep system messages, summary, and last 10 messages for continuity
+    // Keep system messages, summary, and last N messages for continuity
     const systemMsgs = session.messages.filter(m => m.role === 'system' && getTextFromContent(m.content).trim().length > 0);
     const retainCount = this.config.sessions.compactRetainCount ?? 10;
     const recentMessages = session.messages.slice(-retainCount);
-    const recentBreakdown = {
-      user: recentMessages.filter(m => m.role === 'user').length,
-      assistant: recentMessages.filter(m => m.role === 'assistant').length,
-      tool: recentMessages.filter(m => m.role === 'tool').length,
-    };
     session.messages = [
       ...systemMsgs,
       {
@@ -906,18 +886,13 @@ export class SessionManager {
       ...recentMessages,
     ];
 
-    console.log(`[${tag}]   Kept: ${systemMsgs.length} system msgs + 1 summary + ${recentMessages.length} recent (${recentBreakdown.user}u/${recentBreakdown.assistant}a/${recentBreakdown.tool}t)`);
-
-    // Auto-compact continuation disabled — let the agent naturally continue from context
-
     session.updatedAt = new Date().toISOString();
-    this.sessionTokens.delete(sessionId); // clear stale API token data after compaction
+    this.sessionTokens.delete(sessionId);
     this.saveSession(sessionId);
 
     const afterTokens = this.estimateTokensForMessages(session.messages);
-    const saved = beforeTokens - afterTokens;
-    const result = `Compacted: ${beforeCount} → ${session.messages.length} msgs (~${beforeTokens} → ~${afterTokens} tokens, saved ~${saved}). Summary: ${summary.length} chars. Kept ${recentMessages.length} recent + ${systemMsgs.length} system msgs.`;
-    console.log(`[${tag}]   ✅ ${result}`);
+    const result = `Compacted: ${beforeCount} → ${session.messages.length} msgs (~${beforeTokens} → ~${afterTokens} tokens). Kept ${recentMessages.length} recent.`;
+    console.log(`[${tag}] ✅ ${result}`);
     return result;
   }
 
