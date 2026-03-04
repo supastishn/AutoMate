@@ -453,9 +453,9 @@ export class SessionManager {
       console.log(`[session] Token check: ${currentTokens} tokens, threshold=${threshold}, limit=${tokenLimit}, percent=${percent}%`);
 
       if (currentTokens > threshold) {
-        console.log(`[session] Auto-compact triggered for ${sessionId}: ${currentTokens} > ${threshold} (${percent}%)`);
-        // compactWithSummary handles the lock internally
-        this.compactWithSummary(sessionId, this.llm || undefined, this.defaultCompactInstructions || undefined, true)
+        const mode = this.config.sessions.compactMode || 'summary';
+        console.log(`[session] Auto-compact triggered for ${sessionId}: ${currentTokens} > ${threshold} (${percent}%), mode=${mode}`);
+        this.autoCompact(sessionId, true)
           .catch(err => console.error(`[session] Auto-compact failed for ${sessionId}:`, err));
       }
     }
@@ -777,6 +777,143 @@ export class SessionManager {
       this.saveSession(sessionId);
     }
     return removed + fixed;
+  }
+
+  /**
+   * Auto-compact dispatcher — routes to the configured compaction strategy.
+   */
+  async autoCompact(sessionId: string, isAutoCompaction?: boolean): Promise<string> {
+    const mode = this.config.sessions.compactMode || 'summary';
+    switch (mode) {
+      case 'truncate':
+        return this.compactTruncate(sessionId);
+      case 'rolling':
+        return this.compactRolling(sessionId, isAutoCompaction);
+      case 'summary':
+      default:
+        return this.compactWithSummary(sessionId, this.llm || undefined, this.defaultCompactInstructions || undefined, isAutoCompaction);
+    }
+  }
+
+  /**
+   * Truncation compaction: simply drops the oldest messages, keeping the last N.
+   * No summarization — fastest possible compaction.
+   */
+  async compactTruncate(sessionId: string): Promise<string> {
+    if (this.compactingSessions.has(sessionId)) return 'Compaction already in progress.';
+    this.compactingSessions.add(sessionId);
+    try {
+      const session = this.sessions.get(sessionId);
+      if (!session) return 'No active session.';
+
+      // Fire pre-compaction hook
+      if (this.onBeforeCompact) {
+        await this.onBeforeCompact(sessionId, [...session.messages]).catch(() => {});
+      }
+      await this.indexSessionTranscript(sessionId).catch(() => {});
+
+      const beforeCount = session.messages.length;
+      const retainCount = this.config.sessions.compactRetainCount ?? 10;
+      const systemMsgs = session.messages.filter(m => m.role === 'system' && getTextFromContent(m.content).trim().length > 0);
+      const nonSystem = session.messages.filter(m => m.role !== 'system');
+      const kept = nonSystem.slice(-retainCount);
+      const removedCount = nonSystem.length - kept.length;
+
+      session.messages = [
+        ...systemMsgs,
+        ...(removedCount > 0
+          ? [{ role: 'system' as const, content: `[Truncation: ${removedCount} messages dropped at ${new Date().toISOString()}]` }]
+          : []),
+        ...kept,
+      ];
+      this.sanitizeToolPairs(session);
+      session.updatedAt = new Date().toISOString();
+      this.sessionTokens.delete(sessionId);
+      this.saveSession(sessionId);
+
+      const result = `Truncated: ${beforeCount} → ${session.messages.length} msgs (dropped ${removedCount} oldest).`;
+      console.log(`[truncate] ✅ ${result}`);
+      return result;
+    } finally {
+      this.compactingSessions.delete(sessionId);
+    }
+  }
+
+  /**
+   * Rolling compaction: summarizes only the oldest chunk of messages, keeping the rest intact.
+   * Each pass compacts `rollingChunkSize` oldest non-system messages into a summary,
+   * leaving recent messages untouched. Repeats on next trigger.
+   */
+  async compactRolling(sessionId: string, isAutoCompaction?: boolean): Promise<string> {
+    if (this.compactingSessions.has(sessionId)) return 'Compaction already in progress.';
+    this.compactingSessions.add(sessionId);
+    try {
+      const client = this.llm;
+      const session = this.sessions.get(sessionId);
+      if (!session) return 'No active session.';
+
+      if (!client) {
+        // Fallback to truncation if no LLM
+        this.compactingSessions.delete(sessionId);
+        return this.compactTruncate(sessionId);
+      }
+
+      // Fire pre-compaction hook
+      if (this.onBeforeCompact) {
+        await this.onBeforeCompact(sessionId, [...session.messages]).catch(() => {});
+      }
+
+      const beforeCount = session.messages.length;
+      const chunkSize = this.config.sessions.rollingChunkSize ?? 20;
+
+      // Separate system messages from the rest
+      const systemMsgs = session.messages.filter(m => m.role === 'system' && getTextFromContent(m.content).trim().length > 0);
+      const nonSystem = session.messages.filter(m => m.role !== 'system');
+
+      if (nonSystem.length <= chunkSize) {
+        return `Rolling compact skipped: only ${nonSystem.length} non-system messages (chunk size: ${chunkSize}).`;
+      }
+
+      // Take the oldest chunk to summarize
+      const chunk = nonSystem.slice(0, chunkSize);
+      const rest = nonSystem.slice(chunkSize);
+
+      // Summarize the chunk
+      let summary = '';
+      try {
+        summary = await this.singleStageSummarize(client, chunk, this.defaultCompactInstructions || undefined);
+      } catch (err) {
+        console.error(`[rolling] Summary failed: ${err}`);
+        // Fallback: just drop the chunk
+        session.messages = [
+          ...systemMsgs,
+          { role: 'system' as const, content: `[Rolling compaction: ${chunk.length} messages dropped (summary failed) at ${new Date().toISOString()}]` },
+          ...rest,
+        ];
+        this.sanitizeToolPairs(session);
+        session.updatedAt = new Date().toISOString();
+        this.sessionTokens.delete(sessionId);
+        this.saveSession(sessionId);
+        return `Rolling compact: dropped ${chunk.length} messages (summary failed).`;
+      }
+
+      // Replace chunk with summary, keep the rest
+      session.messages = [
+        ...systemMsgs,
+        { role: 'system' as const, content: `[Rolling Summary — ${chunk.length} messages compacted at ${new Date().toISOString()}]\n\n${summary}` },
+        ...rest,
+      ];
+      this.sanitizeToolPairs(session);
+      session.updatedAt = new Date().toISOString();
+      this.sessionTokens.delete(sessionId);
+      this.saveSession(sessionId);
+
+      const result = `Rolling compact: ${beforeCount} → ${session.messages.length} msgs (summarized ${chunk.length} oldest).`;
+      console.log(`[rolling] ✅ ${result}`);
+      return result;
+    } finally {
+      this.compactingSessions.delete(sessionId);
+    }
   }
 
   /**

@@ -273,6 +273,8 @@ export const ConfigSchema = z.object({
     contextLimit: z.number().default(120000),    // default max tokens (used if model has no contextWindow)
     compactAt: z.number().default(0.8),          // trigger at this fraction of contextLimit
     compactRetainCount: z.number().default(10),  // keep last N messages after compaction
+    compactMode: z.enum(['summary', 'truncate', 'rolling']).default('summary'),  // compaction strategy
+    rollingChunkSize: z.number().default(20),    // for 'rolling' mode: how many oldest messages to compact per pass
     reserveTokens: z.number().default(20000),    // reserve tokens for response generation
     autoResetHour: z.number().default(-1),       // -1 = disabled, 0-23 = hour to reset daily
     // Per-model context windows: model name pattern -> context window size
