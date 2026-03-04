@@ -1551,6 +1551,9 @@ export class Agent {
     // (context compaction handles long-running tasks)
 
     while (true) {
+      // Yield to event loop so other requests (UI, API) aren't blocked
+      await new Promise(resolve => setImmediate(resolve));
+      
       // Check if abort was requested
       if (signal?.aborted) {
         this.sessionManager.saveSession(sessionId);
