@@ -661,7 +661,7 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
           for (const tc of msg.tool_calls) {
             input.push({
               type: 'function_call',
-              id: tc.id,
+              call_id: tc.id,
               name: tc.function.name,
               arguments: tc.function.arguments,
             });
@@ -738,7 +738,7 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
               textContent += c.text || '';
             } else if (c.type === 'function_call') {
               toolCalls.push({
-                id: c.id || `call_${Date.now()}_${toolCalls.length}`,
+                id: c.call_id || c.id || `call_${Date.now()}_${toolCalls.length}`,
                 type: 'function',
                 function: {
                   name: c.name,
@@ -750,7 +750,7 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
         }
       } else if (item.type === 'function_call') {
         toolCalls.push({
-          id: item.id || `call_${Date.now()}_${toolCalls.length}`,
+          id: item.call_id || item.id || `call_${Date.now()}_${toolCalls.length}`,
           type: 'function',
           function: {
             name: item.name,
@@ -1024,7 +1024,7 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
           for (const tc of msg.tool_calls) {
             input.push({
               type: 'function_call',
-              id: tc.id,
+              call_id: tc.id,
               name: tc.function.name,
               arguments: tc.function.arguments,
             });
@@ -1136,7 +1136,7 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
               if (event.item?.type === 'function_call') {
                 const idx = event.output_index || 0;
                 toolCallsInProgress.set(idx, {
-                  id: event.item.id || `call_${Date.now()}_${idx}`,
+                  id: event.item.call_id || event.item.id || `call_${Date.now()}_${idx}`,
                   name: event.item.name || '',
                   arguments: '',
                 });
@@ -1148,7 +1148,7 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
                     delta: {
                       tool_calls: [{
                         index: idx,
-                        id: event.item.id,
+                        id: event.item.call_id || event.item.id,
                         type: 'function',
                         function: { name: event.item.name, arguments: '' },
                       }],
@@ -1253,19 +1253,17 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
           input.push({ role: 'user', content: msg.content || '' });
         } else if (msg.role === 'assistant') {
           if (msg.tool_calls && msg.tool_calls.length > 0) {
-            const content: any[] = [];
             if (msg.content) {
-              content.push({ type: 'output_text', text: msg.content });
+              input.push({ role: 'assistant', content: msg.content });
             }
             for (const tc of msg.tool_calls) {
-              content.push({
+              input.push({
                 type: 'function_call',
-                id: tc.id,
+                call_id: tc.id,
                 name: tc.function.name,
                 arguments: tc.function.arguments,
               });
             }
-            input.push({ role: 'assistant', content });
           } else {
             input.push({ role: 'assistant', content: msg.content || '' });
           }
