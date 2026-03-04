@@ -862,6 +862,7 @@ export class SessionManager {
       if (this.onBeforeCompact) {
         await this.onBeforeCompact(sessionId, [...session.messages]).catch(() => {});
       }
+      await this.indexSessionTranscript(sessionId).catch(() => {});
 
       const beforeCount = session.messages.length;
       const chunkSize = this.config.sessions.rollingChunkSize ?? 20;

@@ -175,6 +175,9 @@ const SECTIONS: SectionDef[] = [
       { key: 'memory.sharedDirectory', label: 'Shared Memory Directory', type: 'string' },
       { key: 'memory.indexTranscripts', label: 'Index Transcripts', type: 'boolean' },
       { key: 'memory.citations', label: 'Citations Mode', type: 'enum', options: ['full', 'file-only', 'none'] },
+      { key: 'memory.autoSearch.enabled', label: 'Auto Search', type: 'boolean' },
+      { key: 'memory.autoSearch.maxResults', label: 'Auto Search Max Results', type: 'number' },
+      { key: 'memory.autoSearch.minScore', label: 'Auto Search Min Score', type: 'number' },
     ],
   },
   {
@@ -199,6 +202,9 @@ const SECTIONS: SectionDef[] = [
       { key: 'sessions.contextLimit', label: 'Context Limit (tokens)', type: 'number' },
       { key: 'sessions.reserveTokens', label: 'Reserve Tokens', type: 'number' },
       { key: 'sessions.compactAt', label: 'Compact At (ratio)', type: 'number' },
+      { key: 'sessions.compactMode', label: 'Compact Mode', type: 'enum', options: ['summary', 'truncate', 'rolling'] },
+      { key: 'sessions.compactRetainCount', label: 'Messages to Retain After Compact', type: 'number' },
+      { key: 'sessions.rollingChunkSize', label: 'Rolling Chunk Size', type: 'number' },
       { key: 'sessions.autoResetHour', label: 'Auto Reset Hour (-1=off)', type: 'number' },
     ],
   },
@@ -214,6 +220,7 @@ const SECTIONS: SectionDef[] = [
     fields: [
       { key: 'sessions.pruning.enabled', label: 'Enabled', type: 'boolean' },
       { key: 'sessions.pruning.maxToolResults', label: 'Max Tool Results', type: 'number' },
+      { key: 'sessions.pruning.maxToolResultChars', label: 'Max Tool Result Chars', type: 'number' },
       { key: 'sessions.pruning.keepLastAssistants', label: 'Keep Last N Assistant Turns', type: 'number' },
       { key: 'sessions.pruning.softTrimRatio', label: 'Soft Trim Ratio', type: 'number' },
       { key: 'sessions.pruning.hardClearRatio', label: 'Hard Clear Ratio', type: 'number' },
