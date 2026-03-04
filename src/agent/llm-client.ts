@@ -653,20 +653,19 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
         input.push({ role: 'user', content: msg.content || '' });
       } else if (msg.role === 'assistant') {
         if (msg.tool_calls && msg.tool_calls.length > 0) {
-          // Assistant message with tool calls - need structured content
-          const content: any[] = [];
+          // Assistant message with tool calls
+          // Text content goes in the assistant message, function_calls are top-level items
           if (msg.content) {
-            content.push({ type: 'output_text', text: msg.content });
+            input.push({ role: 'assistant', content: msg.content });
           }
           for (const tc of msg.tool_calls) {
-            content.push({
+            input.push({
               type: 'function_call',
               id: tc.id,
               name: tc.function.name,
               arguments: tc.function.arguments,
             });
           }
-          input.push({ role: 'assistant', content });
         } else {
           input.push({ role: 'assistant', content: msg.content || '' });
         }
@@ -1019,19 +1018,17 @@ private async *_puterApiStream(provider: ProviderEntry, messages: LLMMessage[], 
         input.push({ role: 'user', content: msg.content || '' });
       } else if (msg.role === 'assistant') {
         if (msg.tool_calls && msg.tool_calls.length > 0) {
-          const content: any[] = [];
           if (msg.content) {
-            content.push({ type: 'output_text', text: msg.content });
+            input.push({ role: 'assistant', content: msg.content });
           }
           for (const tc of msg.tool_calls) {
-            content.push({
+            input.push({
               type: 'function_call',
               id: tc.id,
               name: tc.function.name,
               arguments: tc.function.arguments,
             });
           }
-          input.push({ role: 'assistant', content });
         } else {
           input.push({ role: 'assistant', content: msg.content || '' });
         }
