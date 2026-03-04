@@ -669,9 +669,10 @@ export class SessionManager {
    * and only the last 4 non-system messages, then sanitize tool pairs.
    */
   private emergencyTruncate(session: Session): void {
+    const retainCount = this.config.sessions.compactRetainCount ?? 10;
     const systemMsgs = session.messages.filter(m => m.role === 'system');
     const nonSystem = session.messages.filter(m => m.role !== 'system');
-    const kept = nonSystem.slice(-10);
+    const kept = nonSystem.slice(-retainCount);
     const removedCount = nonSystem.length - kept.length;
     session.messages = [
       ...systemMsgs,
@@ -889,7 +890,8 @@ export class SessionManager {
 
     // Keep system messages, summary, and last 10 messages for continuity
     const systemMsgs = session.messages.filter(m => m.role === 'system' && getTextFromContent(m.content).trim().length > 0);
-    const recentMessages = session.messages.slice(-10);
+    const retainCount = this.config.sessions.compactRetainCount ?? 10;
+    const recentMessages = session.messages.slice(-retainCount);
     const recentBreakdown = {
       user: recentMessages.filter(m => m.role === 'user').length,
       assistant: recentMessages.filter(m => m.role === 'assistant').length,
@@ -906,20 +908,7 @@ export class SessionManager {
 
     console.log(`[${tag}]   Kept: ${systemMsgs.length} system msgs + 1 summary + ${recentMessages.length} recent (${recentBreakdown.user}u/${recentBreakdown.assistant}a/${recentBreakdown.tool}t)`);
 
-    // For auto-compaction, notify callback to trigger continuation processing
-    // The callback (agent) will add the message via processMessage
-    if (isAutoCompaction && this.onAutoCompactContinuation) {
-      const continuationMessage = 'Continue the task u were doing';
-      console.log(`[${tag}]   Sending continuation message to agent`);
-      // Use setImmediate to ensure the current call stack completes first
-      setImmediate(() => {
-        try {
-          this.onAutoCompactContinuation!(sessionId, continuationMessage);
-        } catch (err) {
-          console.error(`[${tag}]   Auto-compact continuation callback failed:`, err);
-        }
-      });
-    }
+    // Auto-compact continuation disabled — let the agent naturally continue from context
 
     session.updatedAt = new Date().toISOString();
     this.sessionTokens.delete(sessionId); // clear stale API token data after compaction

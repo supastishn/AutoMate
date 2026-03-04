@@ -272,6 +272,7 @@ export const ConfigSchema = z.object({
     directory: z.string().default('~/.automate/sessions'),
     contextLimit: z.number().default(120000),    // default max tokens (used if model has no contextWindow)
     compactAt: z.number().default(0.8),          // trigger at this fraction of contextLimit
+    compactRetainCount: z.number().default(10),  // keep last N messages after compaction
     reserveTokens: z.number().default(20000),    // reserve tokens for response generation
     autoResetHour: z.number().default(-1),       // -1 = disabled, 0-23 = hour to reset daily
     // Per-model context windows: model name pattern -> context window size
@@ -307,6 +308,7 @@ export const ConfigSchema = z.object({
     pruning: z.object({
       enabled: z.boolean().default(true),
       maxToolResults: z.number().default(100),            // maximum tool results before pruning starts
+      maxToolResultChars: z.number().default(30000),      // auto-trim any single tool result above this size
       keepLastAssistants: z.number().default(3),          // protect last N assistant turns
       softTrimRatio: z.number().default(0.3),             // start trimming at this % of context
       hardClearRatio: z.number().default(0.5),            // clear tool results at this %
