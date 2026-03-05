@@ -14,7 +14,7 @@ import { wireHeartbeat, isHeartbeatJob, isHeartbeatTask, heartbeatTaskId } from 
 import { syncConfigToGoals } from './agent/tools/goals.js';
 import { PluginManager } from './plugins/manager.js';
 import { AgentRouter } from './agents/router.js';
-import { setSubAgentPersistPath, getInterruptedAgents } from './agent/tools/subagent.js';
+import { setSubAgentPersistPath, getInterruptedAgents, cleanupFinishedAgents } from './agent/tools/subagent.js';
 import { setCanvasPersistPath, setCanvasUploadDir, setCanvasServices } from './canvas/canvas-manager.js';
 import { join } from 'node:path';
 import {
@@ -295,6 +295,12 @@ program
     const interruptedAgents = getInterruptedAgents();
     if (interruptedAgents.length > 0) {
       console.log(`  Expired ${interruptedAgents.length} interrupted subagent(s) from previous run.`);
+    }
+
+    // Clean up old finished subagents (>24h)
+    const cleaned = cleanupFinishedAgents();
+    if (cleaned > 0) {
+      console.log(`  Cleaned up ${cleaned} old finished subagent(s).`);
     }
 
     // Graceful shutdown

@@ -248,17 +248,34 @@ function loadPersistedAgents(): void {
   }
 }
 
-/** Get agents that were running when server stopped — expires them all (no auto-resume) */
+/** Get agents that were running/queued when server stopped — expires them all (no auto-resume) */
 export function getInterruptedAgents(): BackgroundAgent[] {
   const now = Date.now();
-  const interrupted = [...backgroundAgents.values()].filter(a => a.status === 'running');
-  for (const a of interrupted) {
+  const stale = [...backgroundAgents.values()].filter(a => a.status === 'running' || a.status === 'queued');
+  for (const a of stale) {
     a.status = 'timeout';
     a.endTime = now;
-    a.output = 'Subagent expired during server restart. Use subagent_poll action=clear to clean up.';
+    a.output = a.status === 'running'
+      ? 'Subagent expired during server restart.'
+      : 'Queued subagent expired during server restart.';
   }
-  if (interrupted.length > 0) persistAgents();
-  return interrupted;
+  if (stale.length > 0) persistAgents();
+  return stale;
+}
+
+/** Clean up old finished agents (completed/timeout/error) older than maxAgeMs */
+export function cleanupFinishedAgents(maxAgeMs: number = 24 * 60 * 60 * 1000): number {
+  const now = Date.now();
+  const finished = ['completed', 'timeout', 'error'];
+  let removed = 0;
+  for (const [id, agent] of backgroundAgents) {
+    if (finished.includes(agent.status) && agent.endTime && (now - agent.endTime) > maxAgeMs) {
+      backgroundAgents.delete(id);
+      removed++;
+    }
+  }
+  if (removed > 0) persistAgents();
+  return removed;
 }
 
 /** Resume an interrupted agent - called from index.ts on startup */
