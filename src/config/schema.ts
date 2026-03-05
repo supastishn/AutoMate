@@ -137,6 +137,7 @@ export const ConfigSchema = z.object({
     // Shorter prompt used for power steering reminders (defaults to systemPrompt if not set)
     reminderPrompt: z.string().optional(),
     maxTokens: z.number().default(8192),
+    maxSystemPromptTokens: z.number().default(32000),  // hard cap on system prompt size
     temperature: z.number().default(0.3),
     // Thinking/reasoning level: off, minimal, low, medium, high, xhigh
     thinkingLevel: z.enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']).default('off'),

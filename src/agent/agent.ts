@@ -571,7 +571,17 @@ export class Agent {
       }
     }
 
-    return lines.join('\n');
+    let result = lines.join('\n');
+
+    // Hard cap: never exceed maxSystemPromptTokens (default 32000 tokens ≈ 128000 chars)
+    const maxTokens = this.config.agent.maxSystemPromptTokens ?? 32000;
+    const maxChars = maxTokens * 4;
+    if (result.length > maxChars) {
+      console.log(`[agent] System prompt too large: ${Math.ceil(result.length / 4)} tokens (~${result.length} chars), trimming to ${maxTokens} tokens`);
+      result = result.slice(0, maxChars) + '\n\n[System prompt truncated to fit token limit]';
+    }
+
+    return result;
   }
 
   /** Build a lightweight power steering prompt (reminder prompt + environment, NO memory/skills/catalog).
