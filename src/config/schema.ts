@@ -337,18 +337,21 @@ export const ConfigSchema = z.object({
   }).default({}),
   heartbeat: z.object({
     enabled: z.boolean().default(false),
-    intervalMinutes: z.number().default(30),   // how often to check in
-    jitterMinutes: z.number().default(5),      // random +/- variance to avoid detection patterns
-    // Use separate session for heartbeat (default: uses main session or webchat:heartbeat)
+    intervalMinutes: z.number().default(30),
+    jitterMinutes: z.number().default(5),
     separateSession: z.boolean().default(true),
-    sessionId: z.string().optional(),          // custom session ID for heartbeat
-    // Feature 3: Adaptive intervals (overrides fixed interval when goals are active)
+    sessionId: z.string().optional(),
+    // Autonomy features (synced to goals.json on startup)
     adaptiveInterval: z.boolean().default(false),
-    // Feature 9: Daily autonomous reports
     dailyReport: z.object({
       enabled: z.boolean().default(false),
-      timeHour: z.number().min(0).max(23).default(9), // Hour of day (0-23)
+      timeHour: z.number().min(0).max(23).default(9),
     }).default({}),
+    autoProcessGoals: z.boolean().default(true),
+    maxInProgressGoals: z.number().default(3),
+    escalation: z.boolean().default(true),
+    autoApproveMinutes: z.number().default(30),  // auto-approve suggested goals after N minutes (0=instant, -1=never)
+    maxRetries: z.number().default(3),
   }).default({}),
   tts: TTSConfigSchema,
   // User timezone (IANA format, e.g. "Asia/Jerusalem", "America/New_York")

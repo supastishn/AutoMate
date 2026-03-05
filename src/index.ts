@@ -144,6 +144,10 @@ program
       syncConfigToGoals(memoryManager.getDirectory(), {
         adaptiveInterval: newConfig.heartbeat?.adaptiveInterval,
         dailyReport: newConfig.heartbeat?.dailyReport,
+        autoProcessGoals: newConfig.heartbeat?.autoProcessGoals,
+        maxInProgressGoals: newConfig.heartbeat?.maxInProgressGoals,
+        escalation: newConfig.heartbeat?.escalation,
+        autoApproveMinutes: newConfig.heartbeat?.autoApproveMinutes,
       });
       // Update heartbeat interval and jitter if changed
       if (heartbeatManager && newConfig.heartbeat?.intervalMinutes) {
@@ -185,6 +189,10 @@ program
     syncConfigToGoals(memoryManager.getDirectory(), {
       adaptiveInterval: config.heartbeat?.adaptiveInterval,
       dailyReport: config.heartbeat?.dailyReport,
+      autoProcessGoals: config.heartbeat?.autoProcessGoals,
+      maxInProgressGoals: config.heartbeat?.maxInProgressGoals,
+      escalation: config.heartbeat?.escalation,
+      autoApproveMinutes: config.heartbeat?.autoApproveMinutes,
     });
 
     // Wire heartbeat system

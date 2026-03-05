@@ -1226,7 +1226,15 @@ export function generateDailyReport(memoryDir: string): string | null {
 /** Sync heartbeat config settings into goals.json so they take effect */
 export function syncConfigToGoals(
   memoryDir: string,
-  heartbeatConfig: { adaptiveInterval?: boolean; dailyReport?: { enabled?: boolean; timeHour?: number } },
+  heartbeatConfig: {
+    adaptiveInterval?: boolean;
+    dailyReport?: { enabled?: boolean; timeHour?: number };
+    autoProcessGoals?: boolean;
+    maxInProgressGoals?: number;
+    escalation?: boolean;
+    autoApproveMinutes?: number;
+    maxRetries?: number;
+  },
 ): void {
   const data = loadGoalsFile(memoryDir);
   let changed = false;
@@ -1245,6 +1253,28 @@ export function syncConfigToGoals(
       data.settings.dailyReport.timeHour !== heartbeatConfig.dailyReport.timeHour) {
     data.settings.dailyReport.timeHour = heartbeatConfig.dailyReport.timeHour;
     changed = true;
+  }
+  if (heartbeatConfig.autoProcessGoals !== undefined &&
+      data.settings.autoProcessDuringIdle !== heartbeatConfig.autoProcessGoals) {
+    data.settings.autoProcessDuringIdle = heartbeatConfig.autoProcessGoals;
+    changed = true;
+  }
+  if (heartbeatConfig.maxInProgressGoals !== undefined &&
+      data.settings.maxInProgressGoals !== heartbeatConfig.maxInProgressGoals) {
+    data.settings.maxInProgressGoals = heartbeatConfig.maxInProgressGoals;
+    changed = true;
+  }
+  if (heartbeatConfig.escalation !== undefined &&
+      data.settings.escalation.enabled !== heartbeatConfig.escalation) {
+    data.settings.escalation.enabled = heartbeatConfig.escalation;
+    changed = true;
+  }
+  if (heartbeatConfig.autoApproveMinutes !== undefined) {
+    const ms = heartbeatConfig.autoApproveMinutes === -1 ? -1 : heartbeatConfig.autoApproveMinutes * 60 * 1000;
+    if (data.settings.autoApproveAfterMs !== ms) {
+      data.settings.autoApproveAfterMs = ms;
+      changed = true;
+    }
   }
 
   if (changed) {

@@ -136,6 +136,11 @@ const SECTIONS: SectionDef[] = [
       { key: 'heartbeat.adaptiveInterval', label: 'Adaptive Intervals (auto-adjust by goal urgency)', type: 'boolean' },
       { key: 'heartbeat.dailyReport.enabled', label: 'Daily Autonomous Report', type: 'boolean' },
       { key: 'heartbeat.dailyReport.timeHour', label: 'Report Hour (0-23)', type: 'number' },
+      { key: 'heartbeat.autoProcessGoals', label: 'Auto-Process Goals', type: 'boolean' },
+      { key: 'heartbeat.maxInProgressGoals', label: 'Max In-Progress Goals', type: 'number' },
+      { key: 'heartbeat.escalation', label: 'Priority Auto-Escalation', type: 'boolean' },
+      { key: 'heartbeat.autoApproveMinutes', label: 'Auto-Approve Suggested Goals (min, -1=never)', type: 'number' },
+      { key: 'heartbeat.maxRetries', label: 'Max Goal Retries', type: 'number' },
     ],
   },
   {
