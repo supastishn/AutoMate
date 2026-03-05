@@ -152,7 +152,7 @@ export class AgentRouter {
 
     // Wire per-agent heartbeat if configured
     if (scheduler && profile.heartbeat?.enabled) {
-      const intervalMs = (profile.heartbeat.intervalMinutes || 5) * 60 * 1000;
+      const intervalMs = (profile.heartbeat.intervalMinutes || 60) * 60 * 1000;
       heartbeatMgr = wireHeartbeat(
         memoryManager,
         agent,
