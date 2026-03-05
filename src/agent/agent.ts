@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Config } from '../config/schema.js';
 import { LLMClient, type LLMMessage, type StreamChunk, type ContentPart } from './llm-client.js';
@@ -115,6 +115,9 @@ export class Agent {
   private abortControllers: Map<string, AbortController> = new Map();
   private sendToSessionFn: ((sessionId: string, payload: Record<string, unknown>) => void) | null = null;
   private runTokenTotals = { prompt: 0, completion: 0, total: 0 };
+  private allTimeStats = { promptTokens: 0, completionTokens: 0, totalTokens: 0, messages: 0, sessions: 0, compactions: 0, startedAt: new Date().toISOString() };
+  private statsPath: string | null = null;
+  private statsDirty = false;
 
   /**
    * Sanitize tool_calls before saving to session: fix malformed JSON arguments
@@ -372,6 +375,36 @@ export class Agent {
 
     // Wire sub-agent spawner
     this._wireSubAgentSpawner();
+  }
+
+  /** Set the path for persistent all-time stats and load them. */
+  setStatsPath(path: string): void {
+    this.statsPath = path;
+    if (existsSync(path)) {
+      try {
+        const data = JSON.parse(readFileSync(path, 'utf-8'));
+        Object.assign(this.allTimeStats, data);
+      } catch { /* ignore corrupt stats */ }
+    }
+  }
+
+  /** Get all-time stats. */
+  getAllTimeStats(): typeof this.allTimeStats & { runTokens: typeof this.runTokenTotals } {
+    return { ...this.allTimeStats, runTokens: { ...this.runTokenTotals } };
+  }
+
+  private saveStatsDebounced(): void {
+    if (!this.statsPath || this.statsDirty) return;
+    this.statsDirty = true;
+    setTimeout(() => {
+      if (this.statsPath) {
+        try {
+          mkdirSync(join(this.statsPath, '..'), { recursive: true });
+          writeFileSync(this.statsPath, JSON.stringify(this.allTimeStats, null, 2));
+        } catch { /* ignore */ }
+      }
+      this.statsDirty = false;
+    }, 5000);
   }
 
   /** Set agent router reference for agents_list tool */
@@ -2262,6 +2295,12 @@ export class Agent {
     this.runTokenTotals.prompt += usage.promptTokens;
     this.runTokenTotals.completion += usage.completionTokens;
     this.runTokenTotals.total += usage.totalTokens;
+    // Persistent all-time stats
+    this.allTimeStats.promptTokens += usage.promptTokens;
+    this.allTimeStats.completionTokens += usage.completionTokens;
+    this.allTimeStats.totalTokens += usage.totalTokens;
+    this.allTimeStats.messages++;
+    this.saveStatsDebounced();
   }
 
   /** Build a preview of the API request that would be sent (for debugging/copying) */

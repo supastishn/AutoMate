@@ -76,6 +76,10 @@ program
     const subagentPersistPath = join(config.sessions.directory.replace(/^~/, process.env.HOME || ''), 'subagents.json');
     setSubAgentPersistPath(subagentPersistPath);
 
+    // Set up all-time stats persistence
+    const statsPath = join(getConfigDir(), 'stats.json');
+    agent.setStatsPath(statsPath);
+
     // Set up canvas persistence path (inside sessions dir)
     const canvasPersistPath = join(config.sessions.directory.replace(/^~/, process.env.HOME || ''), 'canvases.json');
     setCanvasPersistPath(canvasPersistPath);

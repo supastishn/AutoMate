@@ -21,6 +21,11 @@ interface DashboardData {
   tools?: { coreToolCount?: number; deferredToolCount?: number; sessionCount?: number; totalPromotions?: number; totalDemotions?: number }
   sessions?: { total?: number; totalMessages?: number; byChannel?: Record<string, number> }
   memory?: { totalChunks?: number; indexedFiles?: string[]; indexEnabled?: boolean } | null
+  allTimeStats?: {
+    promptTokens?: number; completionTokens?: number; totalTokens?: number
+    messages?: number; sessions?: number; compactions?: number; startedAt?: string
+    runTokens?: { prompt?: number; completion?: number; total?: number }
+  }
 }
 
 function fmtUptime(seconds: number): string {
@@ -30,6 +35,13 @@ function fmtUptime(seconds: number): string {
   if (d > 0) return `${d}d ${h}h ${m}m`
   if (h > 0) return `${h}h ${m}m`
   return `${m}m ${Math.floor(seconds % 60)}s`
+}
+
+function fmtNum(n: number | undefined): string {
+  if (!n) return '0'
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+  return String(n)
 }
 
 export default function Stats() {
@@ -146,6 +158,36 @@ export default function Stats() {
           </div>
         </div>
       </div>
+
+      {dashboard?.allTimeStats && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 12 }}>
+          <div style={card}>
+            <div style={{ color: colors.textMuted, fontSize: 12, marginBottom: 8 }}>This Run</div>
+            <div style={{ fontSize: 13, lineHeight: 1.8 }}>
+              <div>Input tokens: <b>{fmtNum(dashboard.allTimeStats.runTokens?.prompt)}</b></div>
+              <div>Output tokens: <b>{fmtNum(dashboard.allTimeStats.runTokens?.completion)}</b></div>
+              <div>Total tokens: <b>{fmtNum(dashboard.allTimeStats.runTokens?.total)}</b></div>
+            </div>
+          </div>
+          <div style={card}>
+            <div style={{ color: colors.textMuted, fontSize: 12, marginBottom: 8 }}>All Time</div>
+            <div style={{ fontSize: 13, lineHeight: 1.8 }}>
+              <div>Input tokens: <b>{fmtNum(dashboard.allTimeStats.promptTokens)}</b></div>
+              <div>Output tokens: <b>{fmtNum(dashboard.allTimeStats.completionTokens)}</b></div>
+              <div>Total tokens: <b>{fmtNum(dashboard.allTimeStats.totalTokens)}</b></div>
+            </div>
+          </div>
+          <div style={card}>
+            <div style={{ color: colors.textMuted, fontSize: 12, marginBottom: 8 }}>All Time Activity</div>
+            <div style={{ fontSize: 13, lineHeight: 1.8 }}>
+              <div>LLM calls: <b>{fmtNum(dashboard.allTimeStats.messages)}</b></div>
+              {dashboard.allTimeStats.startedAt && (
+                <div>Tracking since: <b>{new Date(dashboard.allTimeStats.startedAt).toLocaleDateString()}</b></div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div style={card}>
         <div style={{ color: colors.textMuted, fontSize: 12, marginBottom: 8 }}>Token Statistics (/stats)</div>

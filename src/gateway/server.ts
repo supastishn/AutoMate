@@ -946,6 +946,7 @@ this.app.post<{ Params: { id: string }; Body: { count: number } }>('/api/session
         skills: this.agent.getLoadedSkills?.() || [],
         plugins: this.agent.getToolStats().deferredTools.filter(t => t.summary?.startsWith('Plugin tool:')),
         heartbeatLog,
+        allTimeStats: this.agent.getAllTimeStats(),
       };
     });
 
