@@ -659,20 +659,12 @@ export class SessionManager {
    */
   private emergencyTruncate(session: Session): void {
     const retainCount = this.config.sessions.compactRetainCount ?? 10;
-    // Only keep compaction summaries, not the system prompt (rebuilt each LLM call)
-    const compactSummaries = session.messages.filter(m =>
-      m.role === 'system' && (
-        getTextFromContent(m.content).includes('[Conversation Summary') ||
-        getTextFromContent(m.content).includes('[Rolling Summary') ||
-        getTextFromContent(m.content).includes('[Emergency compaction') ||
-        getTextFromContent(m.content).includes('[Truncation:')
-      )
-    );
+    const systemMsgs = session.messages.filter(m => m.role === 'system');
     const nonSystem = session.messages.filter(m => m.role !== 'system');
     const kept = nonSystem.slice(-retainCount);
     const removedCount = nonSystem.length - kept.length;
     session.messages = [
-      ...compactSummaries,
+      ...systemMsgs,
       ...(removedCount > 0
         ? [{ role: 'system' as const, content: `[Emergency compaction: ${removedCount} messages truncated without summary]` }]
         : []),
@@ -811,18 +803,13 @@ export class SessionManager {
 
       const beforeCount = session.messages.length;
       const retainCount = this.config.sessions.compactRetainCount ?? 10;
-      // Only keep compaction summaries, not the system prompt (it's rebuilt each LLM call)
-      const compactSummaries = session.messages.filter(m =>
-        m.role === 'system' && getTextFromContent(m.content).includes('[Conversation Summary') ||
-        m.role === 'system' && getTextFromContent(m.content).includes('[Rolling Summary') ||
-        m.role === 'system' && getTextFromContent(m.content).includes('[Truncation:')
-      );
+      const systemMsgs = session.messages.filter(m => m.role === 'system' && getTextFromContent(m.content).trim().length > 0);
       const nonSystem = session.messages.filter(m => m.role !== 'system');
       const kept = nonSystem.slice(-retainCount);
       const removedCount = nonSystem.length - kept.length;
 
       session.messages = [
-        ...compactSummaries,
+        ...systemMsgs,
         ...(removedCount > 0
           ? [{ role: 'system' as const, content: `[Truncation: ${removedCount} messages dropped at ${new Date().toISOString()}]` }]
           : []),
@@ -1011,15 +998,12 @@ export class SessionManager {
       }
     }
 
-    // Keep only compaction summaries (not the system prompt — it's rebuilt each LLM call)
-    const compactSummaries = session.messages.filter(m =>
-      m.role === 'system' && getTextFromContent(m.content).includes('[Conversation Summary') ||
-      m.role === 'system' && getTextFromContent(m.content).includes('[Rolling Summary')
-    );
+    // Keep system messages, summary, and last N messages for continuity
+    const systemMsgs = session.messages.filter(m => m.role === 'system' && getTextFromContent(m.content).trim().length > 0);
     const retainCount = this.config.sessions.compactRetainCount ?? 10;
     const recentMessages = session.messages.slice(-retainCount);
     session.messages = [
-      ...compactSummaries,
+      ...systemMsgs,
       {
         role: 'system',
         content: `[Conversation Summary — ${beforeCount} messages compacted at ${new Date().toISOString()}]\n\n${summary}`,
