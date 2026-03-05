@@ -11,6 +11,7 @@ import { MemoryManager } from './memory/manager.js';
 import { Scheduler } from './cron/scheduler.js';
 import { runOnboardWizard } from './onboard/wizard.js';
 import { wireHeartbeat, isHeartbeatJob, isHeartbeatTask, heartbeatTaskId } from './heartbeat/manager.js';
+import { syncConfigToGoals } from './agent/tools/goals.js';
 import { PluginManager } from './plugins/manager.js';
 import { AgentRouter } from './agents/router.js';
 import { setSubAgentPersistPath, getInterruptedAgents } from './agent/tools/subagent.js';
@@ -139,6 +140,11 @@ program
     onConfigChange((newConfig) => {
       // Update agent config (system prompt, power steering, etc.)
       agent.updateConfig(newConfig);
+      // Sync heartbeat config → goals.json settings
+      syncConfigToGoals(memoryManager.getDirectory(), {
+        adaptiveInterval: newConfig.heartbeat?.adaptiveInterval,
+        dailyReport: newConfig.heartbeat?.dailyReport,
+      });
       // Update heartbeat interval and jitter if changed
       if (heartbeatManager && newConfig.heartbeat?.intervalMinutes) {
         const newIntervalMs = newConfig.heartbeat.intervalMinutes * 60 * 1000;
@@ -174,6 +180,12 @@ program
         console.error(`[plugins] Failed to load: ${err}`);
       }
     }
+
+    // Sync heartbeat config → goals.json settings
+    syncConfigToGoals(memoryManager.getDirectory(), {
+      adaptiveInterval: config.heartbeat?.adaptiveInterval,
+      dailyReport: config.heartbeat?.dailyReport,
+    });
 
     // Wire heartbeat system
     const heartbeatIntervalMs = (config.heartbeat?.intervalMinutes || 30) * 60 * 1000;

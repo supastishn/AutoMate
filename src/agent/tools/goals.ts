@@ -1221,6 +1221,38 @@ export function generateDailyReport(memoryDir: string): string | null {
   return report;
 }
 
+// ── Config → Goals sync ──────────────────────────────────────────────────
+
+/** Sync heartbeat config settings into goals.json so they take effect */
+export function syncConfigToGoals(
+  memoryDir: string,
+  heartbeatConfig: { adaptiveInterval?: boolean; dailyReport?: { enabled?: boolean; timeHour?: number } },
+): void {
+  const data = loadGoalsFile(memoryDir);
+  let changed = false;
+
+  if (heartbeatConfig.adaptiveInterval !== undefined &&
+      data.settings.adaptiveInterval.enabled !== heartbeatConfig.adaptiveInterval) {
+    data.settings.adaptiveInterval.enabled = heartbeatConfig.adaptiveInterval;
+    changed = true;
+  }
+  if (heartbeatConfig.dailyReport?.enabled !== undefined &&
+      data.settings.dailyReport.enabled !== heartbeatConfig.dailyReport.enabled) {
+    data.settings.dailyReport.enabled = heartbeatConfig.dailyReport.enabled;
+    changed = true;
+  }
+  if (heartbeatConfig.dailyReport?.timeHour !== undefined &&
+      data.settings.dailyReport.timeHour !== heartbeatConfig.dailyReport.timeHour) {
+    data.settings.dailyReport.timeHour = heartbeatConfig.dailyReport.timeHour;
+    changed = true;
+  }
+
+  if (changed) {
+    saveGoalsFile(memoryDir, data);
+    console.log('[goals] Synced config → goals.json settings');
+  }
+}
+
 // ── Export ────────────────────────────────────────────────────────────────
 
 export { goalsTool };

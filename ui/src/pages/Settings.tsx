@@ -133,6 +133,9 @@ const SECTIONS: SectionDef[] = [
       { key: 'heartbeat.jitterMinutes', label: 'Jitter ±(min)', type: 'number' },
       { key: 'heartbeat.separateSession', label: 'Use Separate Session', type: 'boolean' },
       { key: 'heartbeat.sessionId', label: 'Custom Session ID', type: 'string' },
+      { key: 'heartbeat.adaptiveInterval', label: 'Adaptive Intervals (auto-adjust by goal urgency)', type: 'boolean' },
+      { key: 'heartbeat.dailyReport.enabled', label: 'Daily Autonomous Report', type: 'boolean' },
+      { key: 'heartbeat.dailyReport.timeHour', label: 'Report Hour (0-23)', type: 'number' },
     ],
   },
   {
