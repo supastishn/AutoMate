@@ -200,8 +200,8 @@ program
     });
 
     // Wire heartbeat system
-    const heartbeatIntervalMs = (config.heartbeat?.intervalMinutes || 30) * 60 * 1000;
-    const heartbeatJitterMs = (config.heartbeat?.jitterMinutes || 5) * 60 * 1000;
+    const heartbeatIntervalMs = (config.heartbeat?.intervalMinutes || 5) * 60 * 1000;
+    const heartbeatJitterMs = (config.heartbeat?.jitterMinutes ?? 1) * 60 * 1000;
     // Heartbeats use work session if set, otherwise dedicated heartbeat session
     const heartbeatSessionId = sessionManager.getSessionByRole('work')
       || (config.heartbeat as any)?.sessionId
@@ -289,7 +289,7 @@ program
       console.log(`  Cron: enabled (${scheduler.listJobs().length} jobs)`);
     }
     if (heartbeatManager?.isActive()) {
-      console.log(`  Heartbeat: enabled (every ${config.heartbeat?.intervalMinutes || 30}min)`);
+      console.log(`  Heartbeat: enabled (every ${config.heartbeat?.intervalMinutes || 5}min)`);
     }
     console.log(`  Memory: ${config.memory.directory}`);
     console.log(`  Config: ${getConfigPath()}`);

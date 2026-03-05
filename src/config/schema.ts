@@ -46,7 +46,7 @@ export const AgentProfileSchema = z.object({
   }).optional(),
   heartbeat: z.object({
     enabled: z.boolean().default(false),
-    intervalMinutes: z.number().default(30),
+    intervalMinutes: z.number().default(5),
   }).optional(),
 });
 
@@ -338,8 +338,8 @@ export const ConfigSchema = z.object({
   }).default({}),
   heartbeat: z.object({
     enabled: z.boolean().default(false),
-    intervalMinutes: z.number().default(30),
-    jitterMinutes: z.number().default(5),
+    intervalMinutes: z.number().default(5),
+    jitterMinutes: z.number().default(1),
     separateSession: z.boolean().default(true),
     sessionId: z.string().optional(),
     // Autonomy features (synced to goals.json on startup)
