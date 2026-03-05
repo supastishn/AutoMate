@@ -228,8 +228,8 @@ export class MemoryManager {
   }
 
   /** Save a session transcript and index it for search.
-   *  Uses append mode so compacted messages are preserved across compactions. */
-  saveTranscript(sessionId: string, content: string): void {
+   *  @param append If true, appends a snapshot instead of overwriting (used before compaction). */
+  saveTranscript(sessionId: string, content: string, append = false): void {
     const transcriptsDir = this._transcriptsDir;
     mkdirSync(transcriptsDir, { recursive: true });
 
@@ -237,17 +237,14 @@ export class MemoryManager {
     const filename = `transcript-${safeName}.md`;
     const filepath = join(transcriptsDir, filename);
 
-    const section = `\n\n---\n## Snapshot: ${new Date().toISOString()}\n\n${content}`;
-
-    if (existsSync(filepath)) {
-      appendFileSync(filepath, section);
+    let fullContent: string;
+    if (append && existsSync(filepath)) {
+      appendFileSync(filepath, `\n\n---\n## Snapshot: ${new Date().toISOString()}\n\n${content}`);
+      fullContent = readFileSync(filepath, 'utf-8');
     } else {
-      const fullContent = `# Session Transcript: ${sessionId}${section}`;
+      fullContent = `# Session Transcript: ${sessionId}\n\nLast updated: ${new Date().toISOString()}\n\n${content}`;
       writeFileSync(filepath, fullContent);
     }
-
-    // Read full file for indexing
-    const fullContent = readFileSync(filepath, 'utf-8');
 
     // Index for text search (tier 3 - same as logs)
     this.textSearchIndex.indexFile(`transcripts/${filename}`, fullContent, 3);

@@ -24,36 +24,24 @@ function getTextFromContent(content: string | ContentPart[] | null): string {
 }
 
 /** System prompt for conversation summarization */
-const SUMMARY_SYSTEM_PROMPT = `You are a conversation summarizer. Create an EXTREMELY CONCISE summary that captures ONLY what's needed to continue the conversation.
+const SUMMARY_SYSTEM_PROMPT = `You are a conversation summarizer. Create an EXTREMELY CONCISE summary.
 
-TARGET: Under 2000 words. Be ruthless about brevity.
+TARGET: Under 500 words. Be ruthless about brevity.
 
 Format:
 ## Status
 One sentence: what's happening RIGHT NOW.
 
 ## Key Facts
-Only include facts that will be needed going forward. Skip anything already completed or no longer relevant.
-- File paths currently being worked on
-- Important decisions made
-- User preferences that affect ongoing work
-
-## Do NOT Include
-- Completed tasks (unless needed for context)
-- Failed attempts that were resolved
-- Conversational back-and-forth
-- Explanations of why things were done
-- Code snippets unless actively being modified
+- File paths being worked on
+- Decisions made
+- User preferences
 
 ## Current Task
-**What is done:**
-- [List completed steps/achievements in this session]
+**Done:** [completed steps]
+**Next:** [remaining steps]
 
-**What must be done:**
-- [List remaining steps to complete the current goal]
-- [Include specific next actions, file paths, commands if relevant]
-
-Be terse. Use fragments. Skip articles. The goal is MINIMUM tokens while preserving ability to continue work.`;
+Be terse. Use fragments. Skip articles. MINIMUM tokens.`;
 
 export interface Session {
   id: string;
@@ -569,8 +557,9 @@ export class SessionManager {
     }
   }
 
-  /** Index a single session's transcript into memory for semantic search */
-  async indexSessionTranscript(sessionId: string): Promise<void> {
+  /** Index a single session's transcript into memory for semantic search.
+   *  @param append If true, appends instead of overwriting (used before compaction). */
+  async indexSessionTranscript(sessionId: string, append = false): Promise<void> {
     if (!this.memoryManager) return;
 
     const session = this.sessions.get(sessionId);
@@ -588,7 +577,7 @@ export class SessionManager {
     if (transcript.length < 100) return;
 
     // Save transcript and index immediately for text search
-    this.memoryManager.saveTranscript(sessionId, transcript);
+    this.memoryManager.saveTranscript(sessionId, transcript, append);
   }
 
   /** Save session with write lock to prevent concurrent writes */
@@ -818,7 +807,7 @@ export class SessionManager {
       if (this.onBeforeCompact) {
         await this.onBeforeCompact(sessionId, [...session.messages]).catch(() => {});
       }
-      await this.indexSessionTranscript(sessionId).catch(() => {});
+      await this.indexSessionTranscript(sessionId, true).catch(() => {});
 
       const beforeCount = session.messages.length;
       const retainCount = this.config.sessions.compactRetainCount ?? 10;
@@ -875,7 +864,7 @@ export class SessionManager {
       if (this.onBeforeCompact) {
         await this.onBeforeCompact(sessionId, [...session.messages]).catch(() => {});
       }
-      await this.indexSessionTranscript(sessionId).catch(() => {});
+      await this.indexSessionTranscript(sessionId, true).catch(() => {});
 
       const beforeCount = session.messages.length;
       const chunkSize = this.config.sessions.rollingChunkSize ?? 20;
@@ -974,9 +963,7 @@ export class SessionManager {
     }
 
     // Index transcript before compaction so it's searchable
-    await this.indexSessionTranscript(sessionId).catch(() => {});
-
-    // Extract tool failures and file operations for context
+    await this.indexSessionTranscript(sessionId, true).catch(() => {});
     const toolFailures = this.extractToolFailures(session.messages);
     const fileOps = this.extractFileOperations(session.messages);
 
@@ -1071,7 +1058,7 @@ export class SessionManager {
       { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
       {
         role: 'user',
-        content: `Summarize this conversation in UNDER 2000 WORDS:\n\n${conversationText}${instructions ? `\n\nFocus on: ${instructions}` : ''}`,
+        content: `Summarize this conversation in UNDER 500 WORDS:\n\n${conversationText}${instructions ? `\n\nFocus on: ${instructions}` : ''}`,
       },
     ];
 
@@ -1114,7 +1101,7 @@ export class SessionManager {
       const prompt: LLMMessage[] = [
         {
           role: 'system',
-          content: `Summarize part ${i + 1}/${parts.length} in MAX 500 words. Only include: current task, key decisions, next steps. Be terse.`,
+          content: `Summarize part ${i + 1}/${parts.length} in MAX 200 words. Only include: current task, key decisions, next steps. Be terse.`,
         },
         { role: 'user', content: partText },
       ];
@@ -1140,7 +1127,7 @@ export class SessionManager {
       { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
       {
         role: 'user',
-        content: `Merge into ONE summary under 2000 words. Remove duplicates, keep only current/active items:\n\n${partialSummaries.join('\n---\n')}${instructions ? `\n\nFocus: ${instructions}` : ''}`,
+        content: `Merge into ONE summary under 500 words. Remove duplicates, keep only current/active items:\n\n${partialSummaries.join('\n---\n')}${instructions ? `\n\nFocus: ${instructions}` : ''}`,
       },
     ];
 
