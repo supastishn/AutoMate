@@ -84,16 +84,8 @@ export const skillTools: Tool[] = [
   {
     name: 'skill',
     description: [
-      'Load, unload, and view available skills for this session.',
-      'Use this to LOAD existing skills. Use "skill_builder" to CREATE skills.',
-      '',
-      'Skills provide specialized instructions and context for specific tasks.',
-      '',
-      'Actions:',
-      '  list — show all available skills with descriptions',
-      '  load <name> — load a skill into this session',
-      '  unload <name> — unload a skill from this session',
-      '  show <name> — show the full content of a skill',
+      'Load, unload, and view available skills. Use "skill_builder" to create skills.',
+      'Actions: list (all skills), load, unload, show (full content).',
     ].join('\n'),
     parameters: {
       type: 'object',

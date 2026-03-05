@@ -19,14 +19,7 @@ export function setGatewayControls(config: Config, restartFn?: () => Promise<voi
 export const gatewayTools: Tool[] = [
   {
     name: 'gateway',
-    description: [
-      'Control the AutoMate gateway server.',
-      'Actions: status, config, patch, reload.',
-      'status — get gateway status and uptime.',
-      'config — view current config (keys masked).',
-      'patch — apply a JSON patch to config.',
-      'reload — reload config from disk without restart.',
-    ].join(' '),
+    description: 'Control the gateway server. Actions: status, config (view masked), patch (merge JSON into config), reload (from disk).',
     parameters: {
       type: 'object',
       properties: {

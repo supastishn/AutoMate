@@ -14,13 +14,7 @@ export function setMessageAgent(agent: Agent): void {
 export const messageTools: Tool[] = [
   {
     name: 'message',
-    description: [
-      'Send messages to other sessions or channels.',
-      'Actions: send, broadcast, ask_user_question.',
-      'send — send a message to a specific session (triggers agent processing in that session).',
-      'broadcast — send a message to all connected webchat clients (does not trigger agent).',
-      'ask_user_question — show one or more interactive questions in chat with optional choices.',
-    ].join(' '),
+    description: 'Send messages. Actions: send (to session, triggers agent), broadcast (all clients), ask_user_question (interactive prompt with choices).',
     parameters: {
       type: 'object',
       properties: {

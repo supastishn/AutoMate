@@ -30,15 +30,8 @@ export const sharedMemoryTools: Tool[] = [
   {
     name: 'shared-memory',
     description: [
-      'Manage shared memory accessible by all agents.',
-      'Use for inter-agent coordination, shared state, and knowledge transfer.',
-      '',
-      'Actions:',
-      '  read <key> — read a shared memory file',
-      '  write <key> <content> — write to a shared memory file',
-      '  append <key> <entry> — append timestamped entry',
-      '  list — list all shared memory keys',
-      '  delete <key> — delete a shared memory file',
+      'Shared memory accessible by all agents for inter-agent coordination.',
+      'Actions: read, write, append (timestamped), list, delete.',
     ].join('\n'),
     parameters: {
       type: 'object',

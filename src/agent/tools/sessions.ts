@@ -71,16 +71,8 @@ export const sessionTools: Tool[] = [
   {
     name: 'session',
     description: [
-      'Manage chat sessions.',
-      'Actions: list, history, send, notify, delegate, spawn, status, pull.',
-      'list — list all active sessions with roles.',
-      'history — get message history of a session.',
-      'send — send a message to another session (triggers agent processing).',
-      'notify — send a notification to the chat session (no processing, just display).',
-      'delegate — delegate a task from chat to the work session for background processing.',
-      'spawn — spawn a new background sub-session with a task.',
-      'status — get quick status of the other session (what it is doing, recent tools used).',
-      'pull — pull recent results/context from the other session into current context.',
+      'Manage chat sessions. Actions: list, history, send (triggers agent), notify (display only),',
+      'delegate (background task), spawn (new sub-session), status, pull (import context).',
     ].join(' '),
     parameters: {
       type: 'object',

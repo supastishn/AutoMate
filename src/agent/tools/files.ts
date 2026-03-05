@@ -9,29 +9,7 @@ import { getCurrentConfig } from '../../config/loader.js';
 
 export const readFileTool: Tool = {
   name: 'read_file',
-  description: [
-    'Read the contents of a file. Returns lines with line numbers.',
-    '',
-    'WHEN TO USE:',
-    '- Inspecting code files before making changes',
-    '- Reading configuration files',
-    '- Examining log files for debugging',
-    '- Getting content for analysis',
-    '',
-    'HOW TO USE:',
-    '- Read entire file: { "path": "file.txt" }',
-    '- Read with offset: { "path": "file.txt", "offset": 50 }',
-    '- Read specific range: { "path": "file.txt", "offset": 10, "limit": 20 }',
-    '',
-    'OUTPUT FORMAT:',
-    '- Lines are numbered: "   15\tcontent here"',
-    '- Use line numbers with the edit tool for precise changes',
-    '',
-    'EXAMPLE OUTPUT:',
-    '     1\tfunction hello() {',
-    '     2\t  return "world";',
-    '     3\t}',
-  ].join('\n'),
+  description: 'Read file contents with line numbers. Use offset/limit for partial reads.',
   parameters: {
     type: 'object',
     properties: {
@@ -87,20 +65,7 @@ export const readFileTool: Tool = {
 
 export const writeFileTool: Tool = {
   name: 'write_file',
-  description: [
-    'Write content to a file. Creates the file and parent directories if needed.',
-    '',
-    'WHEN TO USE:',
-    '- Creating new files',
-    '- Completely overwriting existing files',
-    '- Writing configuration or generated output',
-    '',
-    'HOW TO USE:',
-    '- { "path": "file.txt", "content": "file contents here" }',
-    '- Parent directories are created automatically',
-    '',
-    'WARNING: Overwrites existing files without warning.',
-  ].join('\n'),
+  description: 'Write content to a file. Creates parent directories if needed. WARNING: Overwrites existing files.',
   parameters: {
     type: 'object',
     properties: {
@@ -128,30 +93,7 @@ export const writeFileTool: Tool = {
 
 export const editFileTool: Tool = {
   name: 'edit',
-  description: [
-    'Edit a file by replacing exact text matches. Safer than line-based editing.',
-    '',
-    'WHEN TO USE:',
-    '- Making targeted changes to specific code',
-    '- Updating configuration values',
-    '- Fixing typos or renaming identifiers',
-    '',
-    'HOW TO USE:',
-    '- Find and replace: { "path": "file.js", "old_string": "foo", "new_string": "bar" }',
-    '- Replace all occurrences: { "path": "file.js", "old_string": "foo", "new_string": "bar", "replace_all": true }',
-    '',
-    'REQUIREMENTS:',
-    '- old_string must match EXACTLY (including whitespace/indentation)',
-    '- If old_string appears multiple times, use replace_all or provide more context',
-    '',
-    'TIPS:',
-    '- Include 3-5 lines of context around your change for unique matches',
-    '- Read the file first to get exact text',
-    '',
-    'EXAMPLE:',
-    '  old_string: "function hello() {\\n  return \\"old\\";\\n}"',
-    '  new_string: "function hello() {\\n  return \\"new\\";\\n}"',
-  ].join('\n'),
+  description: 'Edit a file by replacing exact text matches. old_string must match exactly (including whitespace). Use replace_all for multiple occurrences.',
   parameters: {
     type: 'object',
     properties: {
@@ -334,40 +276,7 @@ function applyChunks(original: string, chunks: { oldLines: string[]; newLines: s
 
 export const applyPatchTool: Tool = {
   name: 'apply_patch',
-  description: [
-    'Apply a multi-file patch. Use for complex changes affecting multiple files.',
-    '',
-    'PATCH FORMAT:',
-    '```',
-    '*** Begin Patch',
-    '*** Update File: path/to/file.ts',
-    '@@ context line',
-    ' context unchanged',
-    '-old line to remove',
-    '+new line to add',
-    '*** End Patch',
-    '```',
-    '',
-    'OPERATIONS:',
-    '- *** Add File: path — Create new file with following content',
-    '- *** Update File: path — Modify existing file',
-    '- *** Delete File: path — Delete file',
-    '',
-    'LINE PREFIXES:',
-    '- (no prefix) — context line (unchanged)',
-    '- `-` — line to remove',
-    '- `+` — line to add',
-    '',
-    'EXAMPLE:',
-    '*** Begin Patch',
-    '*** Update File: src/hello.ts',
-    '@@ function greet',
-    ' function greet() {',
-    '-  return "Hello";',
-    '+  return "Hello, World!";',
-    ' }',
-    '*** End Patch',
-  ].join('\n'),
+  description: 'Apply a multi-file unified patch. Supports *** Add/Update/Delete File operations with context lines, -removed, +added prefixes. Wrap in *** Begin Patch / *** End Patch.',
   parameters: {
     type: 'object',
     properties: {
@@ -434,26 +343,7 @@ export const applyPatchTool: Tool = {
 
 export const searchInFileTool: Tool = {
   name: 'search_in_file',
-  description: [
-    'Search for text or regex pattern within a file. Returns matching lines with context.',
-    '',
-    'WHEN TO USE:',
-    '- Finding specific code patterns in a file',
-    '- Locating function/variable definitions',
-    '- Searching for error messages or log entries',
-    '- Finding all occurrences of a string',
-    '',
-    'HOW TO USE:',
-    '- Simple search: { "path": "file.ts", "pattern": "function" }',
-    '- Regex search: { "path": "file.ts", "pattern": "async.*\\(\\)", "regex": true }',
-    '- With context: { "path": "file.ts", "pattern": "export", "context": 3 }',
-    '- Case-insensitive: { "path": "file.ts", "pattern": "TODO", "ignoreCase": true }',
-    '',
-    'OUTPUT FORMAT:',
-    '- Lines are numbered with match highlighted',
-    '- Context lines shown with dimmed line numbers',
-    '- Match count summary at the end',
-  ].join('\n'),
+  description: 'Search for text or regex pattern in a file. Returns matching lines with context.',
   parameters: {
     type: 'object',
     properties: {
@@ -577,14 +467,7 @@ export const hashlineEditTool = editFileTool;
 // List files tool (useful companion)
 export const listFilesTool: Tool = {
   name: 'list_files',
-  description: [
-    'List files in a directory.',
-    '',
-    'HOW TO USE:',
-    '- List current directory: { "path": "." }',
-    '- List with pattern: { "path": "src", "pattern": "*.ts" }',
-    '- Recursive: { "path": "src", "recursive": true }',
-  ].join('\n'),
+  description: 'List files in a directory. Supports glob pattern filter and recursive listing.',
   parameters: {
     type: 'object',
     properties: {

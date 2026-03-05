@@ -32,15 +32,7 @@ function elapsed(startedAt: string): string {
 export const processTools: Tool[] = [
   {
     name: 'process',
-    description: [
-      'Manage background processes.',
-      'Actions: start, poll, write, kill, list.',
-      'start — start a long-running command in the background.',
-      'poll — get current output and status of a background process.',
-      'write — send stdin input to a running process.',
-      'kill — kill a background process.',
-      'list — list all background processes with their status.',
-    ].join(' '),
+    description: 'Manage background processes. Actions: start, poll (output/status), write (stdin), kill, list.',
     parameters: {
       type: 'object',
       properties: {

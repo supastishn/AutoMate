@@ -57,12 +57,8 @@ export const imageTools: Tool[] = [
   {
     name: 'image',
     description: [
-      'Image operations: analyze, generate, send, add_to_chat.',
-      'Actions: analyze, generate, send, add_to_chat.',
-      'analyze — analyze an image using a vision model (OCR, describe, answer questions). Supports files and URLs.',
-      'generate — generate an image via AI (DALL-E compatible API). Broadcasts to connected clients.',
-      'send — send an existing image (by URL or file path) to the current chat UI.',
-      'add_to_chat — add an image (file or URL) to the conversation so the AI can see it in context. The image becomes part of the chat history.',
+      'Image operations. Actions: analyze (vision model OCR/describe/Q&A), generate (DALL-E API),',
+      'send (push image to chat UI), add_to_chat (add image to conversation context).',
     ].join(' '),
     parameters: {
       type: 'object',

@@ -23,12 +23,7 @@ export function setTTSConfig(config: TTSConfig): void {
 export const ttsTools: Tool[] = [
   {
     name: 'tts',
-    description: [
-      'Text-to-Speech synthesis using ElevenLabs.',
-      'Actions: speak, voices.',
-      'speak — convert text to speech audio file (returns path to mp3).',
-      'voices — list available voices.',
-    ].join(' '),
+    description: 'Text-to-Speech via ElevenLabs. Actions: speak (text to mp3), voices (list available).',
     parameters: {
       type: 'object',
       properties: {

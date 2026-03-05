@@ -173,12 +173,7 @@ function stripHtml(html: string): { title: string; text: string } {
 export const webTools: Tool[] = [
   {
     name: 'web',
-    description: [
-      'Web operations: search and fetch.',
-      'Actions: search, fetch.',
-      'search — search the web using DuckDuckGo (no API key needed).',
-      'fetch — fetch a URL and extract clean text content.',
-    ].join(' '),
+    description: 'Web search and fetch. Actions: search (DuckDuckGo), fetch (extract clean text from URL).',
     parameters: {
       type: 'object',
       properties: {
