@@ -1576,6 +1576,9 @@ export class Agent {
       // Rebuild system prompt too (catalog shrinks/grows as tools are loaded/unloaded)
       systemMessage.content = this._rebuildSystemContent(sessionView, sessionId);
       
+      // Yield after heavy sync work (system prompt rebuild, tool defs)
+      await new Promise(resolve => setImmediate(resolve));
+      
       // NEW: Fire beforeLLM hook for plugin context injection
       let prependedSystem = '';
       let prependedReminder = '';
