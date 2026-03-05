@@ -2,7 +2,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync, accessSync, constants as fsConstants } from 'node:fs';
 import type { Tool, ToolContext } from '../tool-registry.js';
 
 /**
@@ -312,7 +312,7 @@ async function ensurePlaywrightBrowser(): Promise<void> {
   // Termux/proot: headless mode triggers GPU FATAL crash. Always use Xvfb + non-headless.
   // /proc/bus/pci exists on proot but /proc/bus/pci/devices is unreadable
   let isProot = false;
-  try { require('fs').accessSync('/proc/bus/pci/devices', require('fs').constants.R_OK); } catch { isProot = true; }
+  try { accessSync('/proc/bus/pci/devices', fsConstants.R_OK); } catch { isProot = true; }
   const useXvfb = isProot || !effectiveHeadless;
   if (useXvfb) {
     ensureXvfb();
@@ -339,7 +339,7 @@ async function ensurePlaywrightBrowser(): Promise<void> {
     let execPath = browserChromiumPath;
     if (isProot && execPath.includes('/sbin/')) {
       const rawBin = '/usr/lib64/chromium-browser/chromium-browser';
-      if (require('fs').existsSync(rawBin)) execPath = rawBin;
+      if (existsSync(rawBin)) execPath = rawBin;
     }
     launchOptions.executablePath = execPath;
   }
