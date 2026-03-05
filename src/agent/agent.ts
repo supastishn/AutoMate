@@ -536,13 +536,18 @@ export class Agent {
           lines.push(`🔧 Work session: \`${roles.work}\` — heartbeats, cron, autonomous tasks`);
         }
         lines.push('');
-        lines.push('**Cross-session actions**: `session action=send` (trigger processing), `session action=notify` (notification only), `session action=delegate` (offload task to work session).');
+        lines.push('**Cross-session actions**: `session action=status` (check other session), `session action=pull` (get recent context), `session action=send` (trigger processing), `session action=notify` (notification only), `session action=delegate` (offload task to work session).');
+        if (currentRole === 'chat') {
+          lines.push('Tip: For long-running tasks, use `session action=delegate` to offload to the work session so the user can keep chatting.');
+        } else if (currentRole === 'work') {
+          lines.push('Tip: When you finish a delegated task, always `session action=notify` the chat session with a brief summary.');
+        }
 
         // Cross-session context: show recent activity from the other session
         const otherRole = currentRole === 'chat' ? 'work' : 'chat';
         const otherId = roles[otherRole];
         if (otherId && sessionId !== otherId) {
-          const activity = getRecentSessionActivity(otherId, 3);
+          const activity = getRecentSessionActivity(otherId, 5);
           if (activity.length > 0) {
             lines.push('');
             lines.push(`**Recent ${otherRole} session activity** (\`${otherId}\`):`);

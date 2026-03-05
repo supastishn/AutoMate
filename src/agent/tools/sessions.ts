@@ -72,31 +72,33 @@ export const sessionTools: Tool[] = [
     name: 'session',
     description: [
       'Manage chat sessions.',
-      'Actions: list, history, send, notify, delegate, spawn.',
+      'Actions: list, history, send, notify, delegate, spawn, status, pull.',
       'list — list all active sessions with roles.',
       'history — get message history of a session.',
       'send — send a message to another session (triggers agent processing).',
       'notify — send a notification to the chat session (no processing, just display).',
       'delegate — delegate a task from chat to the work session for background processing.',
       'spawn — spawn a new background sub-session with a task.',
+      'status — get quick status of the other session (what it is doing, recent tools used).',
+      'pull — pull recent results/context from the other session into current context.',
     ].join(' '),
     parameters: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          description: 'Action: list|history|send|notify|delegate|spawn',
+          description: 'Action: list|history|send|notify|delegate|spawn|status|pull',
         },
         session_id: { type: 'string', description: 'Session ID (for history, send)' },
         message: { type: 'string', description: 'Message to send/notify/delegate' },
         prompt: { type: 'string', description: 'Task/prompt for spawned session (for spawn action)' },
         session_name: { type: 'string', description: 'Optional name for spawned session (for spawn action)' },
-        limit: { type: 'number', description: 'Max messages to return (for history, default 20)' },
+        limit: { type: 'number', description: 'Max messages to return (for history/pull, default 20)' },
         notify_on_complete: { type: 'boolean', description: 'For delegate: notify chat session when done (default true)' },
       },
       required: ['action'],
     },
-    async execute(params) {
+    async execute(params, ctx) {
       const action = params.action as string;
 
       switch (action) {
@@ -167,6 +169,77 @@ export const sessionTools: Tool[] = [
           const sessionId = `spawn:${name}`;
           agentRef.processMessage(sessionId, params.prompt as string).catch(() => {});
           return { output: `Spawned sub-session '${sessionId}' with task. Use session history to check progress.` };
+        }
+
+        case 'status': {
+          // Quick status of the other session
+          if (!sessionManagerRef) return { output: 'Session manager not available' };
+          const roles = sessionManagerRef.getSessionRoles();
+          const currentRole = ctx?.sessionId ? sessionManagerRef.getSessionRole(ctx.sessionId) : null;
+          const otherRole = currentRole === 'chat' ? 'work' : 'chat';
+          const otherId = roles?.[otherRole];
+          if (!otherId) return { output: `No ${otherRole} session assigned.` };
+
+          const otherSession = sessionManagerRef.getSession(otherId);
+          if (!otherSession) return { output: `${otherRole} session (${otherId}) not found.` };
+
+          const msgs = otherSession.messages;
+          const totalMsgs = msgs.length;
+          const lastMsg = msgs.filter((m: any) => m.role === 'assistant' && m.content).slice(-1)[0];
+          const lastUser = msgs.filter((m: any) => m.role === 'user' && m.content).slice(-1)[0];
+          // Count recent tool calls
+          const recentTools = msgs.slice(-20)
+            .filter((m: any) => m.role === 'assistant' && m.tool_calls?.length)
+            .flatMap((m: any) => m.tool_calls.map((tc: any) => tc.function?.name))
+            .filter(Boolean);
+          const toolCounts: Record<string, number> = {};
+          for (const t of recentTools) toolCounts[t] = (toolCounts[t] || 0) + 1;
+
+          const lines = [
+            `**${otherRole} session** (\`${otherId}\`)`,
+            `Messages: ${totalMsgs}`,
+            `Last activity: ${otherSession.updatedAt || 'unknown'}`,
+          ];
+          if (lastUser) {
+            const text = typeof lastUser.content === 'string' ? lastUser.content : '';
+            lines.push(`Last task: ${text.slice(0, 200)}`);
+          }
+          if (lastMsg) {
+            const text = typeof lastMsg.content === 'string' ? lastMsg.content : '';
+            lines.push(`Last response: ${text.slice(0, 300)}`);
+          }
+          if (Object.keys(toolCounts).length > 0) {
+            const toolSummary = Object.entries(toolCounts)
+              .sort((a, b) => b[1] - a[1])
+              .map(([n, c]) => `${n}(${c})`)
+              .join(', ');
+            lines.push(`Recent tools: ${toolSummary}`);
+          }
+          return { output: lines.join('\n') };
+        }
+
+        case 'pull': {
+          // Pull recent context from the other session
+          if (!sessionManagerRef) return { output: 'Session manager not available' };
+          const roles = sessionManagerRef.getSessionRoles();
+          const currentRole = ctx?.sessionId ? sessionManagerRef.getSessionRole(ctx.sessionId) : null;
+          const targetRole = currentRole === 'chat' ? 'work' : 'chat';
+          const targetId = params.session_id || roles?.[targetRole];
+          if (!targetId) return { output: `No ${targetRole} session to pull from.` };
+
+          const targetSession = sessionManagerRef.getSession(targetId);
+          if (!targetSession) return { output: '', error: `Session ${targetId} not found` };
+
+          const limit = (params.limit as number) || 20;
+          const msgs = targetSession.messages.slice(-limit);
+          const lines = msgs
+            .filter((m: any) => m.content && m.role !== 'system')
+            .map((m: any) => {
+              const role = m.role === 'assistant' ? 'Assistant' : m.role === 'user' ? 'User' : 'Tool';
+              const text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+              return `[${role}] ${text.slice(0, 500)}`;
+            });
+          return { output: `--- Recent from ${targetRole} session (${targetId}) ---\n${lines.join('\n\n')}` };
         }
 
         default:
