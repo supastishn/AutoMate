@@ -444,7 +444,7 @@ export class SessionManager {
     // Auto-compact check using ACTUAL API-reported tokens
     if (session && !this.compactingSessions.has(sessionId)) {
       const tokenLimit = this.getContextLimit(providerContextWindow);
-      const reserveTokens = (this.config.sessions as any).reserveTokens || 20000;
+      const reserveTokens = (this.config.sessions as any).reserveTokens ?? 20000;
       const compactAtRatio = this.config.sessions.compactAt;
       const threshold = Math.max(0, Math.floor((tokenLimit - reserveTokens) * compactAtRatio));
       const currentTokens = usage.promptTokens; // Use actual API value
