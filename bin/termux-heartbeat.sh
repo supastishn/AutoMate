@@ -1,7 +1,8 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# AutoMate Termux Heartbeat Trigger
-# Called by termux-job-scheduler to wake up and run heartbeat during Android sleep.
-# Usage: termux-job-scheduler --script ~/.automate/termux-heartbeat.sh --period-ms 3600000 --persisted true
+# AutoMate Termux Scheduler Trigger
+# Called by termux-job-scheduler to wake up the gateway during Android sleep.
+# Hitting /api/health is enough — the 15s cron tick loop catches up on all
+# overdue jobs (heartbeat, cron, etc.) automatically once the process wakes.
 
 CONFIG="${HOME}/.automate/automate.json"
 PORT=18789
@@ -19,27 +20,19 @@ notify() {
   [ -n "$NOTIFY" ] && termux-notification --id automate-heartbeat --title "AutoMate" --content "$1" --priority low 2>/dev/null
 }
 
-# Check if gateway is running
+# Wake the gateway — the cron tick loop will fire all overdue jobs
 HEALTH=$(curl -sf -m 5 "${BASE}/api/health" 2>/dev/null)
 if [ -z "$HEALTH" ]; then
-  notify "Gateway not running — skipping heartbeat"
+  notify "Gateway not running — skipping"
   exit 0
 fi
 
-# Trigger heartbeat
-RESULT=$(curl -sf -m 300 -X POST "${BASE}/api/heartbeat/trigger" 2>/dev/null)
-if [ -z "$RESULT" ]; then
-  notify "Heartbeat trigger failed (timeout or error)"
-  exit 1
-fi
+# Wait a few seconds for the tick loop to catch up, then check heartbeat log
+sleep 20
 
-STATUS=$(echo "$RESULT" | grep -o '"result":"[^"]*"' | cut -d'"' -f4)
+# Check if heartbeat ran recently (within last 5 minutes)
+LOG=$(curl -sf -m 5 "${BASE}/api/heartbeat/log?limit=1" 2>/dev/null)
+STATUS=$(echo "$LOG" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
 if [ "$STATUS" = "sent" ]; then
   notify "Heartbeat completed ✓"
-elif [ "$STATUS" = "skipped" ]; then
-  # Nothing to do — don't spam notifications
-  :
-else
-  ERR=$(echo "$RESULT" | grep -o '"error":"[^"]*"' | cut -d'"' -f4)
-  notify "Heartbeat: ${ERR:-unknown status}"
 fi

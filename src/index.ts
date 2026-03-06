@@ -27,7 +27,8 @@ import {
 
 /** Sync termux-job-scheduler registration with config toggle */
 function syncTermuxScheduler(config: any): void {
-  const enabled = config.heartbeat?.termuxScheduler === true && config.heartbeat?.enabled !== false;
+  const enabled = config.heartbeat?.termuxScheduler === true;
+  // Use heartbeat interval, or default 60min — this is the wake-up frequency
   const intervalMs = (config.heartbeat?.intervalMinutes || 60) * 60 * 1000;
 
   try {
