@@ -17,11 +17,39 @@ import { AgentRouter } from './agents/router.js';
 import { setSubAgentPersistPath, getInterruptedAgents, cleanupFinishedAgents } from './agent/tools/subagent.js';
 import { setCanvasPersistPath, setCanvasUploadDir, setCanvasServices } from './canvas/canvas-manager.js';
 import { join } from 'node:path';
+import { execSync } from 'node:child_process';
+import { copyFileSync, chmodSync, existsSync } from 'node:fs';
 import {
   fetchRegistry, searchSkills, installSkill, uninstallSkill,
   updateSkill, updateAllSkills, listInstalled,
   printSkillList, printInstalledList,
 } from './clawhub/registry.js';
+
+/** Sync termux-job-scheduler registration with config toggle */
+function syncTermuxScheduler(config: any): void {
+  const enabled = config.heartbeat?.termuxScheduler === true && config.heartbeat?.enabled !== false;
+  const intervalMs = (config.heartbeat?.intervalMinutes || 60) * 60 * 1000;
+
+  try {
+    const which = execSync('which termux-job-scheduler 2>/dev/null', { encoding: 'utf-8' }).trim();
+    if (!which) return;
+
+    if (enabled) {
+      const scriptSrc = join(import.meta.dirname || '.', '..', 'bin', 'termux-heartbeat.sh');
+      const scriptDst = join(getConfigDir(), 'termux-heartbeat.sh');
+      if (existsSync(scriptSrc)) {
+        copyFileSync(scriptSrc, scriptDst);
+        chmodSync(scriptDst, 0o755);
+      }
+      execSync(`termux-job-scheduler --script "${scriptDst}" --period-ms ${intervalMs} --persisted true --battery-not-low true`, { stdio: 'pipe', timeout: 10000 });
+      console.log(`  Termux scheduler: registered (every ${config.heartbeat?.intervalMinutes || 60}min)`);
+    } else {
+      execSync('termux-job-scheduler --cancel-all', { stdio: 'pipe', timeout: 10000 });
+    }
+  } catch {
+    // Not on Termux or termux-api not installed — silently ignore
+  }
+}
 
 const program = new Command();
 
@@ -162,6 +190,8 @@ program
       } else {
         console.log(`[config] Applied: systemPrompt, powerSteering, temperature, maxTokens`);
       }
+      // Sync termux scheduler on config change
+      syncTermuxScheduler(newConfig);
     });
     watchConfig();
 
@@ -216,6 +246,9 @@ program
       heartbeatManager.setTargetSession(heartbeatSessionId);
       agent.setHeartbeatManager(heartbeatManager);
     }
+
+    // Sync termux-job-scheduler if toggled
+    syncTermuxScheduler(config);
 
     // Start gateway
     const gateway = new GatewayServer(config, agent, sessionManager);
@@ -690,73 +723,6 @@ clawhub
     const installed = listInstalled(config.skills.directory);
     printInstalledList(installed);
     console.log('');
-  });
-
-// ── Termux integration ─────────────────────────────────────────────────
-const termux = program.command('termux').description('Termux/Android integration');
-
-termux.command('setup')
-  .description('Register heartbeat with termux-job-scheduler')
-  .option('-c, --config <path>', 'Config path')
-  .action(async (opts) => {
-    const { execSync } = await import('node:child_process');
-    const config = loadConfig(opts.config);
-    const intervalMs = (config.heartbeat?.intervalMinutes || 60) * 60 * 1000;
-    const scriptSrc = join(import.meta.dirname || '.', '..', 'bin', 'termux-heartbeat.sh');
-    const scriptDst = join(getConfigDir(), 'termux-heartbeat.sh');
-
-    // Copy script to config dir so it survives updates
-    const { copyFileSync, chmodSync } = await import('node:fs');
-    copyFileSync(scriptSrc, scriptDst);
-    chmodSync(scriptDst, 0o755);
-
-    try {
-      execSync(`termux-job-scheduler --script "${scriptDst}" --period-ms ${intervalMs} --persisted true --battery-not-low true`, { stdio: 'pipe' });
-      console.log(`✓ Registered termux-job-scheduler`);
-      console.log(`  Script: ${scriptDst}`);
-      console.log(`  Interval: ${config.heartbeat?.intervalMinutes || 60}min (${intervalMs}ms)`);
-      console.log(`  Persisted: yes (survives reboot)`);
-      console.log(`  Battery: only when not low`);
-      console.log(`\nHeartbeats will fire even during Android sleep.`);
-    } catch (e: any) {
-      console.error('Failed to register job scheduler. Is termux-api installed?');
-      console.error(e.stderr?.toString() || e.message);
-    }
-  });
-
-termux.command('remove')
-  .description('Remove heartbeat from termux-job-scheduler')
-  .action(async () => {
-    const { execSync } = await import('node:child_process');
-    try {
-      execSync('termux-job-scheduler --cancel-all', { stdio: 'pipe' });
-      console.log('✓ Removed all termux-job-scheduler jobs');
-    } catch (e: any) {
-      console.error('Failed:', e.stderr?.toString() || e.message);
-    }
-  });
-
-termux.command('status')
-  .description('Show termux-job-scheduler status')
-  .action(async () => {
-    const { execSync } = await import('node:child_process');
-    try {
-      const out = execSync('termux-job-scheduler --pending', { encoding: 'utf-8' }).trim();
-      if (!out || out.startsWith('No')) {
-        console.log('No scheduled jobs');
-        return;
-      }
-      try {
-        const jobs = JSON.parse(out);
-        for (const j of jobs) {
-          console.log(`Job #${j.jobId}: interval=${Math.round(j.intervalMillis / 60000)}min persisted=${j.isPersisted} script=${j.script_path || 'N/A'}`);
-        }
-      } catch {
-        console.log(out);
-      }
-    } catch (e: any) {
-      console.error('Failed:', e.stderr?.toString() || e.message);
-    }
   });
 
 program.parse();

@@ -141,6 +141,7 @@ const SECTIONS: SectionDef[] = [
       { key: 'heartbeat.escalation', label: 'Priority Auto-Escalation', type: 'boolean' },
       { key: 'heartbeat.autoApproveMinutes', label: 'Auto-Approve Suggested Goals (min, -1=never)', type: 'number' },
       { key: 'heartbeat.maxRetries', label: 'Max Goal Retries', type: 'number' },
+      { key: 'heartbeat.termuxScheduler', label: 'Termux Job Scheduler (Android sleep)', type: 'boolean' },
     ],
   },
   {

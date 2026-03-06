@@ -353,6 +353,7 @@ export const ConfigSchema = z.object({
     escalation: z.boolean().default(true),
     autoApproveMinutes: z.number().default(30),  // auto-approve suggested goals after N minutes (0=instant, -1=never)
     maxRetries: z.number().default(3),
+    termuxScheduler: z.boolean().default(false),  // Register heartbeat with termux-job-scheduler for Android sleep support
   }).default({}),
   tts: TTSConfigSchema,
   // User timezone (IANA format, e.g. "Asia/Jerusalem", "America/New_York")
