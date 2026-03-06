@@ -958,6 +958,14 @@ this.app.post<{ Params: { id: string }; Body: { count: number } }>('/api/session
       return { entries: hb.getLog(limit) };
     });
 
+    this.app.post('/api/heartbeat/trigger', async () => {
+      const hb = this.agent.getHeartbeatManager?.();
+      if (!hb) return { error: 'Heartbeat not available' };
+      if (!hb.isActive()) return { error: 'Heartbeat not active' };
+      const result = await hb.trigger();
+      return { ok: true, result: result ? 'sent' : 'skipped' };
+    });
+
     // ── Cron API ──────────────────────────────────────────────────────
     this.app.get('/api/cron', async () => {
       const scheduler = this.agent.getScheduler();

@@ -692,4 +692,71 @@ clawhub
     console.log('');
   });
 
+// ── Termux integration ─────────────────────────────────────────────────
+const termux = program.command('termux').description('Termux/Android integration');
+
+termux.command('setup')
+  .description('Register heartbeat with termux-job-scheduler')
+  .option('-c, --config <path>', 'Config path')
+  .action(async (opts) => {
+    const { execSync } = await import('node:child_process');
+    const config = loadConfig(opts.config);
+    const intervalMs = (config.heartbeat?.intervalMinutes || 60) * 60 * 1000;
+    const scriptSrc = join(import.meta.dirname || '.', '..', 'bin', 'termux-heartbeat.sh');
+    const scriptDst = join(getConfigDir(), 'termux-heartbeat.sh');
+
+    // Copy script to config dir so it survives updates
+    const { copyFileSync, chmodSync } = await import('node:fs');
+    copyFileSync(scriptSrc, scriptDst);
+    chmodSync(scriptDst, 0o755);
+
+    try {
+      execSync(`termux-job-scheduler --script "${scriptDst}" --period-ms ${intervalMs} --persisted true --battery-not-low true`, { stdio: 'pipe' });
+      console.log(`✓ Registered termux-job-scheduler`);
+      console.log(`  Script: ${scriptDst}`);
+      console.log(`  Interval: ${config.heartbeat?.intervalMinutes || 60}min (${intervalMs}ms)`);
+      console.log(`  Persisted: yes (survives reboot)`);
+      console.log(`  Battery: only when not low`);
+      console.log(`\nHeartbeats will fire even during Android sleep.`);
+    } catch (e: any) {
+      console.error('Failed to register job scheduler. Is termux-api installed?');
+      console.error(e.stderr?.toString() || e.message);
+    }
+  });
+
+termux.command('remove')
+  .description('Remove heartbeat from termux-job-scheduler')
+  .action(async () => {
+    const { execSync } = await import('node:child_process');
+    try {
+      execSync('termux-job-scheduler --cancel-all', { stdio: 'pipe' });
+      console.log('✓ Removed all termux-job-scheduler jobs');
+    } catch (e: any) {
+      console.error('Failed:', e.stderr?.toString() || e.message);
+    }
+  });
+
+termux.command('status')
+  .description('Show termux-job-scheduler status')
+  .action(async () => {
+    const { execSync } = await import('node:child_process');
+    try {
+      const out = execSync('termux-job-scheduler --pending', { encoding: 'utf-8' }).trim();
+      if (!out || out.startsWith('No')) {
+        console.log('No scheduled jobs');
+        return;
+      }
+      try {
+        const jobs = JSON.parse(out);
+        for (const j of jobs) {
+          console.log(`Job #${j.jobId}: interval=${Math.round(j.intervalMillis / 60000)}min persisted=${j.isPersisted} script=${j.script_path || 'N/A'}`);
+        }
+      } catch {
+        console.log(out);
+      }
+    } catch (e: any) {
+      console.error('Failed:', e.stderr?.toString() || e.message);
+    }
+  });
+
 program.parse();
