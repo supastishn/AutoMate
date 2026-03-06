@@ -386,7 +386,8 @@ export class HeartbeatManager {
 
     const existing = this.scheduler.listJobs().find(j => j.name === this.jobName);
     if (existing) {
-      if (force) {
+      // Force-recreate if interval or jitter changed
+      if (force || existing.schedule?.every !== interval || existing.schedule?.jitter !== jitterMs) {
         this.scheduler.removeJob(existing.id);
       } else {
         if (!existing.enabled) {
